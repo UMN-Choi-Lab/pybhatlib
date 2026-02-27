@@ -1,5 +1,10 @@
 # pybhatlib
 
+[![PyPI version](https://img.shields.io/pypi/v/pybhatlib)](https://pypi.org/project/pybhatlib/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/pybhatlib)](https://pypi.org/project/pybhatlib/)
+[![Python](https://img.shields.io/pypi/pyversions/pybhatlib)](https://pypi.org/project/pybhatlib/)
+[![License: MIT](https://img.shields.io/pypi/l/pybhatlib)](https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/LICENSE)
+
 Python reimplementation of **BHATLIB** — an open-source library for statistical and
 econometric matrix-based inference methods.
 
