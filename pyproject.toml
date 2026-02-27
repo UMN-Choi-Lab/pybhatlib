@@ -33,6 +33,12 @@ dependencies = [
     "pandas>=2.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/UMN-Choi-Lab/pybhatlib"
+Repository = "https://github.com/UMN-Choi-Lab/pybhatlib"
+Documentation = "https://github.com/UMN-Choi-Lab/pybhatlib#readme"
+Issues = "https://github.com/UMN-Choi-Lab/pybhatlib/issues"
+
 [project.optional-dependencies]
 torch = ["torch>=2.0"]
 dev = [
