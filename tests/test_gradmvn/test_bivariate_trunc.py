@@ -58,6 +58,59 @@ class TestTruncatedBivariateMean:
         np.testing.assert_allclose(E_trunc, mu, atol=0.01)
 
 
+class TestTruncatedBivariateMeanMC:
+    """Monte Carlo validation of truncated bivariate mean (Property 1)."""
+
+    @pytest.mark.parametrize("rho", [0.0, 0.3, 0.7, -0.5])
+    def test_mean_against_mc(self, rho):
+        """Truncated bivariate mean should match MC rejection sampling."""
+        rng = np.random.default_rng(42)
+        mu = np.array([0.0, 0.0])
+        sigma = np.array([[1.0, rho], [rho, 1.0]])
+        a = np.array([0.5, 0.8])
+
+        # MC rejection sampling
+        n_samples = 200_000
+        samples = rng.multivariate_normal(mu, sigma, size=n_samples)
+        mask = np.all(samples <= a, axis=1)
+        mc_mean = samples[mask].mean(axis=0)
+
+        analytic_mean = truncated_bivariate_mean(mu, sigma, a)
+        np.testing.assert_allclose(analytic_mean, mc_mean, atol=0.03)
+
+
+class TestTruncatedBivariateCovMC:
+    """Monte Carlo validation of truncated bivariate covariance (Property 2)."""
+
+    @pytest.mark.parametrize("rho", [0.0, 0.3, 0.7, -0.5])
+    def test_cov_against_mc(self, rho):
+        """Truncated bivariate cov should match MC rejection sampling."""
+        rng = np.random.default_rng(42)
+        mu = np.array([0.0, 0.0])
+        sigma = np.array([[1.0, rho], [rho, 1.0]])
+        a = np.array([0.5, 0.8])
+
+        # MC rejection sampling
+        n_samples = 200_000
+        samples = rng.multivariate_normal(mu, sigma, size=n_samples)
+        mask = np.all(samples <= a, axis=1)
+        accepted = samples[mask]
+        mc_mean = accepted.mean(axis=0)
+        mc_cov = np.cov(accepted.T)
+
+        analytic_cov = truncated_bivariate_cov(mu, sigma, a)
+        # 3% tolerance for diagonal, 5% absolute for off-diagonal
+        np.testing.assert_allclose(
+            analytic_cov[0, 0], mc_cov[0, 0], rtol=0.03, atol=0.01
+        )
+        np.testing.assert_allclose(
+            analytic_cov[1, 1], mc_cov[1, 1], rtol=0.03, atol=0.01
+        )
+        np.testing.assert_allclose(
+            analytic_cov[0, 1], mc_cov[0, 1], atol=0.02
+        )
+
+
 class TestTruncatedBivariateCov:
     def test_truncated_variance_less_than_original(self):
         """Truncation should reduce variance."""

@@ -52,13 +52,14 @@ class TestTrivariate:
         p_ref = multivariate_normal.cdf(a, mean=np.zeros(3), cov=sigma)
         return a, sigma, p_ref
 
-    @pytest.mark.parametrize("method", ["me", "ovus", "bme", "tvbs", "ovbs"])
-    def test_against_scipy(self, xp, trivariate_setup, method):
+    @pytest.mark.parametrize(
+        "method,rtol",
+        [("me", 0.03), ("ovus", 0.02), ("bme", 0.01), ("tvbs", 0.01), ("ovbs", 0.01)],
+    )
+    def test_against_scipy(self, xp, trivariate_setup, method, rtol):
         a, sigma, p_ref = trivariate_setup
         p = mvncd(xp.array(a), xp.array(sigma), method=method, xp=xp)
-        # Analytic approximations: 20% tolerance for K=3
-        # Screening-based methods (OVUS, OVBS) trade accuracy for speed
-        np.testing.assert_allclose(p, p_ref, rtol=0.20)
+        np.testing.assert_allclose(p, p_ref, rtol=rtol)
 
     def test_ssj_against_scipy(self, xp, trivariate_setup):
         a, sigma, p_ref = trivariate_setup
@@ -89,13 +90,14 @@ class TestPentavariate:
         p_ref = multivariate_normal.cdf(a, mean=np.zeros(5), cov=sigma)
         return a, sigma, p_ref
 
-    @pytest.mark.parametrize("method", ["me", "ovus", "bme", "tvbs", "ovbs"])
-    def test_against_scipy_k5(self, xp, pentavariate_setup, method):
+    @pytest.mark.parametrize(
+        "method,rtol",
+        [("me", 0.05), ("ovus", 0.05), ("bme", 0.03), ("tvbs", 0.01), ("ovbs", 0.03)],
+    )
+    def test_against_scipy_k5(self, xp, pentavariate_setup, method, rtol):
         a, sigma, p_ref = pentavariate_setup
         p = mvncd(xp.array(a), xp.array(sigma), method=method, xp=xp)
-        # Analytic approximations have larger errors for K=5
-        # due to compounding conditioning errors
-        np.testing.assert_allclose(p, p_ref, rtol=0.35)
+        np.testing.assert_allclose(p, p_ref, rtol=rtol)
 
     def test_ssj_k5(self, xp, pentavariate_setup):
         a, sigma, p_ref = pentavariate_setup

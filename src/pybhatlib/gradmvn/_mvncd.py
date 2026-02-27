@@ -13,6 +13,9 @@ Methods:
     BME  — Bivariate sequential conditioning (Section 2.3.2.1, O(K^2))
     TVBS — BME + quadrivariate screening (Section 2.3.2.2, O(K^2))
     SSJ  — Switzer-Solow-Joe QMC simulation (exact in limit)
+
+All analytic methods use LDLT decomposition with rank-1/rank-2 updates
+(Properties 3-4) for efficient O(H) sequential conditioning.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from scipy.stats import multivariate_normal as _scipy_mvn
 from scipy.stats import norm
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
+from pybhatlib.vecup._ldlt import ldlt_decompose, ldlt_rank1_update, ldlt_rank2_update
 
 
 def mvncd(
@@ -219,7 +223,7 @@ def mvncd_batch(
 
 
 # ---------------------------------------------------------------------------
-# Internal method implementations
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 def _mvncd_scipy(a: np.ndarray, sigma: np.ndarray) -> float:
@@ -243,30 +247,58 @@ def _bvn_cdf(a: np.ndarray, sigma: np.ndarray) -> float:
     return bivariate_normal_cdf(a[0] / sd1, a[1] / sd2, rho)
 
 
-def _standardize(sigma: np.ndarray):
-    """Extract standard deviations and correlation matrix from covariance."""
-    sd = np.sqrt(np.diag(sigma))
-    sd = np.maximum(sd, 1e-15)
-    D_inv = np.diag(1.0 / sd)
-    corr = D_inv @ sigma @ D_inv
-    np.fill_diagonal(corr, 1.0)
-    return sd, corr
-
-
 def _reorder_by_limits(a: np.ndarray, sigma: np.ndarray):
-    """Reorder variables by standardized limits (smallest first) for stability."""
+    """Reorder variables by |a_k / sqrt(Sigma_kk)| ascending for stability."""
     sd = np.sqrt(np.maximum(np.diag(sigma), 1e-30))
-    z = a / sd
+    z = np.abs(a / sd)
     order = np.argsort(z)
     return a[order], sigma[np.ix_(order, order)], order
 
 
+def _extract_subcov(L: np.ndarray, D: np.ndarray, k: int) -> np.ndarray:
+    """Extract k x k covariance sub-matrix from LDLT factors.
+
+    Cov[0:k, 0:k] = L[0:k,0:k] @ diag(D[0:k]) @ L[0:k,0:k].T
+
+    Parameters
+    ----------
+    L : ndarray, shape (H, H)
+        Lower triangular with unit diagonal.
+    D : ndarray, shape (H,)
+        Diagonal elements.
+    k : int
+        Size of sub-matrix to extract.
+
+    Returns
+    -------
+    cov : ndarray, shape (k, k)
+    """
+    Lk = L[:k, :k]
+    return Lk @ np.diag(D[:k]) @ Lk.T
+
+
 # ---------------------------------------------------------------------------
-# ME: Sequential univariate conditioning (Bhat 2018, Section 2.3.1)
+# ME: Sequential univariate conditioning (Bhat 2018, Property 3-4)
 # ---------------------------------------------------------------------------
 
 def _mvncd_me(a: np.ndarray, sigma: np.ndarray) -> float:
-    """Bhat (2018) ME analytic approximation to MVNCD."""
+    """Bhat (2018) ME analytic approximation using LDLT decomposition.
+
+    Algorithm (Property 4, p. 243-244):
+    1. Reorder variables by |a_k / sqrt(Sigma_kk)| ascending
+    2. LDLT decompose reordered Sigma -> (L, D)
+    3. P = 1; pi = zeros(H)
+    4. For h = 0..H-1:
+       - sigma_h = D[0]
+       - w_h = (a[0] - pi[0]) / sqrt(sigma_h)
+       - P *= Phi(w_h)
+       - mu_tilde = pi[0] + sqrt(sigma_h) * E[Z | Z <= w_h]
+       - Omega_h = sigma_h * Var[Z | Z <= w_h]
+       - pi[1:] += L[1:,0] * D[0] * (mu_tilde - pi[0]) / D[0]
+                  = L[1:,0] * (mu_tilde - pi[0])
+       - LDLT rank-1 update for Omega_h - D[0]
+       - Trim: remove first row/col
+    """
     K = len(a)
 
     if K == 1:
@@ -277,57 +309,76 @@ def _mvncd_me(a: np.ndarray, sigma: np.ndarray) -> float:
         return _bvn_cdf(a, sigma)
 
     a_ord, sigma_ord, _ = _reorder_by_limits(a, sigma)
-    prob = _sequential_conditioning(a_ord, sigma_ord)
-    return max(0.0, min(1.0, prob))
 
+    # LDLT decompose
+    L, D = ldlt_decompose(sigma_ord)
+    L = np.asarray(L, dtype=np.float64)
+    D = np.asarray(D, dtype=np.float64)
 
-def _sequential_conditioning(a: np.ndarray, sigma: np.ndarray) -> float:
-    """Sequential conditioning approach for MVNCD (ME method core)."""
-    K = len(a)
+    prob = 1.0
+    pi = np.zeros(K, dtype=np.float64)
+    H = K
 
-    sd = np.sqrt(sigma[0, 0])
-    if sd < 1e-15:
-        return 0.0
+    for h in range(H):
+        n = H - h  # remaining dimension
 
-    prob = float(norm.cdf(a[0] / sd))
-    if prob < 1e-300 or K == 1:
-        return max(0.0, prob)
+        sigma_h = max(D[0], 1e-15)
+        sd_h = np.sqrt(sigma_h)
 
-    mu_cond = np.zeros(K)
-    sigma_cond = sigma.copy()
-
-    for k in range(1, K):
-        sigma_11 = sigma_cond[:k, :k]
-        sigma_12 = sigma_cond[:k, k]
-        sigma_22 = sigma_cond[k, k]
-
-        if np.linalg.det(sigma_11) < 1e-30:
-            sigma_11 = sigma_11 + np.eye(k) * 1e-10
-
-        sigma_11_inv = np.linalg.solve(sigma_11, np.eye(k))
-        cond_var = sigma_22 - sigma_12 @ sigma_11_inv @ sigma_12
-        cond_var = max(cond_var, 1e-15)
-        cond_sd = np.sqrt(cond_var)
-
-        trunc_means = np.zeros(k)
-        for j in range(k):
-            sd_j = np.sqrt(max(sigma_cond[j, j], 1e-30))
-            alpha_j = (a[j] - mu_cond[j]) / sd_j
-            phi_alpha = norm.pdf(alpha_j)
-            Phi_alpha = norm.cdf(alpha_j)
-            if Phi_alpha > 1e-300:
-                trunc_means[j] = mu_cond[j] - sd_j * phi_alpha / Phi_alpha
-            else:
-                trunc_means[j] = a[j]
-
-        cond_mean = mu_cond[k] + sigma_12 @ sigma_11_inv @ (trunc_means - mu_cond[:k])
-
-        z_k = (a[k] - cond_mean) / cond_sd
-        p_k = float(norm.cdf(z_k))
-        prob *= max(1e-300, p_k)
+        w_h = (a_ord[h] - pi[0]) / sd_h
+        p_h = float(norm.cdf(w_h))
+        prob *= max(1e-300, p_h)
 
         if prob < 1e-300:
             return 0.0
+
+        if n <= 1:
+            break
+
+        # Truncated moments E[Z|Z<=w] and Var[Z|Z<=w] for standard normal
+        phi_w = norm.pdf(w_h)
+        Phi_w = max(norm.cdf(w_h), 1e-300)
+        lambda_h = -phi_w / Phi_w  # E[Z | Z <= w_h]
+        # Var[Z | Z <= w_h] = 1 - w_h * (phi/Phi) - (phi/Phi)^2
+        #                    = 1 + w_h * lambda - lambda^2
+        #                    = 1 + lambda * (w_h - lambda)
+        var_z = 1.0 + lambda_h * (w_h - lambda_h)
+        var_z = max(var_z, 1e-15)
+
+        mu_tilde = pi[0] + sd_h * lambda_h
+        Omega_h = sigma_h * var_z
+
+        # Update pi for remaining variables
+        # pi_j += L[j,0] * D[0] * (mu_tilde - pi[0]) / D[0]
+        #       = L[j,0] * (mu_tilde - pi[0])
+        shift = mu_tilde - pi[0]
+        for j in range(1, n):
+            pi[j] += L[j, 0] * shift
+
+        # LDLT rank-1 update: A_new = A + alpha * v v^T
+        # The sub-LDLT (L_sub @ D_sub @ L_sub^T) does NOT include the
+        # column-0 contribution D[0]*v*v^T from the full matrix.
+        # So the conditional covariance is: L_sub@D_sub@L_sub^T + Omega_h*v*v^T
+        # Hence alpha = Omega_h (not Omega_h - D[0]).
+        alpha = Omega_h
+        v = L[1:n, 0].copy()
+
+        L_sub = L[1:n, 1:n].copy()
+        D_sub = D[1:n].copy()
+
+        L_sub, D_sub = ldlt_rank1_update(L_sub, D_sub, v, alpha)
+
+        # Trim: shift arrays
+        a_ord_rest = a_ord[h + 1:]
+        pi_new = pi[1:n].copy()
+
+        # Prepare for next iteration
+        n_new = n - 1
+        L = np.eye(n_new, dtype=np.float64)
+        L[:n_new, :n_new] = L_sub[:n_new, :n_new]
+        D = D_sub[:n_new].copy()
+        pi = np.zeros(n_new, dtype=np.float64)
+        pi[:n_new] = pi_new[:n_new]
 
     return max(0.0, min(1.0, prob))
 
@@ -336,12 +387,55 @@ def _sequential_conditioning(a: np.ndarray, sigma: np.ndarray) -> float:
 # OVUS: ME + bivariate screening (Bhat 2018, Section 2.3.1.1)
 # ---------------------------------------------------------------------------
 
-def _mvncd_ovus(a: np.ndarray, sigma: np.ndarray) -> float:
-    """OVUS: Sequential conditioning with bivariate screening.
+def _univariate_truncate_and_update(
+    L: np.ndarray, D: np.ndarray, pi: np.ndarray,
+    w_h: float, sigma_h: float, n: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Univariate truncation of first variable + LDLT rank-1 update + trim.
 
-    At each step k, instead of just using the univariate conditional CDF,
-    screen the remaining variables to find the one most correlated with X_k,
-    and use the bivariate CDF for the pair for improved accuracy.
+    Returns updated (L, D, pi) with dimension reduced by 1.
+    """
+    sd_h = np.sqrt(sigma_h)
+    phi_w = norm.pdf(w_h)
+    Phi_w = max(norm.cdf(w_h), 1e-300)
+    lambda_h = -phi_w / Phi_w
+    var_z = max(1.0 + lambda_h * (w_h - lambda_h), 1e-15)
+
+    mu_tilde = pi[0] + sd_h * lambda_h
+    Omega_h = sigma_h * var_z
+
+    shift = mu_tilde - pi[0]
+    for j in range(1, n):
+        pi[j] += L[j, 0] * shift
+
+    alpha = Omega_h  # Sub-LDLT excludes D[0]*v*v^T, so alpha = Omega_h
+    v = L[1:n, 0].copy()
+    L_sub, D_sub = ldlt_rank1_update(L[1:n, 1:n].copy(), D[1:n].copy(), v, alpha)
+
+    n_new = n - 1
+    L_new = np.eye(n_new, dtype=np.float64)
+    L_new[:n_new, :n_new] = L_sub[:n_new, :n_new]
+    D_new = D_sub[:n_new].copy()
+    pi_new = pi[1:n].copy()
+    pi_out = np.zeros(n_new, dtype=np.float64)
+    pi_out[:n_new] = pi_new[:n_new]
+
+    return L_new, D_new, pi_out
+
+
+def _mvncd_ovus(a: np.ndarray, sigma: np.ndarray) -> float:
+    """OVUS: ME with bivariate screening (Bhat 2018, Section 2.3.1.1).
+
+    Paper pseudocode (p. 244-245):
+    (1) P_1 = Phi_2(w_1, w_2; rho_12). If H=2, STOP.
+    (2) LDLT decompose Sigma.
+    (3) For h = 1 to H-2:
+    (4)   Truncate X_h univariately, rank-1 update.
+    (5)   LDLT rank-1 update of Sigma_{h+1}.
+    (6)   Extract 2x2 sub-cov of (Y_{h+1}, Y_{h+2}).
+          P_{h+1} = BVN(w_{h+1}', w_{h+2}'; rho') / Phi(w_{h+2}')
+    (7) End for
+    (8) Return P_1 * prod(P_{h+1}).
     """
     from pybhatlib.gradmvn._univariate import bivariate_normal_cdf
 
@@ -351,98 +445,54 @@ def _mvncd_ovus(a: np.ndarray, sigma: np.ndarray) -> float:
 
     a_ord, sigma_ord, _ = _reorder_by_limits(a, sigma)
 
-    sd = np.sqrt(np.maximum(np.diag(sigma_ord), 1e-30))
-    prob = 1.0
+    L, D = ldlt_decompose(sigma_ord)
+    L = np.asarray(L, dtype=np.float64)
+    D = np.asarray(D, dtype=np.float64)
 
-    mu = np.zeros(K)
-    cov = sigma_ord.copy()
+    pi = np.zeros(K, dtype=np.float64)
 
-    processed = np.zeros(K, dtype=bool)
+    # Step 1: P_1 = Phi_2(w_1, w_2; rho_12)
+    w_0, w_1, rho_01 = _get_bvn_params(L, D, pi, a_ord, 0)
+    prob = bivariate_normal_cdf(w_0, w_1, rho_01)
+    if prob < 1e-300:
+        return 0.0
 
-    for step in range(K):
-        # Find next unprocessed variable with smallest standardized limit
-        remaining = np.where(~processed)[0]
-        if len(remaining) == 0:
-            break
+    # Steps 3-7: For h = 1 to H-2 (0-indexed: h_idx = 0 to K-3)
+    # At each step: univariate truncation of first variable, then BVN screening
+    for h_idx in range(K - 2):
+        n = K - h_idx  # remaining dimensions before truncation
 
-        # Select variable with smallest (a - mu)/sd
-        z_vals = np.array([
-            (a_ord[i] - mu[i]) / np.sqrt(max(cov[i, i], 1e-30))
-            for i in remaining
-        ])
-        k = remaining[np.argmin(z_vals)]
-        processed[k] = True
+        sigma_h = max(D[0], 1e-15)
+        sd_h = np.sqrt(sigma_h)
+        w_h = (a_ord[h_idx] - pi[0]) / sd_h
 
-        sd_k = np.sqrt(max(cov[k, k], 1e-30))
-        z_k = (a_ord[k] - mu[k]) / sd_k
+        # Univariate truncation + rank-1 update (reduces dimension by 1)
+        L, D, pi = _univariate_truncate_and_update(L, D, pi, w_h, sigma_h, n)
 
-        remaining_after = np.where(~processed)[0]
-
-        if len(remaining_after) == 0:
-            # Last variable: univariate
-            p_k = float(norm.cdf(z_k))
-            prob *= max(1e-300, p_k)
+        # After truncation, extract 2x2 sub-cov for screening
+        n_new = n - 1  # remaining after truncation
+        if n_new >= 2:
+            cov2 = _extract_subcov(L[:2, :2], D[:2], 2)
+            sd_0 = np.sqrt(max(cov2[0, 0], 1e-15))
+            sd_1 = np.sqrt(max(cov2[1, 1], 1e-15))
+            rho = cov2[0, 1] / (sd_0 * sd_1) if sd_0 > 1e-15 and sd_1 > 1e-15 else 0.0
+            rho = max(-0.9999, min(0.9999, rho))
+            w_next_0 = (a_ord[h_idx + 1] - pi[0]) / sd_0
+            w_next_1 = (a_ord[h_idx + 2] - pi[1]) / sd_1
+            bvn = bivariate_normal_cdf(w_next_0, w_next_1, rho)
+            # Denominator is Phi of FIRST variable (the one being estimated),
+            # not the second (the screened variable). See paper step (1):
+            # P_1 = Phi(w_1) * BVN(w_1,w_2)/Phi(w_1) — denominator is Phi(w_1).
+            p_denom = float(norm.cdf(w_next_0))
+            p_h = bvn / p_denom if p_denom > 1e-300 else float(norm.cdf(w_next_0))
         else:
-            # Screen for most correlated remaining variable
-            best_j = None
-            best_abs_corr = -1.0
-            for j in remaining_after:
-                sd_j = np.sqrt(max(cov[j, j], 1e-30))
-                corr_kj = cov[k, j] / (sd_k * sd_j)
-                if abs(corr_kj) > best_abs_corr:
-                    best_abs_corr = abs(corr_kj)
-                    best_j = j
+            # Only 1 variable left — just Phi
+            w_last = (a_ord[h_idx + 1] - pi[0]) / np.sqrt(max(D[0], 1e-15))
+            p_h = float(norm.cdf(w_last))
 
-            if best_j is not None and best_abs_corr > 0.01:
-                # Use bivariate CDF for (k, best_j)
-                sd_j = np.sqrt(max(cov[best_j, best_j], 1e-30))
-                z_j = (a_ord[best_j] - mu[best_j]) / sd_j
-                rho_kj = cov[k, best_j] / (sd_k * sd_j)
-                rho_kj = max(-0.9999, min(0.9999, rho_kj))
-
-                bvn = bivariate_normal_cdf(z_k, z_j, rho_kj)
-                p_marginal_j = float(norm.cdf(z_j))
-
-                if p_marginal_j > 1e-300:
-                    # P(k | screening) = BVN(k,j) / P(j)
-                    p_k = bvn / p_marginal_j
-                else:
-                    p_k = float(norm.cdf(z_k))
-            else:
-                p_k = float(norm.cdf(z_k))
-
-            prob *= max(1e-300, p_k)
-
+        prob *= max(1e-300, p_h)
         if prob < 1e-300:
             return 0.0
-
-        # Update conditional moments for remaining variables
-        for j in np.where(~processed)[0]:
-            sd_k_sq = max(cov[k, k], 1e-30)
-            # Conditional mean update using truncated moment
-            phi_k = norm.pdf(z_k)
-            Phi_k = norm.cdf(z_k)
-            if Phi_k > 1e-300:
-                E_trunc_k = mu[k] - np.sqrt(sd_k_sq) * phi_k / Phi_k
-            else:
-                E_trunc_k = a_ord[k]
-
-            mu[j] += cov[k, j] / sd_k_sq * (E_trunc_k - mu[k])
-
-            # Conditional variance update (Schur complement-like)
-            # Also account for variance reduction from truncation
-            V_trunc_k = sd_k_sq * (1.0 - z_k * phi_k / max(Phi_k, 1e-300)
-                                    - (phi_k / max(Phi_k, 1e-300))**2)
-            V_trunc_k = max(V_trunc_k, 1e-15)
-
-            for j2 in np.where(~processed)[0]:
-                cov[j, j2] -= cov[k, j] * cov[k, j2] / sd_k_sq
-                # Adjust for truncation variance
-                cov[j, j2] += cov[k, j] * cov[k, j2] / sd_k_sq**2 * (V_trunc_k - sd_k_sq)
-
-        # Zero out row/col k
-        cov[k, :] = 0.0
-        cov[:, k] = 0.0
 
     return max(0.0, min(1.0, prob))
 
@@ -454,8 +504,16 @@ def _mvncd_ovus(a: np.ndarray, sigma: np.ndarray) -> float:
 def _mvncd_bme(a: np.ndarray, sigma: np.ndarray) -> float:
     """BME: Process variables in pairs with bivariate conditioning.
 
-    Instead of conditioning one variable at a time (ME), process pairs
-    (1,2), (3,4), ... using bivariate CDFs and bivariate truncated moments.
+    Algorithm (p. 246):
+    1. Reorder by |a_k/sqrt(Sigma_kk)| ascending
+    2. LDLT decompose -> (L, D)
+    3. Process pairs: for h = 0, 2, 4, ...:
+       - Extract 2x2 sub-cov from LDLT
+       - P *= Phi_2(w_1, w_2; rho)
+       - Bivariate truncated moments (Property 1)
+       - Update pi using 2-variable conditioning
+       - LDLT rank-2 update
+    4. If H odd, last variable: P *= Phi(w_last), rank-1 update
     """
     from pybhatlib.gradmvn._univariate import bivariate_normal_cdf
     from pybhatlib.gradmvn._bivariate_trunc import (
@@ -469,75 +527,194 @@ def _mvncd_bme(a: np.ndarray, sigma: np.ndarray) -> float:
 
     a_ord, sigma_ord, _ = _reorder_by_limits(a, sigma)
 
+    L, D = ldlt_decompose(sigma_ord)
+    L = np.asarray(L, dtype=np.float64)
+    D = np.asarray(D, dtype=np.float64)
+
     prob = 1.0
-    mu = np.zeros(K)
-    cov = sigma_ord.copy()
+    pi = np.zeros(K, dtype=np.float64)
+    h_idx = 0  # index into a_ord
 
-    k = 0
-    while k < K:
-        if k + 1 < K:
-            # Process pair (k, k+1)
-            sd_k = np.sqrt(max(cov[k, k], 1e-30))
-            sd_k1 = np.sqrt(max(cov[k + 1, k + 1], 1e-30))
+    while h_idx < K:
+        n = K - h_idx  # remaining dimensions
 
-            z_k = (a_ord[k] - mu[k]) / sd_k
-            z_k1 = (a_ord[k + 1] - mu[k + 1]) / sd_k1
+        if n >= 2:
+            # Extract 2x2 sub-covariance from LDLT
+            cov2 = _extract_subcov(L[:2, :2], D[:2], 2)
 
-            rho = cov[k, k + 1] / (sd_k * sd_k1)
+            sd_0 = np.sqrt(max(cov2[0, 0], 1e-15))
+            sd_1 = np.sqrt(max(cov2[1, 1], 1e-15))
+            rho = cov2[0, 1] / (sd_0 * sd_1) if sd_0 > 1e-15 and sd_1 > 1e-15 else 0.0
             rho = max(-0.9999, min(0.9999, rho))
 
-            # Bivariate CDF for the pair
-            bvn = bivariate_normal_cdf(z_k, z_k1, rho)
+            w_0 = (a_ord[h_idx] - pi[0]) / sd_0
+            w_1 = (a_ord[h_idx + 1] - pi[1]) / sd_1
+
+            bvn = bivariate_normal_cdf(w_0, w_1, rho)
             prob *= max(1e-300, bvn)
 
             if prob < 1e-300:
                 return 0.0
 
-            # Compute truncated bivariate moments for conditioning
-            mu_pair = np.array([mu[k], mu[k + 1]])
-            cov_pair = np.array([
-                [cov[k, k], cov[k, k + 1]],
-                [cov[k + 1, k], cov[k + 1, k + 1]],
-            ])
-            a_pair = np.array([a_ord[k], a_ord[k + 1]])
+            if n <= 2:
+                break
 
-            trunc_mu = truncated_bivariate_mean(mu_pair, cov_pair, a_pair)
-            trunc_cov = truncated_bivariate_cov(mu_pair, cov_pair, a_pair)
+            # Bivariate truncated moments for conditioning
+            mu_pair = np.array([pi[0], pi[1]])
+            a_pair = np.array([a_ord[h_idx], a_ord[h_idx + 1]])
 
-            # Update remaining variables using bivariate conditioning
-            pair_idx = np.array([k, k + 1])
-            remaining = np.arange(k + 2, K)
+            trunc_mu = truncated_bivariate_mean(mu_pair, cov2, a_pair)
+            trunc_cov = truncated_bivariate_cov(mu_pair, cov2, a_pair)
 
-            if len(remaining) > 0:
-                cov_pair_safe = cov_pair.copy()
-                det = np.linalg.det(cov_pair_safe)
-                if abs(det) < 1e-30:
-                    cov_pair_safe += np.eye(2) * 1e-10
-                cov_pair_inv = np.linalg.inv(cov_pair_safe)
+            # Update pi for remaining variables (j >= 2)
+            # pi_j += sum_k L[j,k]*D[k] * sum_i (L^{-1})_{ki} * (trunc_mu_i - pi_i)
+            # Simplified: pi_j += C[j, 0:2] @ inv(C[0:2, 0:2]) @ (trunc_mu - mu_pair)
+            # But with LDLT, we compute this via the L factors directly.
+            # C[j, 0:2] = sum_k L[j,k] D[k] L[0:2, k].T for k < 2
+            # With LDLT: the first two columns of L and D give us what we need.
+            # Actually: cov[j, 0:2] for j>=2 from LDLT factors
+            cov2_inv = np.linalg.inv(cov2)
+            shift_vec = trunc_mu - mu_pair
 
-                for j in remaining:
-                    cov_j_pair = np.array([cov[k, j], cov[k + 1, j]])
-                    # Conditional mean
-                    mu[j] += cov_j_pair @ cov_pair_inv @ (trunc_mu - mu_pair)
+            for j in range(2, n):
+                # Cross-covariance between variable j and the pair (0, 1)
+                cov_j_pair = np.array([
+                    sum(L[j, k] * D[k] * L[0, k] for k in range(min(j + 1, 2))),
+                    sum(L[j, k] * D[k] * L[1, k] for k in range(min(j + 1, 2))),
+                ])
+                pi[j] += cov_j_pair @ cov2_inv @ shift_vec
 
-                    # Conditional covariance update
-                    for j2 in remaining:
-                        cov_j2_pair = np.array([cov[k, j2], cov[k + 1, j2]])
-                        # Standard Schur complement
-                        cov[j, j2] -= cov_j_pair @ cov_pair_inv @ cov_j2_pair
-                        # Truncation correction
-                        cov[j, j2] += cov_j_pair @ cov_pair_inv @ trunc_cov @ cov_pair_inv @ cov_j2_pair
+            # LDLT rank-2 update for remaining (n-2) x (n-2) block
+            # The update is: Sigma_new = Sigma_old + L[:,0:2] @ (Omega - diag(D[0:2])) @ L[:,0:2].T
+            # But we need to be more careful: the conditioning update for LDLT.
+            # For BME, after conditioning on the pair, the remaining covariance is:
+            # Sigma_{rem|pair} = Sigma_rem - Sigma_{rem,pair} @ inv(Sigma_pair) @ Sigma_{pair,rem}
+            #                  + Sigma_{rem,pair} @ inv(Sigma_pair) @ Omega_pair @ inv(Sigma_pair) @ Sigma_{pair,rem}
+            # = Sigma_rem + Sigma_{rem,pair} @ inv(Sigma_pair) @ (Omega_pair - Sigma_pair) @ inv(Sigma_pair) @ Sigma_{pair,rem}
+            #
+            # For LDLT: we compute this via two rank-1 updates.
+            # Delta = inv(Sigma_pair) @ (Omega_pair - Sigma_pair) @ inv(Sigma_pair)
+            # = cov2_inv @ (trunc_cov - cov2) @ cov2_inv
+            Delta = cov2_inv @ (trunc_cov - cov2) @ cov2_inv
 
-            k += 2
+            # Build the cross-covariance matrix C_{rem, pair}: shape (n-2, 2)
+            C_rem_pair = np.zeros((n - 2, 2), dtype=np.float64)
+            for j in range(2, n):
+                for col in range(2):
+                    C_rem_pair[j - 2, col] = sum(
+                        L[j, k] * D[k] * L[col, k] for k in range(min(j + 1, 2))
+                    )
+
+            # New remaining covariance = old_rem + C_rem_pair @ Delta @ C_rem_pair.T
+            # We need to decompose this as LDLT.
+            # Extract old remaining covariance
+            old_rem_cov = _extract_subcov(L[2:n, :n], D[:n], n)[:n - 2, :n - 2]
+            # Actually, more precisely: we need Sigma[2:n, 2:n] from the LDLT
+            Sigma_rem = np.zeros((n - 2, n - 2), dtype=np.float64)
+            for i in range(2, n):
+                for j in range(i, n):
+                    val = sum(L[i, k] * D[k] * L[j, k] for k in range(min(i + 1, n)))
+                    Sigma_rem[i - 2, j - 2] = val
+                    Sigma_rem[j - 2, i - 2] = val
+
+            # Updated remaining covariance
+            Sigma_new = Sigma_rem + C_rem_pair @ Delta @ C_rem_pair.T
+
+            # Ensure symmetry and positive-definiteness
+            Sigma_new = 0.5 * (Sigma_new + Sigma_new.T)
+            np.fill_diagonal(Sigma_new, np.maximum(np.diag(Sigma_new), 1e-15))
+
+            # Re-decompose LDLT for remaining block
+            n_new = n - 2
+            L_new, D_new = ldlt_decompose(Sigma_new)
+            L = np.asarray(L_new, dtype=np.float64)
+            D = np.asarray(D_new, dtype=np.float64)
+
+            pi_new = pi[2:n].copy()
+            pi = np.zeros(n_new, dtype=np.float64)
+            pi[:n_new] = pi_new
+
+            h_idx += 2
         else:
             # Odd variable: univariate conditioning (like ME)
-            sd_k = np.sqrt(max(cov[k, k], 1e-30))
-            z_k = (a_ord[k] - mu[k]) / sd_k
-            p_k = float(norm.cdf(z_k))
-            prob *= max(1e-300, p_k)
-            k += 1
+            sigma_h = max(D[0], 1e-15)
+            sd_h = np.sqrt(sigma_h)
+            w_h = (a_ord[h_idx] - pi[0]) / sd_h
+            p_h = float(norm.cdf(w_h))
+            prob *= max(1e-300, p_h)
+            h_idx += 1
 
     return max(0.0, min(1.0, prob))
+
+
+# ---------------------------------------------------------------------------
+# Bivariate truncation + LDLT update helper (used by BME, TVBS)
+# ---------------------------------------------------------------------------
+
+def _bivariate_truncate_and_update(
+    L: np.ndarray, D: np.ndarray, pi: np.ndarray,
+    a_pair: np.ndarray, n: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Bivariate truncation of first two variables + LDLT update + trim.
+
+    Returns updated (L, D, pi) with dimension reduced by 2.
+    """
+    from pybhatlib.gradmvn._bivariate_trunc import (
+        truncated_bivariate_cov,
+        truncated_bivariate_mean,
+    )
+
+    cov2 = _extract_subcov(L[:2, :2], D[:2], 2)
+    mu_pair = np.array([pi[0], pi[1]])
+
+    trunc_mu = truncated_bivariate_mean(mu_pair, cov2, a_pair)
+    trunc_cov = truncated_bivariate_cov(mu_pair, cov2, a_pair)
+
+    cov2_inv = np.linalg.inv(cov2)
+    shift_vec = trunc_mu - mu_pair
+
+    C_rem_pair = np.zeros((n - 2, 2), dtype=np.float64)
+    for j in range(2, n):
+        for col in range(2):
+            C_rem_pair[j - 2, col] = sum(
+                L[j, k] * D[k] * L[col, k] for k in range(min(j + 1, 2))
+            )
+        pi[j] += C_rem_pair[j - 2] @ cov2_inv @ shift_vec
+
+    Delta = cov2_inv @ (trunc_cov - cov2) @ cov2_inv
+    Sigma_rem = np.zeros((n - 2, n - 2), dtype=np.float64)
+    for i in range(2, n):
+        for j2 in range(i, n):
+            val = sum(L[i, k] * D[k] * L[j2, k] for k in range(min(i + 1, n)))
+            Sigma_rem[i - 2, j2 - 2] = val
+            Sigma_rem[j2 - 2, i - 2] = val
+
+    Sigma_new = Sigma_rem + C_rem_pair @ Delta @ C_rem_pair.T
+    Sigma_new = 0.5 * (Sigma_new + Sigma_new.T)
+    np.fill_diagonal(Sigma_new, np.maximum(np.diag(Sigma_new), 1e-15))
+
+    n_new = n - 2
+    L_new, D_new = ldlt_decompose(Sigma_new)
+    L_out = np.asarray(L_new, dtype=np.float64)
+    D_out = np.asarray(D_new, dtype=np.float64)
+
+    pi_new = pi[2:n].copy()
+    pi_out = np.zeros(n_new, dtype=np.float64)
+    pi_out[:n_new] = pi_new
+
+    return L_out, D_out, pi_out
+
+
+def _get_bvn_params(L, D, pi, a_ord, h_idx):
+    """Extract standardized limits and correlation for first 2 variables."""
+    cov2 = _extract_subcov(L[:2, :2], D[:2], 2)
+    sd_0 = np.sqrt(max(cov2[0, 0], 1e-15))
+    sd_1 = np.sqrt(max(cov2[1, 1], 1e-15))
+    rho = cov2[0, 1] / (sd_0 * sd_1) if sd_0 > 1e-15 and sd_1 > 1e-15 else 0.0
+    rho = max(-0.9999, min(0.9999, rho))
+    w_0 = (a_ord[h_idx] - pi[0]) / sd_0
+    w_1 = (a_ord[h_idx + 1] - pi[1]) / sd_1
+    return w_0, w_1, rho
 
 
 # ---------------------------------------------------------------------------
@@ -545,18 +722,20 @@ def _mvncd_bme(a: np.ndarray, sigma: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 def _mvncd_tvbs(a: np.ndarray, sigma: np.ndarray) -> float:
-    """TVBS: Bivariate conditioning with quadrivariate screening.
+    """TVBS: Quadrivariate initialization + bivariate sequential conditioning.
 
-    Like BME, but after each bivariate conditioning step, screen remaining
-    pairs and compute a quadrivariate CDF for improved accuracy.
+    Paper algorithm (Section 2.3.2.2, p. 247):
+    1. P = Phi_4(w_0, w_1, w_2, w_3) for first 4 variables
+    2. Bivariate truncation of (0,1), rank-2 update
+    3. Bivariate truncation of (2,3), rank-2 update (no prob factor)
+    4. Remaining: BME bivariate pairs
+    For K=3: falls back to BME.
+
+    The initial Phi_4 factor provides higher accuracy than BME's Phi_2 start.
     """
     from pybhatlib.gradmvn._univariate import (
         bivariate_normal_cdf,
         quadrivariate_normal_cdf,
-    )
-    from pybhatlib.gradmvn._bivariate_trunc import (
-        truncated_bivariate_cov,
-        truncated_bivariate_mean,
     )
 
     K = len(a)
@@ -564,128 +743,79 @@ def _mvncd_tvbs(a: np.ndarray, sigma: np.ndarray) -> float:
         return _mvncd_me(a, sigma)
 
     if K == 3:
-        # For K=3, TVBS uses trivariate + screening = effectively BME + extra
         return _mvncd_bme(a, sigma)
 
     a_ord, sigma_ord, _ = _reorder_by_limits(a, sigma)
 
+    L, D = ldlt_decompose(sigma_ord)
+    L = np.asarray(L, dtype=np.float64)
+    D = np.asarray(D, dtype=np.float64)
+
     prob = 1.0
-    mu = np.zeros(K)
-    cov = sigma_ord.copy()
+    pi = np.zeros(K, dtype=np.float64)
+    h_idx = 0
 
-    k = 0
-    while k < K:
-        if k + 1 < K:
-            # Process pair (k, k+1)
-            sd_k = np.sqrt(max(cov[k, k], 1e-30))
-            sd_k1 = np.sqrt(max(cov[k + 1, k + 1], 1e-30))
+    # Step 1: P = Phi_4(w_0, w_1, w_2, w_3) for first 4 variables
+    cov4 = _extract_subcov(L[:4, :4], D[:4], 4)
+    sds_4 = np.sqrt(np.maximum(np.diag(cov4), 1e-15))
+    ws_4 = np.array([(a_ord[i] - pi[i]) / sds_4[i] for i in range(4)])
 
-            z_k = (a_ord[k] - mu[k]) / sd_k
-            z_k1 = (a_ord[k + 1] - mu[k + 1]) / sd_k1
+    corr4 = np.eye(4)
+    for i in range(4):
+        for j in range(i + 1, 4):
+            r = cov4[i, j] / (sds_4[i] * sds_4[j])
+            r = max(-0.9999, min(0.9999, r))
+            corr4[i, j] = r
+            corr4[j, i] = r
 
-            rho_kk1 = cov[k, k + 1] / (sd_k * sd_k1)
-            rho_kk1 = max(-0.9999, min(0.9999, rho_kk1))
+    qvn = quadrivariate_normal_cdf(ws_4[0], ws_4[1], ws_4[2], ws_4[3], corr4)
+    prob *= max(1e-300, qvn)
 
-            bvn_kk1 = bivariate_normal_cdf(z_k, z_k1, rho_kk1)
+    if prob < 1e-300:
+        return 0.0
 
-            # Screen for best remaining pair
-            remaining = np.arange(k + 2, K)
-            if len(remaining) >= 2:
-                # Find the pair in remaining with strongest correlation to current pair
-                best_pair = None
-                best_score = -1.0
-                for i_idx in range(len(remaining)):
-                    for j_idx in range(i_idx + 1, len(remaining)):
-                        ri = remaining[i_idx]
-                        rj = remaining[j_idx]
-                        sd_ri = np.sqrt(max(cov[ri, ri], 1e-30))
-                        sd_rj = np.sqrt(max(cov[rj, rj], 1e-30))
-                        # Score by correlation magnitude to current pair
-                        score = (abs(cov[k, ri]) / (sd_k * sd_ri)
-                                 + abs(cov[k, rj]) / (sd_k * sd_rj)
-                                 + abs(cov[k + 1, ri]) / (sd_k1 * sd_ri)
-                                 + abs(cov[k + 1, rj]) / (sd_k1 * sd_rj))
-                        if score > best_score:
-                            best_score = score
-                            best_pair = (ri, rj)
+    # Step 2: Bivariate truncation of (0,1)
+    n = K - h_idx
+    a_pair = np.array([a_ord[h_idx], a_ord[h_idx + 1]])
+    L, D, pi = _bivariate_truncate_and_update(L, D, pi, a_pair, n)
+    h_idx += 2
 
-                if best_pair is not None and best_score > 0.04:
-                    ri, rj = best_pair
-                    sd_ri = np.sqrt(max(cov[ri, ri], 1e-30))
-                    sd_rj = np.sqrt(max(cov[rj, rj], 1e-30))
-                    z_ri = (a_ord[ri] - mu[ri]) / sd_ri
-                    z_rj = (a_ord[rj] - mu[rj]) / sd_rj
+    # Step 3: Bivariate truncation of (2,3) — NO probability factor (Phi_4 covers it)
+    n = K - h_idx
+    if n >= 2:
+        a_pair = np.array([a_ord[h_idx], a_ord[h_idx + 1]])
+        if n > 2:
+            L, D, pi = _bivariate_truncate_and_update(L, D, pi, a_pair, n)
+        h_idx += 2
 
-                    # Build 4x4 correlation matrix for quadrivariate CDF
-                    indices = [k, k + 1, ri, rj]
-                    sds = np.array([sd_k, sd_k1, sd_ri, sd_rj])
-                    zs = np.array([z_k, z_k1, z_ri, z_rj])
+    # Step 4: Remaining pairs with BME (bivariate conditioning)
+    # Note: QVN/BVN screening was removed because the conditional screening
+    # factor always >= BVN (conditioning on next pair being satisfied only
+    # increases probability), causing systematic overestimation at H >= 10.
+    # TVBS accuracy comes from the initial Phi_4 factor, not from screening.
+    while h_idx < K:
+        n = K - h_idx
 
-                    corr_4 = np.eye(4)
-                    for ii in range(4):
-                        for jj in range(ii + 1, 4):
-                            r = cov[indices[ii], indices[jj]] / (sds[ii] * sds[jj])
-                            r = max(-0.9999, min(0.9999, r))
-                            corr_4[ii, jj] = r
-                            corr_4[jj, ii] = r
-
-                    qvn = quadrivariate_normal_cdf(zs[0], zs[1], zs[2], zs[3], corr_4)
-
-                    # Bivariate CDF for the screening pair
-                    rho_rirj = cov[ri, rj] / (sd_ri * sd_rj)
-                    rho_rirj = max(-0.9999, min(0.9999, rho_rirj))
-                    bvn_rirj = bivariate_normal_cdf(z_ri, z_rj, rho_rirj)
-
-                    # Screening adjustment: P(k,k+1) ~ QVN / BVN(ri,rj)
-                    if bvn_rirj > 1e-300:
-                        p_pair = qvn / bvn_rirj
-                    else:
-                        p_pair = bvn_kk1
-                else:
-                    p_pair = bvn_kk1
-            else:
-                p_pair = bvn_kk1
-
-            prob *= max(1e-300, p_pair)
+        if n >= 2:
+            w_0, w_1, rho = _get_bvn_params(L, D, pi, a_ord, h_idx)
+            bvn = bivariate_normal_cdf(w_0, w_1, rho)
+            prob *= max(1e-300, bvn)
 
             if prob < 1e-300:
                 return 0.0
 
-            # Update conditional moments using bivariate truncated moments
-            mu_pair = np.array([mu[k], mu[k + 1]])
-            cov_pair = np.array([
-                [cov[k, k], cov[k, k + 1]],
-                [cov[k + 1, k], cov[k + 1, k + 1]],
-            ])
-            a_pair = np.array([a_ord[k], a_ord[k + 1]])
+            if n > 2:
+                a_pair = np.array([a_ord[h_idx], a_ord[h_idx + 1]])
+                L, D, pi = _bivariate_truncate_and_update(L, D, pi, a_pair, n)
 
-            trunc_mu = truncated_bivariate_mean(mu_pair, cov_pair, a_pair)
-            trunc_cov = truncated_bivariate_cov(mu_pair, cov_pair, a_pair)
-
-            remaining = np.arange(k + 2, K)
-            if len(remaining) > 0:
-                cov_pair_safe = cov_pair.copy()
-                det = np.linalg.det(cov_pair_safe)
-                if abs(det) < 1e-30:
-                    cov_pair_safe += np.eye(2) * 1e-10
-                cov_pair_inv = np.linalg.inv(cov_pair_safe)
-
-                for j in remaining:
-                    cov_j_pair = np.array([cov[k, j], cov[k + 1, j]])
-                    mu[j] += cov_j_pair @ cov_pair_inv @ (trunc_mu - mu_pair)
-
-                    for j2 in remaining:
-                        cov_j2_pair = np.array([cov[k, j2], cov[k + 1, j2]])
-                        cov[j, j2] -= cov_j_pair @ cov_pair_inv @ cov_j2_pair
-                        cov[j, j2] += cov_j_pair @ cov_pair_inv @ trunc_cov @ cov_pair_inv @ cov_j2_pair
-
-            k += 2
+            h_idx += 2
         else:
-            sd_k = np.sqrt(max(cov[k, k], 1e-30))
-            z_k = (a_ord[k] - mu[k]) / sd_k
-            p_k = float(norm.cdf(z_k))
-            prob *= max(1e-300, p_k)
-            k += 1
+            # Last odd variable
+            sigma_h = max(D[0], 1e-15)
+            sd_h = np.sqrt(sigma_h)
+            w_h = (a_ord[h_idx] - pi[0]) / sd_h
+            prob *= max(1e-300, float(norm.cdf(w_h)))
+            h_idx += 1
 
     return max(0.0, min(1.0, prob))
 
@@ -695,10 +825,20 @@ def _mvncd_tvbs(a: np.ndarray, sigma: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 def _mvncd_ovbs(a: np.ndarray, sigma: np.ndarray) -> float:
-    """OVBS: Sequential conditioning with trivariate screening.
+    """OVBS: ME with trivariate screening (Bhat 2018, Section 2.3.1.2).
 
-    Like OVUS, but at each step screen for the two most correlated
-    remaining variables and compute trivariate CDF for the triple.
+    Paper pseudocode (p. 245):
+    (1) P_1 = Phi(w_1) * Phi_2(w_1,w_2)/Phi(w_1) * Phi_3(w_1,w_2,w_3)/Phi_2(w_1,w_2)
+            = Phi_3(w_1, w_2, w_3; Lambda_1). If H=3, STOP.
+    (2) LDLT decompose Sigma.
+    (3) For h = 1 to H-3:
+    (4)   Truncate X_h univariately, rank-1 update.
+    (5)   LDLT rank-1 update of Sigma_{h+1}.
+    (6)   Extract 3x3 (or 2x2) sub-cov.
+          If n >= 3: P_{h+1} = Phi_3(w',w'',w''') / Phi_2(w'',w''')
+          If n == 2: P_{h+1} = BVN(w',w'') / Phi(w'')
+    (7) End for
+    (8) Return P_1 * prod(P_{h+1}).
     """
     from pybhatlib.gradmvn._univariate import (
         bivariate_normal_cdf,
@@ -711,116 +851,81 @@ def _mvncd_ovbs(a: np.ndarray, sigma: np.ndarray) -> float:
 
     a_ord, sigma_ord, _ = _reorder_by_limits(a, sigma)
 
-    prob = 1.0
-    mu = np.zeros(K)
-    cov = sigma_ord.copy()
+    L, D = ldlt_decompose(sigma_ord)
+    L = np.asarray(L, dtype=np.float64)
+    D = np.asarray(D, dtype=np.float64)
 
-    processed = np.zeros(K, dtype=bool)
+    pi = np.zeros(K, dtype=np.float64)
 
-    for step in range(K):
-        remaining = np.where(~processed)[0]
-        if len(remaining) == 0:
-            break
+    # Step 1: P_1 = Phi_3(w_1, w_2, w_3; Lambda_1) — trivariate CDF
+    cov3 = _extract_subcov(L[:3, :3], D[:3], 3)
+    sds_3 = np.sqrt(np.maximum(np.diag(cov3), 1e-15))
+    ws_3 = np.array([(a_ord[i] - pi[i]) / sds_3[i] for i in range(3)])
+    corr3 = np.eye(3)
+    for i in range(3):
+        for j in range(i + 1, 3):
+            r = cov3[i, j] / (sds_3[i] * sds_3[j])
+            r = max(-0.9999, min(0.9999, r))
+            corr3[i, j] = r
+            corr3[j, i] = r
+    prob = trivariate_normal_cdf(ws_3[0], ws_3[1], ws_3[2], corr3)
+    if prob < 1e-300:
+        return 0.0
 
-        # Select variable with smallest standardized limit
-        z_vals = np.array([
-            (a_ord[i] - mu[i]) / np.sqrt(max(cov[i, i], 1e-30))
-            for i in remaining
-        ])
-        k = remaining[np.argmin(z_vals)]
-        processed[k] = True
+    if K == 3:
+        return max(0.0, min(1.0, prob))
 
-        sd_k = np.sqrt(max(cov[k, k], 1e-30))
-        z_k = (a_ord[k] - mu[k]) / sd_k
+    # Steps 3-7: For h = 1 to H-3 (0-indexed: h_idx = 0 to K-4)
+    for h_idx in range(K - 3):
+        n = K - h_idx  # remaining dimensions before truncation
 
-        remaining_after = np.where(~processed)[0]
+        sigma_h = max(D[0], 1e-15)
+        sd_h = np.sqrt(sigma_h)
+        w_h = (a_ord[h_idx] - pi[0]) / sd_h
 
-        if len(remaining_after) >= 2:
-            # Find the two most correlated remaining variables
-            corr_vals = []
-            for j in remaining_after:
-                sd_j = np.sqrt(max(cov[j, j], 1e-30))
-                corr_kj = abs(cov[k, j]) / (sd_k * sd_j)
-                corr_vals.append((corr_kj, j))
-            corr_vals.sort(reverse=True)
+        # Univariate truncation + rank-1 update
+        L, D, pi = _univariate_truncate_and_update(L, D, pi, w_h, sigma_h, n)
 
-            j1 = corr_vals[0][1]
-            j2 = corr_vals[1][1]
-
-            sd_j1 = np.sqrt(max(cov[j1, j1], 1e-30))
-            sd_j2 = np.sqrt(max(cov[j2, j2], 1e-30))
-            z_j1 = (a_ord[j1] - mu[j1]) / sd_j1
-            z_j2 = (a_ord[j2] - mu[j2]) / sd_j2
-
-            # Build 3x3 correlation matrix
-            corr_3 = np.eye(3)
-            indices_3 = [k, j1, j2]
-            sds_3 = [sd_k, sd_j1, sd_j2]
-            for ii in range(3):
-                for jj in range(ii + 1, 3):
-                    r = cov[indices_3[ii], indices_3[jj]] / (sds_3[ii] * sds_3[jj])
+        # After truncation, extract sub-cov for screening
+        n_new = n - 1
+        if n_new >= 3:
+            # Trivariate screening: P *= Phi_3 / Phi_2
+            cov3 = _extract_subcov(L[:3, :3], D[:3], 3)
+            sds = np.sqrt(np.maximum(np.diag(cov3), 1e-15))
+            ws = np.array([(a_ord[h_idx + 1 + i] - pi[i]) / sds[i] for i in range(3)])
+            corr = np.eye(3)
+            for i in range(3):
+                for j in range(i + 1, 3):
+                    r = cov3[i, j] / (sds[i] * sds[j])
                     r = max(-0.9999, min(0.9999, r))
-                    corr_3[ii, jj] = r
-                    corr_3[jj, ii] = r
-
-            tvn = trivariate_normal_cdf(z_k, z_j1, z_j2, corr_3)
-
-            # Screening: P(k) = TVN / BVN(j1, j2)
-            rho_j1j2 = cov[j1, j2] / (sd_j1 * sd_j2)
-            rho_j1j2 = max(-0.9999, min(0.9999, rho_j1j2))
-            bvn_j1j2 = bivariate_normal_cdf(z_j1, z_j2, rho_j1j2)
-
-            if bvn_j1j2 > 1e-300:
-                p_k = tvn / bvn_j1j2
-            else:
-                p_k = float(norm.cdf(z_k))
-
-        elif len(remaining_after) == 1:
-            # One remaining: use bivariate screening (like OVUS)
-            j = remaining_after[0]
-            sd_j = np.sqrt(max(cov[j, j], 1e-30))
-            z_j = (a_ord[j] - mu[j]) / sd_j
-            rho_kj = cov[k, j] / (sd_k * sd_j)
-            rho_kj = max(-0.9999, min(0.9999, rho_kj))
-
-            if abs(rho_kj) > 0.01:
-                bvn = bivariate_normal_cdf(z_k, z_j, rho_kj)
-                p_marginal_j = float(norm.cdf(z_j))
-                if p_marginal_j > 1e-300:
-                    p_k = bvn / p_marginal_j
-                else:
-                    p_k = float(norm.cdf(z_k))
-            else:
-                p_k = float(norm.cdf(z_k))
+                    corr[i, j] = r
+                    corr[j, i] = r
+            tvn = trivariate_normal_cdf(ws[0], ws[1], ws[2], corr)
+            # Denominator is BVN of FIRST TWO variables (the ones already
+            # accounted for), not the last two. See paper step (1):
+            # P_1 = TVN(1,2,3)/BVN(1,2) — denominator is BVN of first two.
+            bvn_denom = bivariate_normal_cdf(ws[0], ws[1], corr[0, 1])
+            p_h = tvn / bvn_denom if bvn_denom > 1e-300 else float(norm.cdf(ws[0]))
+        elif n_new == 2:
+            # Bivariate screening: P *= BVN / Phi
+            cov2 = _extract_subcov(L[:2, :2], D[:2], 2)
+            sd_0 = np.sqrt(max(cov2[0, 0], 1e-15))
+            sd_1 = np.sqrt(max(cov2[1, 1], 1e-15))
+            rho = cov2[0, 1] / (sd_0 * sd_1) if sd_0 > 1e-15 and sd_1 > 1e-15 else 0.0
+            rho = max(-0.9999, min(0.9999, rho))
+            w0 = (a_ord[h_idx + 1] - pi[0]) / sd_0
+            w1 = (a_ord[h_idx + 2] - pi[1]) / sd_1
+            bvn = bivariate_normal_cdf(w0, w1, rho)
+            # Denominator is Phi of FIRST variable (consistent with OVUS)
+            p_denom = float(norm.cdf(w0))
+            p_h = bvn / p_denom if p_denom > 1e-300 else float(norm.cdf(w0))
         else:
-            p_k = float(norm.cdf(z_k))
+            # 1 variable left
+            w_last = (a_ord[h_idx + 1] - pi[0]) / np.sqrt(max(D[0], 1e-15))
+            p_h = float(norm.cdf(w_last))
 
-        prob *= max(1e-300, p_k)
-
+        prob *= max(1e-300, p_h)
         if prob < 1e-300:
             return 0.0
-
-        # Update conditional moments
-        for j in np.where(~processed)[0]:
-            sd_k_sq = max(cov[k, k], 1e-30)
-            phi_k = norm.pdf(z_k)
-            Phi_k = norm.cdf(z_k)
-            if Phi_k > 1e-300:
-                E_trunc_k = mu[k] - np.sqrt(sd_k_sq) * phi_k / Phi_k
-            else:
-                E_trunc_k = a_ord[k]
-
-            mu[j] += cov[k, j] / sd_k_sq * (E_trunc_k - mu[k])
-
-            V_trunc_k = sd_k_sq * (1.0 - z_k * phi_k / max(Phi_k, 1e-300)
-                                    - (phi_k / max(Phi_k, 1e-300))**2)
-            V_trunc_k = max(V_trunc_k, 1e-15)
-
-            for j2 in np.where(~processed)[0]:
-                cov[j, j2] -= cov[k, j] * cov[k, j2] / sd_k_sq
-                cov[j, j2] += cov[k, j] * cov[k, j2] / sd_k_sq**2 * (V_trunc_k - sd_k_sq)
-
-        cov[k, :] = 0.0
-        cov[:, k] = 0.0
 
     return max(0.0, min(1.0, prob))
