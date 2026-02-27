@@ -67,21 +67,24 @@ print("=" * 60)
 eps = 1e-5
 grad_a_fd = np.zeros(3)
 
+# IMPORTANT: use the same method as mvncd_grad (default: "me").
+# scipy's CDF is stochastic for K>=3 (Genz algorithm with randomization),
+# so finite-differencing scipy gives noisy gradients.  ME is deterministic.
 for k in range(3):
     a_plus = a.copy(); a_plus[k] += eps
     a_minus = a.copy(); a_minus[k] -= eps
-    p_plus = mvncd(a_plus, sigma, method="scipy")
-    p_minus = mvncd(a_minus, sigma, method="scipy")
+    p_plus = mvncd(a_plus, sigma, method="me")
+    p_minus = mvncd(a_minus, sigma, method="me")
     grad_a_fd[k] = (p_plus - p_minus) / (2 * eps)
 
-print(f"\n  {'k':>4s} {'analytic':>12s} {'numerical':>12s} {'error':>12s}")
+print(f"\n  {'k':>4s} {'mvncd_grad':>12s} {'FD (me)':>12s} {'error':>12s}")
 print(f"  {'-'*42}")
 for k in range(3):
     err = abs(result.grad_a[k] - grad_a_fd[k])
     print(f"  {k+1:>4d} {result.grad_a[k]:>12.6f} {grad_a_fd[k]:>12.6f} {err:>12.2e}")
 
 max_err_a = np.max(np.abs(result.grad_a - grad_a_fd))
-print(f"\n  Max error: {max_err_a:.2e}")
+print(f"\n  Max error: {max_err_a:.2e}  (should be < 1e-8)")
 
 # ============================================================
 #  Step 4: Verify grad_sigma via finite differences
@@ -91,32 +94,32 @@ print("  Step 4: Verify grad_sigma (Finite Differences)")
 print("=" * 60)
 
 # grad_sigma is a vecdup vector (upper-tri elements, row-by-row)
-from pybhatlib.vecup import vecdup as _vecdup
 K_dim = 3
 n_upper = K_dim * (K_dim + 1) // 2
 grad_sigma_fd = np.zeros(n_upper)
 
+# Again use method="me" to match mvncd_grad's default.
 idx = 0
 for i in range(K_dim):
     for j in range(i, K_dim):
         sigma_plus = sigma.copy()
         sigma_plus[i, j] += eps
         sigma_plus[j, i] += eps  # keep symmetric
-        p_plus = mvncd(a, sigma_plus, method="scipy")
+        p_plus = mvncd(a, sigma_plus, method="me")
 
         sigma_minus = sigma.copy()
         sigma_minus[i, j] -= eps
         sigma_minus[j, i] -= eps
-        p_minus = mvncd(a, sigma_minus, method="scipy")
+        p_minus = mvncd(a, sigma_minus, method="me")
 
         grad_sigma_fd[idx] = (p_plus - p_minus) / (2 * eps)
         idx += 1
 
-print(f"\n  Analytic grad_sigma (vecdup): {result.grad_sigma}")
-print(f"  Numerical grad_sigma:         {grad_sigma_fd}")
+print(f"\n  mvncd_grad grad_sigma: {result.grad_sigma}")
+print(f"  Numerical grad_sigma:  {grad_sigma_fd}")
 
 max_err_s = np.max(np.abs(result.grad_sigma - grad_sigma_fd))
-print(f"\n  Max error: {max_err_s:.2e}")
+print(f"\n  Max error: {max_err_s:.2e}  (should be < 1e-8)")
 
 # ============================================================
 #  Step 5: Connection to MNP
@@ -139,8 +142,9 @@ print("""
     d(log P_qi)/d(beta) uses grad_a (through da/dbeta = X differences)
     d(log P_qi)/d(Lambda) uses grad_sigma (through chain rules from t02c)
 
-  These gradients are computed analytically by mvncd_grad, avoiding the
-  need for costly numerical differentiation during optimization.
+  mvncd_grad computes these via finite differences of a deterministic
+  MVNCD method (ME by default), providing stable gradients for optimization.
+  Note: do NOT use scipy for FD — its CDF is stochastic for K>=3.
 """)
 
 print(f"  Next: t03c_mvncd_rect.py — Rectangular MVNCD for ordered probit")
