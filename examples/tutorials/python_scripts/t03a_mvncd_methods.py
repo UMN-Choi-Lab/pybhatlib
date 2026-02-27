@@ -110,22 +110,24 @@ print("  Step 4: Method Summary")
 print("=" * 60)
 
 print("""
-  Method  | Basis CDFs      | Complexity  | Best For
+  Method  | Basis CDFs      | Complexity  | Status
   --------|-----------------|-------------|------------------
-  ME      | univariate      | O(K^2)      | K=2-3, speed
-  OVUS    | uni + bivariate | O(K^2)      | K=2-5 (default)
-  BME     | bivariate       | O(K^2)      | K=3-5
-  OVBS    | BME + trivariate| O(K^3)      | K=4-7, accuracy
-  TVBS    | BME + quad      | O(K^4)      | K=3-5, best accuracy
-  SSJ     | QMC simulation  | O(K*N_draws)| K>5, large problems
-  scipy   | numerical integ | varies      | reference only
+  ME      | univariate      | O(K^2)      | RECOMMENDED: fast, ~1-10% error
+  BME     | bivariate pairs | O(K^2)      | Good: ~2-8% error
+  TVBS    | BME + quad      | O(K^4)      | Moderate: ~2-12% error
+  SSJ     | QMC simulation  | O(K*N_draws)| EXACT: best accuracy, slower
+  scipy   | Genz algorithm  | varies      | EXACT: reference implementation
+  OVUS    | uni + bivar scr | O(K^2)      | KNOWN ISSUE: screening degrades accuracy
+  OVBS    | uni + trivar scr| O(K^3)      | KNOWN ISSUE: screening degrades accuracy
 
   Notes:
-  - 'ovus' (default) is the best general-purpose choice
   - For K <= 2, all methods give identical results
-  - Analytic methods have known tolerances: ~20% for K=3, ~35% for K=5
-  - SSJ accuracy improves with n_draws but is stochastic
-  - 'scipy' is the gold standard but can be slow for K > 5
+  - ME is the best choice for speed; SSJ or scipy for accuracy
+  - OVUS/OVBS screening ratios have an implementation issue:
+    the bivariate/trivariate screening factor is inconsistent
+    with the univariate moment updates, causing error accumulation
+  - SSJ accuracy improves with n_draws (default 1000)
+  - scipy CDF is stochastic for K>=3 (Genz algorithm with QRNG)
 """)
 
 print(f"  Next: t03b_mvncd_gradients.py — Gradients of the MVNCD")
