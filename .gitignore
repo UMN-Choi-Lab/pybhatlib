@@ -30,6 +30,9 @@ htmlcov/
 *.pdf
 results/
 
+# Original GAUSS source
+chandra_code/
+
 # OS
 .DS_Store
 Thumbs.db

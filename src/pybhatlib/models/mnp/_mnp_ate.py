@@ -105,15 +105,14 @@ def mnp_ate(
                 "Either X must be provided, or data+spec+alternatives for reconstruction"
             )
         from pybhatlib.io._spec_parser import parse_spec
-        X, _ = parse_spec(spec, data, alternatives, nseg=control.nseg if control else 1)
+        X, _ = parse_spec(spec, data, alternatives, nseg=1)
 
         if changevar is not None and changeval is not None:
             # Modify the data column and reparse
             data_modified = data.copy()
             if changevar in data_modified.columns:
                 data_modified[changevar] = changeval
-            X, _ = parse_spec(spec, data_modified, alternatives,
-                              nseg=control.nseg if control else 1)
+            X, _ = parse_spec(spec, data_modified, alternatives, nseg=1)
 
     N = X.shape[0]
     I = X.shape[1]
@@ -160,7 +159,7 @@ def mnp_ate(
             diff_V = np.array([V_q[i] - V_q[j] for j in avail_alts])
 
             if control_use.iid:
-                Lambda_diff = 2.0 * np.eye(dim, dtype=np.float64)
+                Lambda_diff = np.ones((dim, dim), dtype=np.float64) + np.eye(dim, dtype=np.float64)
             else:
                 M = np.zeros((dim, I), dtype=np.float64)
                 for k, j in enumerate(avail_alts):

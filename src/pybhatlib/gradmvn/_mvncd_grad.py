@@ -1,7 +1,13 @@
 """Gradients of the MVNCD function.
 
-Computes analytic gradients of the multivariate normal CDF with respect to
-the upper integration limits and correlation/covariance parameters.
+Computes gradients of the multivariate normal CDF with respect to the upper
+integration limits and covariance matrix elements (vech form).
+
+Supports two modes:
+- ``analytic=True`` (default): Uses backward/adjoint differentiation for the
+  ME method, giving exact gradients of the ME approximation in O(K^3) time.
+- ``analytic=False``: Falls back to central finite differences (2K + K*(K+1)
+  MVNCD evaluations per call).
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ from scipy.stats import norm
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
 from pybhatlib.gradmvn._mvncd import mvncd
+from pybhatlib.gradmvn._mvncd_grad_analytic import mvncd_grad_me_analytic
 
 
 @dataclass
@@ -40,6 +47,7 @@ def mvncd_grad(
     sigma: NDArray,
     *,
     method: str = "me",
+    analytic: bool = True,
     xp=None,
 ) -> MVNCDGradResult:
     """Compute MVNCD and its gradients.
@@ -52,6 +60,9 @@ def mvncd_grad(
         Covariance matrix.
     method : str
         Approximation method for MVNCD.
+    analytic : bool
+        If True (default) and method is 'me', use backward/adjoint analytic
+        gradients. Falls back to numerical FD otherwise.
     xp : backend, optional
 
     Returns
@@ -64,17 +75,19 @@ def mvncd_grad(
 
     a_np = np.asarray(xp.to_numpy(a), dtype=np.float64).ravel()
     sigma_np = np.asarray(xp.to_numpy(sigma), dtype=np.float64)
-    K = len(a_np)
 
-    # Compute probability
+    # Dispatch to analytic gradient when available
+    if analytic and method == "me":
+        prob, grad_a, grad_sigma = mvncd_grad_me_analytic(a_np, sigma_np)
+        return MVNCDGradResult(
+            prob=prob,
+            grad_a=xp.array(grad_a),
+            grad_sigma=xp.array(grad_sigma),
+        )
+
+    # Numerical fallback
     prob = mvncd(xp.array(a_np), xp.array(sigma_np), method=method, xp=xp)
-
-    # Compute gradient w.r.t. a using numerical differentiation
-    # (Analytic version for specific K can be added for performance)
     grad_a = _grad_a_numerical(a_np, sigma_np, prob, method, xp)
-
-    # Compute gradient w.r.t. sigma (upper-triangular elements)
-    n_sigma = K * (K + 1) // 2
     grad_sigma = _grad_sigma_numerical(a_np, sigma_np, prob, method, xp)
 
     return MVNCDGradResult(
@@ -130,13 +143,13 @@ def _grad_sigma_numerical(
     for i in range(K):
         for j in range(i, K):
             sigma_plus = sigma.copy()
-            sigma_plus[i, j] += eps
-            sigma_plus[j, i] += eps
-            prob_plus = mvncd(xp.array(a), xp.array(sigma_plus), method=method, xp=xp)
-
             sigma_minus = sigma.copy()
+            sigma_plus[i, j] += eps
             sigma_minus[i, j] -= eps
-            sigma_minus[j, i] -= eps
+            if i != j:
+                sigma_plus[j, i] += eps
+                sigma_minus[j, i] -= eps
+            prob_plus = mvncd(xp.array(a), xp.array(sigma_plus), method=method, xp=xp)
             prob_minus = mvncd(xp.array(a), xp.array(sigma_minus), method=method, xp=xp)
 
             grad[idx] = (prob_plus - prob_minus) / (2.0 * eps)

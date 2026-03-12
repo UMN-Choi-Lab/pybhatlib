@@ -67,7 +67,7 @@ def mnp_predict(
             diff_V = np.array([V_q[i] - V_q[j] for j in avail_alts])
 
             if is_iid:
-                Lambda_diff = 2.0 * np.eye(dim)
+                Lambda_diff = np.ones((dim, dim)) + np.eye(dim)
             else:
                 M = np.zeros((dim, I))
                 for k, j in enumerate(avail_alts):

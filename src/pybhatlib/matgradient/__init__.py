@@ -3,6 +3,7 @@
 from pybhatlib.matgradient._gradcovcor import GradCovCorResult, gradcovcor
 from pybhatlib.matgradient._gomegxomegax import gomegxomegax
 from pybhatlib.matgradient._spherical import grad_corr_theta, theta_to_corr
+from pybhatlib.matgradient._radial import grad_radial_theta, radial_to_corr
 from pybhatlib.matgradient._chain_rules import chain_grad
 
 __all__ = [
@@ -11,5 +12,7 @@ __all__ = [
     "gomegxomegax",
     "theta_to_corr",
     "grad_corr_theta",
+    "radial_to_corr",
+    "grad_radial_theta",
     "chain_grad",
 ]

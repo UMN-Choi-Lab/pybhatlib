@@ -85,4 +85,5 @@ class MNPControl:
     optimizer: Literal["bfgs", "lbfgsb", "torch_adam", "torch_lbfgs"] = "bfgs"
     verbose: int = 1
     seed: int | None = None
+    analytic_grad: bool = True
     startb: NDArray | None = None

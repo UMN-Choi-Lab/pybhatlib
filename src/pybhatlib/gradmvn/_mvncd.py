@@ -53,6 +53,8 @@ def mvncd(
         - "bme": Bivariate sequential conditioning
         - "tvbs": BME + quadrivariate screening (most accurate analytic)
         - "ovbs": OVUS + trivariate screening
+        - "tg": Trivariate-Gaussian univariate conditioning (no rank-1 updates)
+        - "tgbme": TG with bivariate conditioning (no rank-2 updates)
         - "ssj": QMC simulation-based (exact in limit)
         - "scipy": scipy.stats.multivariate_normal.cdf
     n_draws : int
@@ -98,6 +100,10 @@ def mvncd(
         return _mvncd_tvbs(a_np, sigma_np)
     elif method == "ovbs":
         return _mvncd_ovbs(a_np, sigma_np)
+    elif method == "tg":
+        return _mvncd_tg(a_np, sigma_np)
+    elif method == "tgbme":
+        return _mvncd_tgbme(a_np, sigma_np)
     elif method == "ssj":
         from pybhatlib.gradmvn._mvncd_ssj import _mvncd_ssj
         return _mvncd_ssj(a_np, sigma_np, n_draws=n_draws, seed=seed)
@@ -927,5 +933,193 @@ def _mvncd_ovbs(a: np.ndarray, sigma: np.ndarray) -> float:
         prob *= max(1e-300, p_h)
         if prob < 1e-300:
             return 0.0
+
+    return max(0.0, min(1.0, prob))
+
+
+# ---------------------------------------------------------------------------
+# TG: Trivariate-Gaussian univariate conditioning (no rank-1 updates)
+# ---------------------------------------------------------------------------
+
+def _mvncd_tg(a: np.ndarray, sigma: np.ndarray) -> float:
+    """TG: Sequential univariate conditioning using LDLT strip-down only.
+
+    Unlike ME which uses LDLT rank-1 updates for conditioning, TG simply
+    strips rows/columns from the LDLT factors and adjusts the conditional
+    mean via the L factor. This is simpler and avoids numerical issues
+    from rank-1 updates, at the cost of slightly less accurate conditioning.
+
+    GAUSS reference: cdfmvnaTG, line 837.
+
+    Algorithm:
+    1. Reorder variables by ascending |a_k / sqrt(Sigma_kk)|
+    2. LDLT decompose reordered Sigma -> (L, D)
+    3. For h = 0..K-1:
+       - sigma_h = D[0,0]
+       - w_h = (a[h] - mu[0]) / sqrt(sigma_h)
+       - P *= Phi(w_h)
+       - Compute truncated mean
+       - Update conditional mean: mu[1:] += L[1:,0] * (mu_trunc - mu[0])
+       - Strip first row/col of L and D (NO rank-1 update)
+    """
+    K = len(a)
+
+    if K == 1:
+        sd = np.sqrt(sigma[0, 0])
+        return float(norm.cdf(a[0] / sd))
+
+    if K == 2:
+        return _bvn_cdf(a, sigma)
+
+    a_ord, sigma_ord, _ = _reorder_by_limits(a, sigma)
+
+    # LDLT decompose
+    L, D = ldlt_decompose(sigma_ord)
+    L = np.asarray(L, dtype=np.float64)
+    D = np.asarray(D, dtype=np.float64)
+
+    prob = 1.0
+    mu = np.zeros(K, dtype=np.float64)
+
+    for h in range(K):
+        n = K - h  # remaining dimension
+
+        sigma_h = max(D[0], 1e-15)
+        sd_h = np.sqrt(sigma_h)
+
+        w_h = (a_ord[h] - mu[0]) / sd_h
+        p_h = float(norm.cdf(w_h))
+        prob *= max(1e-300, p_h)
+
+        if prob < 1e-300:
+            return 0.0
+
+        if n <= 1:
+            break
+
+        # Truncated moments: E[Z|Z<=w] for standard normal
+        phi_w = norm.pdf(w_h)
+        Phi_w = max(norm.cdf(w_h), 1e-300)
+        lambda_h = -phi_w / Phi_w  # E[Z | Z <= w_h]
+
+        mu_tilde = mu[0] + sd_h * lambda_h
+
+        # Update conditional mean for remaining variables
+        shift = mu_tilde - mu[0]
+        for j in range(1, n):
+            mu[j] += L[j, 0] * shift
+
+        # Strip first row/col: NO rank-1 update (key difference from ME)
+        L = L[1:n, 1:n].copy()
+        D = D[1:n].copy()
+        mu = mu[1:n].copy()
+
+    return max(0.0, min(1.0, prob))
+
+
+# ---------------------------------------------------------------------------
+# TGBME: TG with bivariate conditioning (no rank-2 updates)
+# ---------------------------------------------------------------------------
+
+def _mvncd_tgbme(a: np.ndarray, sigma: np.ndarray) -> float:
+    """TGBME: Sequential bivariate conditioning using LDLT strip-down only.
+
+    Like BME but without rank-2 updates: processes variables in pairs,
+    uses BVN for each pair factor, and strips 2 rows/cols from LDLT.
+    For odd K, the last variable uses univariate conditioning.
+
+    GAUSS reference: cdfmvnaTGBME, line 1297.
+
+    Algorithm:
+    1. Reorder variables by ascending |a_k / sqrt(Sigma_kk)|
+    2. LDLT decompose reordered Sigma -> (L, D)
+    3. For each pair (2k, 2k+1):
+       - Extract 2x2 sub-cov from LDLT
+       - Standardize: w_i = (a[i] - mu[i]) / sd_i, compute rho
+       - P *= BVN(w_0, w_1; rho)
+       - Compute bivariate truncated moments
+       - Update conditional mean via cross-covariance and Sigma_2^{-1}
+       - Strip first 2 rows/cols of L and D (NO rank-2 update)
+    4. If K is odd, last variable: P *= Phi(w_last)
+    """
+    from pybhatlib.gradmvn._univariate import bivariate_normal_cdf
+    from pybhatlib.gradmvn._bivariate_trunc import (
+        truncated_bivariate_mean,
+    )
+
+    K = len(a)
+
+    if K <= 2:
+        return _mvncd_me(a, sigma)
+
+    a_ord, sigma_ord, _ = _reorder_by_limits(a, sigma)
+
+    # LDLT decompose
+    L, D = ldlt_decompose(sigma_ord)
+    L = np.asarray(L, dtype=np.float64)
+    D = np.asarray(D, dtype=np.float64)
+
+    prob = 1.0
+    mu = np.zeros(K, dtype=np.float64)
+    h_idx = 0
+
+    while h_idx < K:
+        n = K - h_idx  # remaining dimensions
+
+        if n >= 2:
+            # Extract 2x2 sub-covariance from LDLT
+            cov2 = _extract_subcov(L[:2, :2], D[:2], 2)
+
+            sd_0 = np.sqrt(max(cov2[0, 0], 1e-15))
+            sd_1 = np.sqrt(max(cov2[1, 1], 1e-15))
+            rho = cov2[0, 1] / (sd_0 * sd_1) if sd_0 > 1e-15 and sd_1 > 1e-15 else 0.0
+            rho = max(-0.9999, min(0.9999, rho))
+
+            w_0 = (a_ord[h_idx] - mu[0]) / sd_0
+            w_1 = (a_ord[h_idx + 1] - mu[1]) / sd_1
+
+            bvn = bivariate_normal_cdf(w_0, w_1, rho)
+            prob *= max(1e-300, bvn)
+
+            if prob < 1e-300:
+                return 0.0
+
+            if n <= 2:
+                break
+
+            # Bivariate truncated moments for conditioning
+            mu_pair = np.array([mu[0], mu[1]])
+            a_pair = np.array([a_ord[h_idx], a_ord[h_idx + 1]])
+
+            trunc_mu = truncated_bivariate_mean(mu_pair, cov2, a_pair)
+
+            # Compute cross-covariance C_{rem,pair} from LDLT factors
+            # C[j, col] = sum_k L[j,k] * D[k] * L[col,k] for k < min(j+1, 2)
+            cov2_inv = np.linalg.inv(cov2)
+            shift_vec = trunc_mu - mu_pair
+
+            for j in range(2, n):
+                cov_j_pair = np.array([
+                    sum(L[j, k] * D[k] * L[0, k] for k in range(min(j + 1, 2))),
+                    sum(L[j, k] * D[k] * L[1, k] for k in range(min(j + 1, 2))),
+                ])
+                mu[j] += cov_j_pair @ cov2_inv @ shift_vec
+
+            # Strip first 2 rows/cols: NO rank-2 update (key difference from BME)
+            L = L[2:n, 2:n].copy()
+            D = D[2:n].copy()
+            mu_new = mu[2:n].copy()
+            n_new = n - 2
+            mu = np.zeros(n_new, dtype=np.float64)
+            mu[:n_new] = mu_new
+
+            h_idx += 2
+        else:
+            # Odd last variable: univariate conditioning
+            sigma_h = max(D[0], 1e-15)
+            sd_h = np.sqrt(sigma_h)
+            w_h = (a_ord[h_idx] - mu[0]) / sd_h
+            prob *= max(1e-300, float(norm.cdf(w_h)))
+            h_idx += 1
 
     return max(0.0, min(1.0, prob))

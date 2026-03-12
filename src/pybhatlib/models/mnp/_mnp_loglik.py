@@ -20,6 +20,7 @@ from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd
 from pybhatlib.matgradient._spherical import theta_to_corr
 from pybhatlib.models.mnp._mnp_control import MNPControl
+from pybhatlib.models.mnp._mnp_grad_analytic import mnp_analytic_gradient
 
 
 def mnp_loglik(
@@ -123,7 +124,17 @@ def mnp_loglik(
     nll = -mean_ll
 
     if return_gradient:
-        # Numerical gradient
+        # Use analytic gradient when available (ME method, single segment)
+        if (
+            control.analytic_grad
+            and control.nseg <= 1
+            and control.method == "me"
+        ):
+            return mnp_analytic_gradient(
+                theta_np, X_np, y_np, avail, n_alts, n_beta,
+                control, ranvar_indices,
+            )
+        # Numerical gradient fallback
         grad = _numerical_gradient(
             theta_np, X_np, y_np, avail, n_alts, n_beta,
             control, ranvar_indices, xp
@@ -308,8 +319,8 @@ def _compute_choice_prob(
     # Need to apply appropriate differencing transformation
 
     if control.iid:
-        # IID errors: differenced covariance = 2*I_dim (if sigma^2=1)
-        Lambda_diff = 2.0 * np.eye(dim, dtype=np.float64)
+        # IID errors: Var(eps_j - eps_chosen) = 2, Cov(eps_j-eps_c, eps_k-eps_c) = 1
+        Lambda_diff = np.ones((dim, dim), dtype=np.float64) + np.eye(dim, dtype=np.float64)
     else:
         # Build differencing matrix M such that diff_eps = M @ eps
         # where eps ~ MVN(0, Lambda_full)
@@ -431,17 +442,16 @@ def _compute_mixture_prob(
     I = X_q.shape[0]
     nseg = control.nseg
 
-    # Segment probabilities via ordered softmax (pi_1 < pi_2 < ... < pi_H)
+    # Segment probabilities via softmax (reference segment 0 at 0)
     seg_params = params.get("segment_params", np.array([]))
 
     if len(seg_params) == 0:
         pi_h = np.array([1.0])
     else:
-        # Use cumulative logistic for ordered probabilities
-        raw = np.concatenate([[0.0], np.cumsum(np.exp(seg_params))])
-        pi_h = np.exp(raw) / np.sum(np.exp(raw))
-        # Normalize
-        pi_h = pi_h / pi_h.sum()
+        raw = np.concatenate([[0.0], seg_params])
+        raw_max = raw.max()
+        exp_raw = np.exp(raw - raw_max)
+        pi_h = exp_raw / exp_raw.sum()
 
     prob = 0.0
 

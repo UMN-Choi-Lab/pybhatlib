@@ -106,7 +106,7 @@ class MNPModel(BaseModel):
         # Parse spec
         if spec is not None:
             self.X, self.var_names = parse_spec(
-                spec, self.data, self.alternatives, nseg=self.control.nseg
+                spec, self.data, self.alternatives, nseg=1
             )
         else:
             raise ValueError("spec is required")
@@ -295,10 +295,12 @@ class MNPModel(BaseModel):
             n_scale = dim
             theta0[idx:idx + n_scale] = 0.0
             idx += n_scale
-            # Correlations: start at 0
+            # Correlations: start at moderate positive correlation
+            # theta=-0.5 maps (via logistic) to ~0.4 average off-diagonal correlation,
+            # similar to GAUSS 0.5*I + 0.5*ones initial correlation structure
             n_corr = dim * (dim - 1) // 2
             if not self.control.heteronly and n_corr > 0:
-                theta0[idx:idx + n_corr] = 0.0
+                theta0[idx:idx + n_corr] = -0.5
                 idx += n_corr
 
         if self.control.mix and self.ranvar_indices is not None:
