@@ -10,6 +10,8 @@ What you will learn:
   - Why this matters for MVNCD sequential conditioning
 
 Prerequisites: t01a (vectorization basics).
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

@@ -12,6 +12,8 @@ What you will learn:
   - Numerical verification of every link
 
 Prerequisites: t02a (gradcovcor), t02b (spherical).
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

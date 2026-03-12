@@ -15,6 +15,8 @@ What you will learn:
   - Why this decomposition matters for unconstrained optimization
 
 Prerequisites: t01a (vectorization).
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

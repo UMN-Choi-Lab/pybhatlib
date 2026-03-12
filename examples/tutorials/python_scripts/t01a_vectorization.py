@@ -13,6 +13,8 @@ What you will learn:
   - nondiag: extract all non-diagonal elements
 
 Prerequisites: None.
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

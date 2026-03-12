@@ -13,6 +13,8 @@ What you will learn:
   - Best practices: eps, relative vs absolute tolerance
 
 Prerequisites: t01a, t02a, t03b.
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

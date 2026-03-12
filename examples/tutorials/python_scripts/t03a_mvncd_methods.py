@@ -11,6 +11,8 @@ What you will learn:
   - Recommended method for different problem sizes
 
 Prerequisites: t03d (univariate CDFs) recommended.
+
+Expected runtime: ~15 sec
 """
 import os, sys, time
 import numpy as np

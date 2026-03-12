@@ -11,6 +11,8 @@ What you will learn:
   - Why this is better than direct correlation parameterization
 
 Prerequisites: t02a (gradcovcor).
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

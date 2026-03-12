@@ -12,6 +12,8 @@ What you will learn:
   - When flexible covariance is worth the extra parameters
 
 Prerequisites: t04a (IID model).
+
+Expected runtime: ~4 min
 """
 import os, sys, time
 import numpy as np

@@ -12,6 +12,8 @@ What you will learn:
   - Practical tips: multiple local optima, slow convergence, baselines
 
 Prerequisites: t04d (random coefficients).
+
+Expected runtime: ~36 min
 """
 import os, sys, time
 import numpy as np

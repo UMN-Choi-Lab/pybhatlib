@@ -10,6 +10,8 @@ What you will learn:
   - Different truncation scenarios and their effects
 
 Prerequisites: t01a (vectorization), t01b (LDLT).
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

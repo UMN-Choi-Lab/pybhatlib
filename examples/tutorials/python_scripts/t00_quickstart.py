@@ -11,6 +11,8 @@ What you will learn:
   - How to interpret the output
 
 Prerequisites: None (this is the first tutorial).
+
+Expected runtime: ~1 min
 """
 import os, sys
 import numpy as np

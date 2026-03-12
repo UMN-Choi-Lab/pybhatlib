@@ -11,6 +11,8 @@ What you will learn:
   - Interpreting the covariance structure
 
 Prerequisites: t00 (quickstart).
+
+Expected runtime: ~7 min
 """
 import os, sys, time
 import numpy as np

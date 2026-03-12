@@ -20,6 +20,8 @@ What you will learn:
   - Practical guidance on method selection for different problem sizes
 
 Prerequisites: t04a (IID model), t04d (random coefficients), t04f (control options).
+
+Expected runtime: ~10 min
 """
 import os, sys, time
 import numpy as np
@@ -34,9 +36,10 @@ from pybhatlib.models.mnp import MNPModel, MNPControl
 #  Configuration
 # ============================================================
 # Paper uses H in {5, 10, 15, 20} and all 5 methods.
-# We use a smaller subset for reasonable runtime.
-H_VALUES = [5, 10]                 # H+1 = 6, 11 alternatives
-N_OBS = 3000                       # same as paper
+# We use a smaller subset for reasonable runtime (~15 min).
+# For the full experiment, increase H_VALUES and N_OBS (see Step 8).
+H_VALUES = [5]                     # H+1 = 6 alternatives
+N_OBS = 200                        # reduced from paper's 3000 for speed
 METHODS = ["me", "ovus", "tvbs"]   # subset for speed
 REFERENCE_METHOD = "tvbs"          # highest-accuracy analytic method
 MAXITER = 200
@@ -52,7 +55,7 @@ print("=" * 60)
 
 print("""
   The Monte Carlo DGP generates choice data for H+1 alternatives
-  (indexed h = 0, 1, ..., H) and N = 3000 individuals (indexed q).
+  (indexed h = 0, 1, ..., H) and N individuals (indexed q).
 
   Each individual q choosing among H+1 alternatives has utility:
 

@@ -13,6 +13,8 @@ What you will learn:
   - When to use (and not use) the IID specification
 
 Prerequisites: t00 (quickstart).
+
+Expected runtime: ~1 min
 """
 import os, sys, time
 import numpy as np

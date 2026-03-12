@@ -29,6 +29,8 @@ Target log-likelihoods (BHATLIB paper Table 1):
   (b)      -659.285
   (c)      -635.871
   (d)      -634.975
+
+Expected runtime: ~45 min
 """
 import os, sys, time
 import numpy as np

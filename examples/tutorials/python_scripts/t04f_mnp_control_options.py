@@ -11,6 +11,8 @@ What you will learn:
   - optimizer: BFGS vs L-BFGS-B
 
 Prerequisites: t00 (quickstart), t04c (heteronly).
+
+Expected runtime: <5 sec
 """
 import os, sys, time
 import numpy as np

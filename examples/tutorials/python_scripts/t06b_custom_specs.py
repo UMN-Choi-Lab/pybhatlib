@@ -13,6 +13,8 @@ What you will learn:
   - Inspecting the design matrix X
 
 Prerequisites: t00 (quickstart).
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

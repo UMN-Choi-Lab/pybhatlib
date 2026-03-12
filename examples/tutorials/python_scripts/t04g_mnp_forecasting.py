@@ -9,6 +9,8 @@ What you will learn:
   - Scenario analysis: how cost changes affect mode shares
 
 Prerequisites: t00 (quickstart).
+
+Expected runtime: ~1 min
 """
 import os, sys
 import numpy as np

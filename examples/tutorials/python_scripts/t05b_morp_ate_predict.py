@@ -10,6 +10,8 @@ What you will learn:
   - morp_predict_category: most likely category per dimension
 
 Prerequisites: t03c (rectangular MVNCD).
+
+Expected runtime: ~15 sec
 """
 import os, sys
 import numpy as np

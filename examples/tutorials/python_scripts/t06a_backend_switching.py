@@ -12,6 +12,8 @@ What you will learn:
   - When PyTorch is useful (autograd, GPU)
 
 Prerequisites: None.
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

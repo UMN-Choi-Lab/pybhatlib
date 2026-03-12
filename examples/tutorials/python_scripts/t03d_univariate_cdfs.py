@@ -11,6 +11,8 @@ What you will learn:
   - How these building blocks compose into MVNCD methods
 
 Prerequisites: None (standalone reference).
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np

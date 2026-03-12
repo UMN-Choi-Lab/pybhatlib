@@ -14,6 +14,8 @@ What you will learn:
   - Computational tradeoffs relative to the fixed-coefficient model
 
 Prerequisites: t04b (flexible covariance).
+
+Expected runtime: ~6 min
 """
 import os, sys, time
 import numpy as np

@@ -11,6 +11,8 @@ What you will learn:
   - Connection to ordered probit threshold bounds
 
 Prerequisites: t03a (MVNCD methods).
+
+Expected runtime: <5 sec
 """
 import os, sys
 import numpy as np
