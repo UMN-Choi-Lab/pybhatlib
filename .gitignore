@@ -33,6 +33,11 @@ results/
 # Original GAUSS source
 chandra_code/
 
+# Project-local docs (not for repo)
+CLAUDE.md
+GAUSS_INTEGRATION_PLAN.md
+IMPLEMENTATION_PLAN.md
+
 # OS
 .DS_Store
 Thumbs.db
