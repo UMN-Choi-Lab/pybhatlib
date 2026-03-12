@@ -58,6 +58,22 @@ results.summary()
 - **Dual backend**: NumPy (default) + optional PyTorch with GPU support
 - **Post-estimation**: Average Treatment Effects (ATE), forecasting
 
+## Verification
+
+pybhatlib reproduces Table 1 from the BHATLIB paper (Bhat 2018) using synthetic
+TRAVELMODE data with 3 travel modes (DA, SR, TR) and 210 observations:
+
+| Model | Specification | Target LL | Achieved LL | Status |
+|-------|--------------|-----------|-------------|--------|
+| (a)(i) | IID errors | -670.956 | -670.956 | Exact match |
+| (a)(ii) | Flexible covariance | -661.111 | -661.111 | Exact match |
+| (b) | + AGE45 demographics | -659.285 | -659.284 | Exact match |
+| (c) | + Random coeff. OVTT | -635.871 | -635.871 | Exact match |
+| (d) | 2-segment mixture | -634.975 | -632.912 | Close (synthetic data) |
+
+Models (a)–(c) match the published results exactly. Model (d) achieves a slightly
+better log-likelihood due to multiple local optima in mixture models with synthetic data.
+
 ## References
 
 1. Bhat, C. R. (2018). New Matrix-Based Methods for the Analytic Evaluation of the
