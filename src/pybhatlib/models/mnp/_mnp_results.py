@@ -22,17 +22,20 @@ class MNPResults:
     Attributes
     ----------
     b : NDArray
-        Estimated parameters (parametrized form).
+        Raw optimized parameters (theta-space).  Used internally for
+        prediction and forecasting.  Length equals ``n_params``.
     b_original : NDArray
-        Unparametrized coefficients.
+        BHATLIB-normalized reporting coefficients (Sigma_diff[0,0]=1).
+        Aligned with ``param_names``.  For non-IID models this has
+        one fewer element than ``b`` (one scale absorbed).
     se : NDArray
-        Standard errors.
+        Delta-method standard errors (aligned with ``b_original``).
     t_stat : NDArray
-        t-statistics (b / se).
+        t-statistics (b_original / se).
     p_value : NDArray
         Two-sided p-values.
     gradient : NDArray
-        Gradient at convergence.
+        Gradient projected into reporting space.
     ll : float
         Mean log-likelihood (per observation).
     ll_total : float

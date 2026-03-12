@@ -210,65 +210,72 @@ class MNPModel(BaseModel):
         theta_hat = result.x
         hess_inv = result.hess_inv
 
-        # Build parameter names
-        param_names = self._build_param_names()
+        # BHATLIB-normalized reporting
+        param_names = self._build_report_names()
+        (b_report, se, t_stat, p_value,
+         cov_report, corr_report, g_report) = self._normalize_for_reporting(
+            theta_hat, hess_inv, result.grad,
+        )
 
-        # Compute standard errors
-        if hess_inv is not None:
-            se = np.sqrt(np.abs(np.diag(hess_inv)) / self.N)
-        else:
-            se = np.full(self.n_params, np.nan)
-
-        # Compute unparametrized coefficients
-        b_original = self._unparametrize(theta_hat)
-
-        # t-statistics and p-values
-        with np.errstate(divide="ignore", invalid="ignore"):
-            t_stat = np.where(se > 0, b_original / se, 0.0)
-            p_value = 2.0 * (1.0 - norm.cdf(np.abs(t_stat)))
-
-        # Gradient at convergence
-        gradient = result.grad
-
-        # Correlation matrix of parameters
-        if hess_inv is not None:
-            se_outer = np.outer(se, se)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                corr_matrix = np.where(se_outer > 0, hess_inv / self.N / se_outer, 0.0)
-            np.fill_diagonal(corr_matrix, 1.0)
-        else:
-            corr_matrix = np.eye(self.n_params)
-
-        # Extract structural parameters
+        # Extract normalized structural parameters
         lambda_hat = None
         omega_hat = None
         cholesky_L = None
         segment_probs = None
 
-        from pybhatlib.models.mnp._mnp_loglik import _unpack_params, _build_lambda, _build_omega_cholesky
+        from pybhatlib.models.mnp._mnp_loglik import (
+            _build_lambda,
+            _build_omega_cholesky,
+            _unpack_params,
+        )
 
-        params = _unpack_params(theta_hat, self.n_beta, self.n_alts, self.control, self.ranvar_indices)
+        params = _unpack_params(
+            theta_hat, self.n_beta, self.n_alts,
+            self.control, self.ranvar_indices,
+        )
+        Lambda = _build_lambda(
+            params.get("lambda_params"), self.n_alts, self.control,
+        )
+        dim = self.n_alts - 1
+
+        # Compute sigma_1 for normalizing structural parameters
+        if self.control.iid:
+            sigma_1_sq = 2.0
+        else:
+            Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
+            sigma_1_sq = Sigma_diff[0, 0]
 
         if not self.control.iid and "lambda_params" in params:
-            lambda_hat = _build_lambda(params["lambda_params"], self.n_alts, self.control)
+            Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
+            lambda_hat = Sigma_diff / sigma_1_sq  # normalized
 
         if self.control.mix and self.ranvar_indices and "omega_params" in params:
-            cholesky_L = _build_omega_cholesky(params["omega_params"], self.ranvar_indices, self.control)
+            L_raw = _build_omega_cholesky(
+                params["omega_params"], self.ranvar_indices, self.control,
+            )
+            cholesky_L = L_raw / np.sqrt(sigma_1_sq)
             omega_hat = cholesky_L @ cholesky_L.T
+
+        if self.control.nseg > 1:
+            seg_params = params.get("segment_params", np.array([]))
+            if len(seg_params) > 0:
+                raw = np.concatenate([[0.0], seg_params])
+                raw -= raw.max()
+                segment_probs = np.exp(raw) / np.exp(raw).sum()
 
         return MNPResults(
             b=theta_hat,
-            b_original=b_original,
+            b_original=b_report,
             se=se,
             t_stat=t_stat,
             p_value=p_value,
-            gradient=gradient,
+            gradient=g_report,
             ll=-result.fun,
             ll_total=-result.fun * self.N,
             n_obs=self.N,
             param_names=param_names,
-            corr_matrix=corr_matrix,
-            cov_matrix=hess_inv / self.N if hess_inv is not None else np.eye(self.n_params),
+            corr_matrix=corr_report,
+            cov_matrix=cov_report,
             n_iterations=result.n_iter,
             convergence_time=elapsed,
             converged=result.converged,
@@ -419,3 +426,231 @@ class MNPModel(BaseModel):
                 idx += n_omega
 
         return b_orig
+
+    # ------------------------------------------------------------------
+    # BHATLIB-style normalized reporting
+    # ------------------------------------------------------------------
+
+    def _theta_to_report(self, theta: np.ndarray) -> np.ndarray:
+        """Map parametrized theta to BHATLIB reporting convention.
+
+        BHATLIB normalizes the differenced error covariance so that
+        Sigma_diff[0,0] = 1, absorbing one scale parameter for non-IID
+        models.  All betas and random-coefficient Cholesky elements are
+        divided by sigma_1 = sqrt(Sigma_diff[0,0]).
+        """
+        from pybhatlib.models.mnp._mnp_loglik import (
+            _build_lambda,
+            _build_omega_cholesky,
+            _unpack_params,
+        )
+
+        params = _unpack_params(
+            theta, self.n_beta, self.n_alts, self.control,
+            self.ranvar_indices,
+        )
+        Lambda = _build_lambda(
+            params.get("lambda_params"), self.n_alts, self.control,
+        )
+        dim = self.n_alts - 1
+
+        # Differenced kernel error covariance
+        if self.control.iid:
+            Sigma_diff = np.ones((dim, dim)) + np.eye(dim)
+        else:
+            Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
+
+        sigma_1 = np.sqrt(Sigma_diff[0, 0])
+        report: list[float] = []
+
+        # --- Betas ---
+        report.extend(params["beta"] / sigma_1)
+
+        # --- Covariance parameters (non-IID) ---
+        if not self.control.iid:
+            Sigma_norm = Sigma_diff / (sigma_1 ** 2)
+            d_norm = np.sqrt(np.diag(Sigma_norm))
+            Corr_norm = Sigma_norm / np.outer(d_norm, d_norm)
+
+            # Parker (correlations, upper triangle row-by-row)
+            if not self.control.heteronly:
+                for i in range(dim):
+                    for j in range(i + 1, dim):
+                        report.append(float(Corr_norm[i, j]))
+
+            # Relative scales (indices 1 .. dim-1; index 0 is normalized to 1)
+            for i in range(1, dim):
+                report.append(float(d_norm[i]))
+
+        # --- Random-coefficient Cholesky (normalized) ---
+        if (
+            self.control.mix
+            and self.ranvar_indices is not None
+            and "omega_params" in params
+        ):
+            L = _build_omega_cholesky(
+                params["omega_params"], self.ranvar_indices, self.control,
+            )
+            L_norm = L / sigma_1
+            n_rand = len(self.ranvar_indices)
+            if self.control.randdiag:
+                for i in range(n_rand):
+                    report.append(float(L_norm[i, i]))
+            else:
+                for i in range(n_rand):
+                    for j in range(i + 1):
+                        report.append(float(L_norm[i, j]))
+
+        # --- Segment parameters ---
+        if self.control.nseg > 1:
+            seg_params = params.get("segment_params", np.array([]))
+            report.extend(seg_params.tolist())
+
+            for h in range(1, self.control.nseg):
+                if h - 1 < len(params.get("segment_betas", [])):
+                    report.extend(
+                        (params["segment_betas"][h - 1] / sigma_1).tolist()
+                    )
+                if (
+                    self.control.mix
+                    and self.ranvar_indices is not None
+                    and h - 1 < len(params.get("segment_omegas", []))
+                ):
+                    L_h = _build_omega_cholesky(
+                        params["segment_omegas"][h - 1],
+                        self.ranvar_indices,
+                        self.control,
+                    )
+                    L_h_norm = L_h / sigma_1
+                    n_rand = len(self.ranvar_indices)
+                    if self.control.randdiag:
+                        for i in range(n_rand):
+                            report.append(float(L_h_norm[i, i]))
+                    else:
+                        for i in range(n_rand):
+                            for j in range(i + 1):
+                                report.append(float(L_h_norm[i, j]))
+
+        return np.array(report, dtype=np.float64)
+
+    def _build_report_names(self) -> list[str]:
+        """Build parameter names for BHATLIB reporting convention.
+
+        Compared to ``_build_param_names`` (theta-space), this drops one
+        scale parameter (absorbed by normalization) and reorders
+        covariance parameters as parker (correlations) then scale
+        (relative scales).
+        """
+        names = list(self.var_names)
+        dim = self.n_alts - 1
+
+        if not self.control.iid:
+            # Parker (correlations)
+            if not self.control.heteronly:
+                idx = 0
+                for i in range(dim):
+                    for j in range(i + 1, dim):
+                        idx += 1
+                        names.append(f"parker{idx:02d}")
+
+            # Relative scales (indices 1..dim-1)
+            for i in range(1, dim):
+                names.append(f"scale{i:02d}")
+
+        if self.control.mix and self.ranvar_indices is not None:
+            n_rand = len(self.ranvar_indices)
+            if self.control.randdiag:
+                for i in range(n_rand):
+                    names.append(f"CovCOv{i + 1:02d}")
+            else:
+                idx = 0
+                for i in range(n_rand):
+                    for j in range(i + 1):
+                        idx += 1
+                        names.append(f"CovCOv{idx:02d}")
+
+        if self.control.nseg > 1:
+            for _h in range(1, self.control.nseg):
+                names.append("segunpar")
+            for h in range(1, self.control.nseg):
+                for vn in self.var_names:
+                    names.append(f"{vn}_s{h + 1}")
+                if self.control.mix and self.ranvar_indices is not None:
+                    n_rand = len(self.ranvar_indices)
+                    if self.control.randdiag:
+                        for i in range(n_rand):
+                            names.append(f"CovCOv{i + 1:02d}_s{h + 1}")
+                    else:
+                        idx = 0
+                        for i in range(n_rand):
+                            for j in range(i + 1):
+                                idx += 1
+                                names.append(f"CovCOv{idx:02d}_s{h + 1}")
+
+        return names
+
+    def _normalize_for_reporting(
+        self,
+        theta_hat: np.ndarray,
+        hess_inv: np.ndarray | None,
+        gradient: np.ndarray | None,
+    ) -> tuple:
+        """Compute BHATLIB-normalized values with delta-method standard errors.
+
+        Returns
+        -------
+        b_report : ndarray  — normalized coefficient estimates
+        se : ndarray         — delta-method standard errors
+        t_stat : ndarray     — b_report / se
+        p_value : ndarray    — two-sided p-values
+        cov_report : ndarray — covariance matrix of reporting params
+        corr_report : ndarray — correlation matrix of reporting params
+        g_report : ndarray   — gradient projected into reporting space
+        """
+        b_report = self._theta_to_report(theta_hat)
+        n_report = len(b_report)
+        n_theta = len(theta_hat)
+
+        # Numerical Jacobian  J[k, i] = d(report_k)/d(theta_i)
+        eps = 1e-7
+        J = np.zeros((n_report, n_theta), dtype=np.float64)
+        for i in range(n_theta):
+            theta_p = theta_hat.copy()
+            theta_p[i] += eps
+            theta_m = theta_hat.copy()
+            theta_m[i] -= eps
+            J[:, i] = (
+                self._theta_to_report(theta_p) - self._theta_to_report(theta_m)
+            ) / (2.0 * eps)
+
+        # Delta method:  Cov(report) = J @ Cov(theta) @ J^T
+        if hess_inv is not None:
+            cov_theta = hess_inv / self.N
+            cov_report = J @ cov_theta @ J.T
+            se = np.sqrt(np.maximum(np.diag(cov_report), 0.0))
+        else:
+            cov_report = np.eye(n_report)
+            se = np.full(n_report, np.nan)
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_stat = np.where(se > 0, b_report / se, 0.0)
+            p_value = 2.0 * (1.0 - norm.cdf(np.abs(t_stat)))
+
+        # Correlation matrix of reporting parameters
+        if hess_inv is not None:
+            se_outer = np.outer(se, se)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                corr_report = np.where(
+                    se_outer > 0, cov_report / se_outer, 0.0,
+                )
+            np.fill_diagonal(corr_report, 1.0)
+        else:
+            corr_report = np.eye(n_report)
+
+        # Gradient projected into reporting space via pseudo-inverse
+        if gradient is not None:
+            g_report = np.linalg.pinv(J).T @ gradient
+        else:
+            g_report = np.zeros(n_report)
+
+        return b_report, se, t_stat, p_value, cov_report, corr_report, g_report
