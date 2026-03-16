@@ -12,11 +12,6 @@ matrix operations, gradient-enabled routines for multivariate distribution evalu
 
 ## Installation
 
-```bash
-pip install pybhatlib              # NumPy backend (default)
-pip install pybhatlib[torch]       # With optional PyTorch backend
-```
-
 For development:
 
 ```bash
