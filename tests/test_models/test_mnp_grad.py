@@ -424,17 +424,19 @@ class TestEdgeCases:
         assert nll > 0
         np.testing.assert_allclose(grad, fd_grad, atol=1e-8, rtol=1e-6)
 
-    def test_nseg_raises(self):
-        """nseg > 1 should raise NotImplementedError."""
+    def test_nseg2_runs(self):
+        """nseg=2 should compute gradient without error (Phase 3.2)."""
         N, I, n_vars = 5, 3, 2
         X, y, avail = _make_data(N, I, n_vars)
-        theta = np.array([0.3, -0.2])
+        # Layout: beta_1(2) + seg_params(1) + beta_2(2) = 5
+        theta = np.array([0.3, -0.2, 0.5, 0.1, -0.3])
         control = MNPControl(iid=True, nseg=2, method="me")
 
-        with pytest.raises(NotImplementedError, match="nseg > 1"):
-            mnp_analytic_gradient(
-                theta, X, y, avail, I, n_vars, control,
-            )
+        nll, grad = mnp_analytic_gradient(
+            theta, X, y, avail, I, n_vars, control,
+        )
+        assert nll > 0
+        assert len(grad) == 5
 
 
 # ---------------------------------------------------------------------------
