@@ -21,12 +21,279 @@ Research Part B, 109, 238-256.
 
 from __future__ import annotations
 
+import math as _math
+
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.gradmvn._mvncd import _bvn_cdf, _reorder_by_limits
 from pybhatlib.gradmvn._trunc_grads import grad_noncdfbvn
+
+# ---------------------------------------------------------------------------
+# Numba JIT support
+# ---------------------------------------------------------------------------
+try:
+    import numba
+    from pybhatlib.vecup._ldlt import HAS_NUMBA
+except ImportError:
+    HAS_NUMBA = False
+
+
+if HAS_NUMBA:
+    @numba.njit(cache=True)
+    def _ndtr_jit(x):
+        """Numba-compatible standard normal CDF via erfc."""
+        return 0.5 * _math.erfc(-x / _math.sqrt(2.0))
+
+    @numba.njit(cache=True)
+    def _std_npdf_jit(x):
+        """Numba-compatible standard normal PDF."""
+        return (1.0 / _math.sqrt(2.0 * _math.pi)) * _math.exp(-0.5 * x * x)
+
+    @numba.njit(cache=True)
+    def _grad_me_adjoint_jit(a_ord, sigma_ord, K):
+        """JIT-compiled ME gradient via backward/adjoint differentiation.
+
+        Parameters
+        ----------
+        a_ord : ndarray, shape (K,) — reordered upper limits
+        sigma_ord : ndarray, shape (K, K) — reordered covariance matrix
+        K : int — number of dimensions
+
+        Returns
+        -------
+        prob : float
+        grad_a_ord : ndarray, shape (K,)
+            d(prob)/d(a_ord_k) (in reordered space, prob-scaled)
+        adj_X_out : ndarray, shape (K, K)
+            d(log prob)/d(sigma_ord_{ij}) (in reordered space, NOT prob-scaled)
+        """
+        # Storage for forward pass intermediates
+        sigs = np.zeros(K)
+        sds = np.zeros(K)
+        ws = np.zeros(K)
+        imrs = np.zeros(K)
+        lams = np.zeros(K)
+        deltas = np.zeros(K)
+        shifts = np.zeros(K)
+        gammas = np.zeros(K)
+
+        # vs_storage[h, :K-h-1] stores v_h (length K-h-1)
+        vs_storage = np.zeros((K, K))
+
+        # X stored at each step: X_store[h] is the (K-h) x (K-h) matrix
+        # We store the full forward state in a list of matrices
+        # Actually, in Numba we use a 3D array: X_all[h, :K-h, :K-h]
+        X_all = np.zeros((K, K, K))
+
+        # mu stored at each step
+        mu_all = np.zeros((K, K))
+
+        # ---- Forward pass ----
+        # Initialize X = sigma_ord, mu = 0
+        for i in range(K):
+            for j in range(K):
+                X_all[0, i, j] = sigma_ord[i, j]
+        # mu_all[0, :] already zeros
+
+        log_prob = 0.0
+
+        for h in range(K):
+            n = K - h
+            sig = X_all[h, 0, 0]
+            if sig < 1e-15:
+                sig = 1e-15
+            sd = _math.sqrt(sig)
+            w = (a_ord[h] - mu_all[h, 0]) / sd
+
+            phi_w = _std_npdf_jit(w)
+            Phi_w = _ndtr_jit(w)
+            if Phi_w < 1e-300:
+                Phi_w = 1e-300
+            imr = phi_w / Phi_w
+            lam = -imr
+            delta = lam * (lam - w)
+
+            sigs[h] = sig
+            sds[h] = sd
+            ws[h] = w
+            imrs[h] = imr
+            lams[h] = lam
+            deltas[h] = delta
+            log_prob += _math.log(Phi_w)
+
+            if log_prob < -690.0:
+                # prob < ~1e-300, return zeros
+                return 0.0, np.zeros(K), np.zeros((K, K))
+
+            if n <= 1:
+                break
+
+            # Conditioning step
+            # v = X[1:, 0] / sig
+            nm1 = n - 1
+            for i in range(nm1):
+                vs_storage[h, i] = X_all[h, i + 1, 0] / sig
+
+            shift = sd * lam
+            gamma = sig * delta
+            if gamma < 0.0:
+                gamma = 0.0
+
+            shifts[h] = shift
+            gammas[h] = gamma
+
+            # Update state for next step
+            # mu_next = mu[1:] + v * shift
+            # X_next = X[1:, 1:] - gamma * outer(v, v)
+            for i in range(nm1):
+                mu_all[h + 1, i] = mu_all[h, i + 1] + vs_storage[h, i] * shift
+
+            for i in range(nm1):
+                for j in range(nm1):
+                    X_all[h + 1, i, j] = (
+                        X_all[h, i + 1, j + 1]
+                        - gamma * vs_storage[h, i] * vs_storage[h, j]
+                    )
+
+        prob = _math.exp(log_prob)
+        if prob < 1e-300:
+            return 0.0, np.zeros(K), np.zeros((K, K))
+
+        # ---- Backward pass ----
+        grad_a_ord = np.zeros(K)
+
+        # Initialize from last step h=K-1 (1x1 state, factor only)
+        last_h = K - 1
+        adj_w = imrs[last_h]
+        grad_a_ord[last_h] = adj_w / sds[last_h]
+
+        # adj_X_next and adj_mu_next stored in fixed-size arrays
+        # At step h, the active dimension is (K - h - 1) for "next" state
+        # We'll use K×K for adj_X and K for adj_mu, tracking active size
+
+        # For the last step (h=K-1), adj_X_next is 1×1
+        adj_X = np.zeros((K, K))
+        adj_mu = np.zeros(K)
+
+        adj_X[0, 0] = -adj_w * ws[last_h] / (2.0 * sigs[last_h])
+        adj_mu[0] = -adj_w / sds[last_h]
+
+        # adj_X and adj_mu represent the "next" adjoint (size n_next = K - h - 1)
+        # After processing step h, they become the "current" adjoint of size (K - h)
+
+        # Reverse through conditioning steps K-2 down to 0
+        for h in range(K - 2, -1, -1):
+            n = K - h
+            nm1 = n - 1
+            sig = sigs[h]
+            sd = sds[h]
+            w = ws[h]
+            lam = lams[h]
+            delta = deltas[h]
+            shift = shifts[h]
+            gamma = gammas[h]
+
+            # adj_X_next is nm1 × nm1 (stored in adj_X[0:nm1, 0:nm1])
+            # adj_mu_next is nm1 (stored in adj_mu[0:nm1])
+            # We need to produce adj_X_curr (n × n) and adj_mu_curr (n)
+
+            adj_X_curr = np.zeros((K, K))
+            adj_mu_curr = np.zeros(K)
+
+            # Reverse: X_next = X[1:,1:] - gamma * outer(v, v)
+            # adj_X_curr[1:,1:] += adj_X_next
+            for i in range(nm1):
+                for j in range(nm1):
+                    adj_X_curr[i + 1, j + 1] += adj_X[i, j]
+
+            # adj_gamma = -v^T @ adj_X_next @ v
+            adj_gamma = 0.0
+            for i in range(nm1):
+                for j in range(nm1):
+                    adj_gamma -= vs_storage[h, i] * adj_X[i, j] * vs_storage[h, j]
+
+            # adj_v = -gamma * (adj_X_next + adj_X_next^T) @ v
+            adj_v = np.zeros(K)
+            for i in range(nm1):
+                s = 0.0
+                for j in range(nm1):
+                    s += (adj_X[i, j] + adj_X[j, i]) * vs_storage[h, j]
+                adj_v[i] = -gamma * s
+
+            # Reverse: mu_next = mu[1:] + v * shift
+            # adj_mu_curr[1:] += adj_mu_next
+            for i in range(nm1):
+                adj_mu_curr[i + 1] += adj_mu[i]
+
+            # adj_v += adj_mu_next * shift
+            for i in range(nm1):
+                adj_v[i] += adj_mu[i] * shift
+
+            # adj_shift = dot(adj_mu_next, v)
+            adj_shift = 0.0
+            for i in range(nm1):
+                adj_shift += adj_mu[i] * vs_storage[h, i]
+
+            # Reverse: v = X[1:, 0] / sig
+            # adj_X_curr[1:, 0] += adj_v / sig
+            for i in range(nm1):
+                adj_X_curr[i + 1, 0] += adj_v[i] / sig
+
+            # adj_sig = -dot(adj_v, v) / sig
+            adj_sig = 0.0
+            for i in range(nm1):
+                adj_sig -= adj_v[i] * vs_storage[h, i]
+            adj_sig /= sig
+
+            # Reverse: gamma = sig * delta
+            adj_sig += adj_gamma * delta
+            adj_delta_val = adj_gamma * sig
+
+            # Reverse: shift = sqrt(sig) * lam
+            adj_lam = adj_shift * sd
+            adj_sig += adj_shift * lam / (2.0 * sd)
+
+            # Reverse: delta = lam * (lam - w)
+            adj_lam += adj_delta_val * (2.0 * lam - w)
+            adj_w_h = -adj_delta_val * lam
+
+            # Reverse: lam = -phi(w)/Phi(w), d(lam)/d(w) = delta
+            adj_w_h += adj_lam * delta
+
+            # Factor contribution: d(log Phi(w))/dw = phi/Phi = imr
+            adj_w_h += imrs[h]
+
+            # Reverse: w = (a_ord[h] - mu[0]) / sd
+            grad_a_ord[h] = adj_w_h / sd
+            adj_mu_curr[0] -= adj_w_h / sd
+            adj_sig -= adj_w_h * w / (2.0 * sig)
+
+            # sig = X[0, 0]
+            adj_X_curr[0, 0] += adj_sig
+
+            # Move curr -> next for the next (outer) step
+            for i in range(n):
+                adj_mu[i] = adj_mu_curr[i]
+                for j in range(n):
+                    adj_X[i, j] = adj_X_curr[i, j]
+
+            # Zero out the rest (not strictly needed but clean)
+            for i in range(n, K):
+                adj_mu[i] = 0.0
+                for j in range(K):
+                    adj_X[i, j] = 0.0
+                    adj_X[j, i] = 0.0
+
+        # adj_X[0:K, 0:K] is now d(log P)/d(sigma_ord_{ij})
+        return prob, grad_a_ord, adj_X
 
 
 def mvncd_grad_me_analytic(
@@ -72,8 +339,8 @@ def _grad_me_k1(
     sig = sigma[0, 0]
     sd = np.sqrt(max(sig, 1e-30))
     w = a[0] / sd
-    prob = float(norm.cdf(w))
-    phi_w = norm.pdf(w)
+    prob = float(_ndtr(w))
+    phi_w = _std_npdf(w)
     grad_a = np.array([phi_w / sd])
     grad_sigma = np.array([phi_w * (-w / (2.0 * sig))])
     return prob, grad_a, grad_sigma
@@ -105,6 +372,49 @@ def _grad_me_adjoint(
     K = len(a)
     a_ord, sigma_ord, order = _reorder_by_limits(a, sigma)
 
+    if HAS_NUMBA:
+        prob, grad_a_ord, adj_X_next = _grad_me_adjoint_jit(
+            a_ord, sigma_ord, K
+        )
+        if prob < 1e-300:
+            return 0.0, np.zeros(K), np.zeros(K * (K + 1) // 2)
+
+        # ---- Un-reorder to original variable ordering ----
+        grad_a_log = np.zeros(K)
+        grad_a_log[order] = grad_a_ord
+
+        adj_sigma_full = np.zeros((K, K))
+        # Un-reorder: adj_sigma_full[order[i], order[j]] = adj_X_next[i, j]
+        for i in range(K):
+            for j in range(K):
+                adj_sigma_full[order[i], order[j]] = adj_X_next[i, j]
+
+        # ---- Convert full matrix adjoint to vech (row-based upper triangular) ----
+        n_vech = K * (K + 1) // 2
+        grad_sigma_log = np.zeros(n_vech)
+        idx = 0
+        for i in range(K):
+            for j in range(i, K):
+                if i == j:
+                    grad_sigma_log[idx] = adj_sigma_full[i, i]
+                else:
+                    grad_sigma_log[idx] = (
+                        adj_sigma_full[i, j] + adj_sigma_full[j, i]
+                    )
+                idx += 1
+
+        return prob, prob * grad_a_log, prob * grad_sigma_log
+
+    return _grad_me_adjoint_python(a_ord, sigma_ord, order, K)
+
+
+def _grad_me_adjoint_python(
+    a_ord: NDArray, sigma_ord: NDArray, order: NDArray, K: int,
+) -> tuple[float, NDArray, NDArray]:
+    """Pure Python fallback for ME gradient (K >= 3).
+
+    This is the original implementation, used when Numba is not available.
+    """
     # Storage for backward pass
     sigs = np.zeros(K)
     sds = np.zeros(K)
@@ -127,8 +437,8 @@ def _grad_me_adjoint(
         sd = np.sqrt(sig)
         w = (a_ord[h] - mu[0]) / sd
 
-        phi_w = norm.pdf(w)
-        Phi_w = max(norm.cdf(w), 1e-300)
+        phi_w = _std_npdf(w)
+        Phi_w = max(_ndtr(w), 1e-300)
         imr = phi_w / Phi_w
         lam = -imr
         delta = lam * (lam - w)
