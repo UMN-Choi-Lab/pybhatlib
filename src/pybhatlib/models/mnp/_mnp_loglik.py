@@ -8,16 +8,20 @@ Implements the log-likelihood for Multinomial Probit models with:
 
 The probability for each observation is computed via the MVNCD function,
 which evaluates (I-1)-dimensional multivariate normal CDFs.
+
+Phase 2 optimization: For single-segment models (IID, flexible, mixed),
+the observation loop is vectorized via Numba prange when available.
+Pre-computed shared quantities (Lambda_diff, differencing matrices) are
+reused across observations.
 """
 
 from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
 
 from pybhatlib.backend._array_api import get_backend
-from pybhatlib.gradmvn._mvncd import mvncd
+from pybhatlib.gradmvn._mvncd import mvncd, mvncd_log_batch
 from pybhatlib.matgradient._spherical import theta_to_corr
 from pybhatlib.models.mnp._mnp_control import MNPControl
 from pybhatlib.models.mnp._mnp_grad_analytic import mnp_analytic_gradient
@@ -91,44 +95,26 @@ def mnp_loglik(
     if control.mix and omega_params is not None:
         Omega_L = _build_omega_cholesky(omega_params, ranvar_indices, control)
 
-    # Compute log-likelihood
-    total_ll = 0.0
-
-    for q in range(N):
-        # Available alternatives for this observation
-        if avail is not None:
-            avail_q = avail[q]
-        else:
-            avail_q = np.ones(I)
-
-        chosen = y_np[q]
-
-        if control.nseg <= 1:
-            # Single segment
-            prob_q = _compute_choice_prob(
-                X_np[q], beta, chosen, avail_q, Lambda, Omega_L,
-                ranvar_indices, control, xp
-            )
-        else:
-            # Mixture of normals
-            prob_q = _compute_mixture_prob(
-                X_np[q], params, chosen, avail_q, Lambda,
-                ranvar_indices, control, xp
-            )
-
-        # Safeguard against log(0)
-        prob_q = max(prob_q, 1e-300)
-        total_ll += np.log(prob_q)
+    # --- Phase 2: Try vectorized batch path ---
+    if control.nseg <= 1:
+        total_ll = _batch_loglik_single_segment(
+            X_np, y_np, avail, beta, Lambda, Omega_L,
+            ranvar_indices, control, I, N, xp,
+        )
+    else:
+        # Mixture of normals: per-observation loop with segment mixing
+        total_ll = _sequential_loglik_mixture(
+            X_np, y_np, avail, params, Lambda, ranvar_indices, control, I, N, xp,
+        )
 
     mean_ll = total_ll / N
     nll = -mean_ll
 
     if return_gradient:
-        # Use analytic gradient when available (ME method, single segment)
+        # Use analytic gradient when available (ME or OVUS method)
         if (
             control.analytic_grad
-            and control.nseg <= 1
-            and control.method == "me"
+            and control.method in ("me", "ovus")
         ):
             return mnp_analytic_gradient(
                 theta_np, X_np, y_np, avail, n_alts, n_beta,
@@ -143,6 +129,312 @@ def mnp_loglik(
 
     return nll
 
+
+# ---------------------------------------------------------------------------
+# Phase 2: Vectorized batch log-likelihood for single-segment models
+# ---------------------------------------------------------------------------
+
+def _batch_loglik_single_segment(
+    X_np: np.ndarray,
+    y_np: np.ndarray,
+    avail: np.ndarray | None,
+    beta: np.ndarray,
+    Lambda: np.ndarray,
+    Omega_L: np.ndarray | None,
+    ranvar_indices: list[int] | None,
+    control: MNPControl,
+    I: int,
+    N: int,
+    xp,
+) -> float:
+    """Compute total log-likelihood for single-segment models using batch MVNCD.
+
+    Pre-computes shared quantities (Lambda_diff, diff_V_all) and dispatches
+    to mvncd_log_batch for parallel evaluation when possible.
+    """
+    has_random_coeff = Omega_L is not None and ranvar_indices is not None
+
+    # Check if all observations have full availability (common case)
+    all_avail = avail is None or np.all(avail > 0.5)
+
+    if all_avail and not has_random_coeff:
+        return _batch_loglik_shared_cov(
+            X_np, y_np, beta, Lambda, control, I, N, xp,
+        )
+    elif all_avail and has_random_coeff:
+        return _batch_loglik_mixed(
+            X_np, y_np, beta, Lambda, Omega_L, ranvar_indices, control, I, N, xp,
+        )
+    else:
+        # Varying availability: fall back to per-observation loop
+        # (different observations may have different avail_alts dimensions)
+        return _sequential_loglik_single_segment(
+            X_np, y_np, avail, beta, Lambda, Omega_L,
+            ranvar_indices, control, I, N, xp,
+        )
+
+
+def _batch_loglik_shared_cov(
+    X_np: np.ndarray,
+    y_np: np.ndarray,
+    beta: np.ndarray,
+    Lambda: np.ndarray,
+    control: MNPControl,
+    I: int,
+    N: int,
+    xp,
+) -> float:
+    """Batch log-likelihood for IID and flexible covariance (no random coeff).
+
+    Lambda_diff is shared across all observations. Pre-compute it once,
+    then vectorize diff_V computation and batch MVNCD evaluation.
+    """
+    dim = I - 1  # all alternatives available, so dim = I-1
+
+    # Pre-compute Lambda_diff once (shared across all observations)
+    if control.iid:
+        Lambda_diff = np.ones((dim, dim), dtype=np.float64) + np.eye(dim, dtype=np.float64)
+    else:
+        # Build differencing matrix for the "worst case" ordering
+        # Since all alts are available, avail_alts for chosen=c is all j != c
+        # We compute Lambda_diff per unique chosen alternative
+        Lambda_full = np.eye(I, dtype=np.float64)
+        Lambda_full[1:, 1:] = Lambda + np.eye(I - 1)
+        Lambda_diff = None  # Will be computed per unique chosen alt
+
+    # Compute utilities for all observations: V = X @ beta, shape (N, I)
+    V_all = np.einsum('nij,j->ni', X_np, beta)
+
+    # Group observations by chosen alternative for vectorized diff_V computation
+    unique_chosen = np.unique(y_np)
+
+    if control.iid:
+        # IID: Lambda_diff is the same regardless of chosen alt
+        # Build diff_V_all: shape (N, dim)
+        # For each observation q with chosen=c:
+        #   avail_alts = [0, 1, ..., c-1, c+1, ..., I-1]  (sorted)
+        #   diff_V[k] = V[q, c] - V[q, avail_alts[k]]
+        diff_V_all = _compute_diff_V_all(V_all, y_np, I, N, dim)
+        log_probs = mvncd_log_batch(diff_V_all, Lambda_diff, method="me")
+        return float(np.sum(log_probs))
+    else:
+        # Flexible cov: Lambda_diff depends on which alt is chosen
+        # (because the differencing matrix M depends on chosen)
+        # Group by chosen alt and batch each group
+        total_ll = 0.0
+        for c in unique_chosen:
+            mask = y_np == c
+            N_c = int(np.sum(mask))
+            if N_c == 0:
+                continue
+
+            # Build differencing matrix for chosen=c
+            avail_alts_c = [j for j in range(I) if j != c]
+            M_c = np.zeros((dim, I), dtype=np.float64)
+            for k, j in enumerate(avail_alts_c):
+                M_c[k, j] = 1.0
+                M_c[k, c] = -1.0
+
+            Lambda_diff_c = M_c @ Lambda_full @ M_c.T
+            Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
+
+            # Compute diff_V for this group
+            V_group = V_all[mask]  # (N_c, I)
+            diff_V_group = np.empty((N_c, dim), dtype=np.float64)
+            for k, j in enumerate(avail_alts_c):
+                diff_V_group[:, k] = V_group[:, c] - V_group[:, j]
+
+            log_probs = mvncd_log_batch(diff_V_group, Lambda_diff_c, method="me")
+            total_ll += float(np.sum(log_probs))
+
+        return total_ll
+
+
+def _compute_diff_V_all(
+    V_all: np.ndarray,
+    y_np: np.ndarray,
+    I: int,
+    N: int,
+    dim: int,
+) -> np.ndarray:
+    """Compute differenced utilities for all observations (IID case).
+
+    For IID models, the ordering of avail_alts doesn't affect Lambda_diff
+    (it's always I + 11^T), so we use a consistent ordering:
+    avail_alts = [0, 1, ..., chosen-1, chosen+1, ..., I-1].
+
+    Parameters
+    ----------
+    V_all : ndarray, shape (N, I)
+        Utilities for all observations and alternatives.
+    y_np : ndarray, shape (N,)
+        Chosen alternative for each observation.
+    I : int
+        Number of alternatives.
+    N : int
+        Number of observations.
+    dim : int
+        I - 1 (number of non-chosen alternatives).
+
+    Returns
+    -------
+    diff_V_all : ndarray, shape (N, dim)
+        Differenced utilities: V[q, chosen] - V[q, j] for each j != chosen.
+    """
+    diff_V_all = np.empty((N, dim), dtype=np.float64)
+
+    # Vectorized: for each observation, extract V_chosen and subtract non-chosen
+    V_chosen = V_all[np.arange(N), y_np]  # shape (N,)
+
+    for q in range(N):
+        c = y_np[q]
+        k = 0
+        for j in range(I):
+            if j != c:
+                diff_V_all[q, k] = V_chosen[q] - V_all[q, j]
+                k += 1
+
+    return diff_V_all
+
+
+def _batch_loglik_mixed(
+    X_np: np.ndarray,
+    y_np: np.ndarray,
+    beta: np.ndarray,
+    Lambda: np.ndarray,
+    Omega_L: np.ndarray,
+    ranvar_indices: list[int],
+    control: MNPControl,
+    I: int,
+    N: int,
+    xp,
+) -> float:
+    """Batch log-likelihood for mixed MNP (random coefficients).
+
+    Xi_diff varies per observation (because X_rand varies), so we build
+    per-observation covariance matrices and use mvncd_log_batch with per_obs_sigma.
+    """
+    dim = I - 1
+    Omega = Omega_L @ Omega_L.T
+
+    # Compute utilities for all observations
+    V_all = np.einsum('nij,j->ni', X_np, beta)
+
+    # Build Lambda_full
+    if control.iid:
+        Lambda_full = np.eye(I, dtype=np.float64)
+    else:
+        Lambda_full = np.eye(I, dtype=np.float64)
+        Lambda_full[1:, 1:] = Lambda + np.eye(I - 1)
+
+    # Group by chosen alternative
+    unique_chosen = np.unique(y_np)
+    total_ll = 0.0
+
+    for c in unique_chosen:
+        mask = y_np == c
+        N_c = int(np.sum(mask))
+        if N_c == 0:
+            continue
+
+        # Build differencing matrix for chosen=c
+        avail_alts_c = [j for j in range(I) if j != c]
+        M_c = np.zeros((dim, I), dtype=np.float64)
+        for k, j in enumerate(avail_alts_c):
+            M_c[k, j] = 1.0
+            M_c[k, c] = -1.0
+
+        # Compute diff_V for this group
+        V_group = V_all[mask]
+        diff_V_group = np.empty((N_c, dim), dtype=np.float64)
+        for k, j in enumerate(avail_alts_c):
+            diff_V_group[:, k] = V_group[:, c] - V_group[:, j]
+
+        # Build per-observation Xi_diff
+        X_group = X_np[mask]  # (N_c, I, n_vars)
+        sigma_all = np.empty((N_c, dim, dim), dtype=np.float64)
+        for qi in range(N_c):
+            X_rand_q = X_group[qi][:, ranvar_indices]  # (I, n_rand)
+            Omega_tilde_q = X_rand_q @ Omega @ X_rand_q.T  # (I, I)
+            Xi_full_q = Omega_tilde_q + Lambda_full
+            Xi_diff_q = M_c @ Xi_full_q @ M_c.T
+            Xi_diff_q = 0.5 * (Xi_diff_q + Xi_diff_q.T)
+            sigma_all[qi] = Xi_diff_q
+
+        log_probs = mvncd_log_batch(
+            diff_V_group, sigma_all[0], method="me", per_obs_sigma=sigma_all,
+        )
+        total_ll += float(np.sum(log_probs))
+
+    return total_ll
+
+
+def _sequential_loglik_single_segment(
+    X_np: np.ndarray,
+    y_np: np.ndarray,
+    avail: np.ndarray | None,
+    beta: np.ndarray,
+    Lambda: np.ndarray,
+    Omega_L: np.ndarray | None,
+    ranvar_indices: list[int] | None,
+    control: MNPControl,
+    I: int,
+    N: int,
+    xp,
+) -> float:
+    """Sequential per-observation log-likelihood (fallback for varying availability)."""
+    total_ll = 0.0
+    for q in range(N):
+        if avail is not None:
+            avail_q = avail[q]
+        else:
+            avail_q = np.ones(I)
+
+        chosen = y_np[q]
+        prob_q = _compute_choice_prob(
+            X_np[q], beta, chosen, avail_q, Lambda, Omega_L,
+            ranvar_indices, control, xp
+        )
+        prob_q = max(prob_q, 1e-300)
+        total_ll += np.log(prob_q)
+
+    return total_ll
+
+
+def _sequential_loglik_mixture(
+    X_np: np.ndarray,
+    y_np: np.ndarray,
+    avail: np.ndarray | None,
+    params: dict,
+    Lambda: np.ndarray,
+    ranvar_indices: list[int] | None,
+    control: MNPControl,
+    I: int,
+    N: int,
+    xp,
+) -> float:
+    """Sequential per-observation log-likelihood for mixture-of-normals models."""
+    total_ll = 0.0
+    for q in range(N):
+        if avail is not None:
+            avail_q = avail[q]
+        else:
+            avail_q = np.ones(I)
+
+        chosen = y_np[q]
+        prob_q = _compute_mixture_prob(
+            X_np[q], params, chosen, avail_q, Lambda,
+            ranvar_indices, control, xp
+        )
+        prob_q = max(prob_q, 1e-300)
+        total_ll += np.log(prob_q)
+
+    return total_ll
+
+
+# ---------------------------------------------------------------------------
+# Parameter unpacking and covariance construction
+# ---------------------------------------------------------------------------
 
 def _unpack_params(
     theta: np.ndarray,
@@ -342,10 +634,9 @@ def _compute_choice_prob(
     # Symmetrize
     Lambda_diff = 0.5 * (Lambda_diff + Lambda_diff.T)
 
-    # Ensure positive definite
-    eigvals = np.linalg.eigvalsh(Lambda_diff)
-    if eigvals.min() < 1e-10:
-        Lambda_diff += np.eye(dim) * (1e-10 - eigvals.min())
+    # PD check skipped: Lambda_diff = M @ Lambda_full @ M.T is always PD
+    # because Lambda_full is PD (constructed from exp(params)) and M has full row rank.
+    # For IID, Lambda_diff = I + 11^T has eigenvalues dim+1 and 1.
 
     # P(diff_eps < diff_V) = P(Z < diff_V) for Z ~ MVN(0, Lambda_diff)
     prob = mvncd(xp.array(diff_V), xp.array(Lambda_diff), method=control.method, xp=xp)
@@ -416,10 +707,8 @@ def _compute_mixed_choice_prob(
     Xi_diff = M @ Xi_full @ M.T
     Xi_diff = 0.5 * (Xi_diff + Xi_diff.T)
 
-    # Ensure positive definite
-    eigvals = np.linalg.eigvalsh(Xi_diff)
-    if eigvals.min() < 1e-10:
-        Xi_diff += np.eye(dim) * (1e-10 - eigvals.min())
+    # PD check skipped: Xi_full = Omega_tilde + Lambda_full is PD
+    # and M @ Xi_full @ M.T is PD since M has full row rank.
 
     prob = mvncd(xp.array(diff_V), xp.array(Xi_diff), method=control.method, xp=xp)
     return max(prob, 1e-300)
@@ -463,7 +752,7 @@ def _compute_mixture_prob(
 
     V_1 = X_q @ beta_1
     prob += pi_h[0] * _compute_mixed_choice_prob(
-        X_q, V_1, chosen, avail_q, Lambda, Omega_L_1 or np.eye(1),
+        X_q, V_1, chosen, avail_q, Lambda, Omega_L_1 if Omega_L_1 is not None else np.eye(1),
         ranvar_indices or [], control, xp
     ) if control.mix else pi_h[0] * _compute_choice_prob(
         X_q, beta_1, chosen, avail_q, Lambda, None, None, control, xp

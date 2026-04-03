@@ -1,8 +1,9 @@
 """Multivariate distributions and gradients (reimplements GAUSS Gradmvn.src)."""
 
-from pybhatlib.gradmvn._mvncd import mvncd, mvncd_batch, mvncd_rect
+from pybhatlib.gradmvn._mvncd import mvncd, mvncd_batch, mvncd_log_batch, mvncd_rect
 from pybhatlib.gradmvn._mvncd_grad import MVNCDGradResult, mvncd_grad
 from pybhatlib.gradmvn._mvncd_grad_analytic import mvncd_grad_me_analytic
+from pybhatlib.gradmvn._mvncd_grad_ovus import mvncd_grad_ovus_analytic
 from pybhatlib.gradmvn._cond_trunc_grads import (
     gcondcov,
     gcondcovtrunc,
@@ -32,10 +33,12 @@ __all__ = [
     "gcondmeantrunc",
     "mvncd",
     "mvncd_batch",
+    "mvncd_log_batch",
     "mvncd_rect",
     "MVNCDGradResult",
     "mvncd_grad",
     "mvncd_grad_me_analytic",
+    "mvncd_grad_ovus_analytic",
     "gge_ordering",
     "grad_noncdfn",
     "grad_cdf_bvn",
