@@ -7,6 +7,17 @@ from numpy.typing import NDArray
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
 
+# ---------------------------------------------------------------------------
+# Numba availability check
+# ---------------------------------------------------------------------------
+try:
+    import numba
+    HAS_NUMBA = True
+except ImportError:
+    HAS_NUMBA = False
+
+import math as _math
+
 
 def normal_pdf(x: NDArray, *, xp=None) -> NDArray:
     """Standard normal probability density function.
@@ -117,13 +128,184 @@ _GL20_X = np.array([
 ])
 
 
+# ---------------------------------------------------------------------------
+# JIT-compiled bivariate normal CDF (Genz BVND algorithm)
+# ---------------------------------------------------------------------------
+if HAS_NUMBA:
+    @numba.njit(cache=True)
+    def _ndtr_jit(x):
+        """Numba-compatible standard normal CDF via erfc."""
+        return 0.5 * _math.erfc(-x / _math.sqrt(2.0))
+
+    @numba.njit(cache=True)
+    def _bvnd_jit(dh, dk, r,
+                  gl6_w, gl6_x, gl12_w, gl12_x, gl20_w, gl20_x):
+        """JIT-compiled Genz BVND algorithm.
+
+        Computes P(X > dh, Y > dk) for standard bivariate normal with corr r.
+        GL arrays are passed as arguments to avoid closure over module-level arrays.
+        """
+        TWOPI = 2.0 * _math.pi
+
+        abs_r = abs(r)
+        if abs_r < 0.925:
+            # Low-to-moderate correlation: direct GL quadrature
+            if abs_r < 0.3:
+                ng = 3
+                w = gl6_w
+                x = gl6_x
+            elif abs_r < 0.75:
+                ng = 6
+                w = gl12_w
+                x = gl12_x
+            else:
+                ng = 10
+                w = gl20_w
+                x = gl20_x
+
+            hk = dh * dk
+            bvn = 0.0
+
+            if abs_r > 0:
+                hs = (dh * dh + dk * dk) / 2.0
+                asr = _math.asin(r)
+                for i in range(ng):
+                    for isign_idx in range(2):
+                        isign = 1 if isign_idx == 0 else -1
+                        sn = _math.sin(asr * (isign * x[i] + 1.0) / 2.0)
+                        denom = 1.0 - sn * sn
+                        if denom < 1e-30:
+                            denom = 1e-30
+                        bvn += w[i] * _math.exp((sn * hk - hs) / denom)
+                bvn *= asr / (2.0 * TWOPI)
+
+            return bvn + _ndtr_jit(-dh) * _ndtr_jit(-dk)
+
+        else:
+            # High correlation: complementary formula
+            if r < 0:
+                k = -dk
+                hk = -dh * dk
+            else:
+                k = dk
+                hk = dh * dk
+
+            ass1 = (1.0 - r) * (1.0 + r)
+            a = _math.sqrt(max(ass1, 0.0))
+            bs = (dh - k) ** 2
+            c = (4.0 - hk) / 8.0
+            d = (12.0 - hk) / 16.0
+
+            if ass1 > 0:
+                asr = -(bs / ass1 + hk) / 2.0
+            else:
+                asr = -200.0
+
+            if asr > -100:
+                bvn = (
+                    a
+                    * _math.exp(asr)
+                    * (
+                        1.0
+                        - c * (bs - ass1) * (1.0 - d * bs / 5.0) / 3.0
+                        + c * d * ass1 * ass1 / 5.0
+                    )
+                )
+            else:
+                bvn = 0.0
+
+            if -hk < 100:
+                b = _math.sqrt(bs)
+                if a > 1e-30:
+                    bvn -= (
+                        _math.exp(-hk / 2.0)
+                        * _math.sqrt(TWOPI)
+                        * _ndtr_jit(-b / a)
+                        * b
+                        * (1.0 - c * bs * (1.0 - d * bs / 5.0) / 3.0)
+                    )
+
+            a = a / 2.0
+
+            # GL quadrature for remainder (always 20-point for high corr)
+            w = gl20_w
+            x = gl20_x
+            for i in range(10):
+                for isign_idx in range(2):
+                    isign = 1 if isign_idx == 0 else -1
+                    xs = (a * (isign * x[i] + 1.0)) ** 2
+                    rs = _math.sqrt(max(1.0 - xs, 0.0))
+                    if xs < 1e-30:
+                        continue
+                    asr2 = -(bs / xs + hk) / 2.0
+                    if asr2 > -100:
+                        if rs > 1e-30:
+                            bvn += a * w[i] * _math.exp(asr2) * (
+                                _math.exp(-hk * (1.0 - rs) / (2.0 * (1.0 + rs))) / rs
+                                - (1.0 + c * xs * (1.0 + d * xs))
+                            )
+
+            bvn = -bvn / TWOPI
+
+            if r > 0:
+                bvn += _ndtr_jit(-max(dh, k))
+            else:
+                bvn = -bvn
+                if k > dh:
+                    bvn += _ndtr_jit(k) - _ndtr_jit(dh)
+
+            if bvn < 0.0:
+                return 0.0
+            if bvn > 1.0:
+                return 1.0
+            return bvn
+
+    @numba.njit(cache=True)
+    def _bivariate_normal_cdf_jit(x1, x2, rho,
+                                   gl6_w, gl6_x, gl12_w, gl12_x, gl20_w, gl20_x):
+        """JIT-compiled bivariate standard normal CDF."""
+        # Clamp rho
+        if rho < -1.0:
+            rho = -1.0
+        if rho > 1.0:
+            rho = 1.0
+
+        # Edge cases
+        if abs(rho) < 1e-15:
+            return _ndtr_jit(x1) * _ndtr_jit(x2)
+
+        if rho > 1.0 - 1e-15:
+            return _ndtr_jit(min(x1, x2))
+
+        if rho < -1.0 + 1e-15:
+            if x1 + x2 < 0:
+                return 0.0
+            val = _ndtr_jit(x1) + _ndtr_jit(x2) - 1.0
+            if val < 0.0:
+                return 0.0
+            return val
+
+        result = _bvnd_jit(-x1, -x2, rho,
+                           gl6_w, gl6_x, gl12_w, gl12_x, gl20_w, gl20_x)
+        if result < 0.0:
+            return 0.0
+        if result > 1.0:
+            return 1.0
+        return result
+
+
 def _bvnd(dh: float, dk: float, r: float) -> float:
     """Compute P(X > dh, Y > dk) for standard bivariate normal with corr r.
 
     Direct translation of Alan Genz's BVND algorithm (TVPACK).
     Uses adaptive Gauss-Legendre quadrature (6/12/20 points) depending on |r|.
     """
-    from scipy.stats import norm as _norm
+    if HAS_NUMBA:
+        return _bvnd_jit(float(dh), float(dk), float(r),
+                         _GL6_W, _GL6_X, _GL12_W, _GL12_X, _GL20_W, _GL20_X)
+
+    # Pure Python fallback
+    from scipy.special import ndtr as _ndtr_local
 
     TWOPI = 2.0 * np.pi
 
@@ -151,7 +333,7 @@ def _bvnd(dh: float, dk: float, r: float) -> float:
                     bvn += w[i] * np.exp((sn * hk - hs) / (1.0 - sn * sn))
             bvn *= asr / (2.0 * TWOPI)
 
-        return bvn + _norm.cdf(-dh) * _norm.cdf(-dk)
+        return bvn + _ndtr_local(-dh) * _ndtr_local(-dk)
 
     else:
         # High correlation: complementary formula
@@ -191,7 +373,7 @@ def _bvnd(dh: float, dk: float, r: float) -> float:
             bvn -= (
                 np.exp(-hk / 2.0)
                 * np.sqrt(TWOPI)
-                * _norm.cdf(-b / a)
+                * _ndtr_local(-b / a)
                 * b
                 * (1.0 - c * bs * (1.0 - d * bs / 5.0) / 3.0)
             )
@@ -214,11 +396,11 @@ def _bvnd(dh: float, dk: float, r: float) -> float:
         bvn = -bvn / TWOPI
 
         if r > 0:
-            bvn += _norm.cdf(-max(dh, k))
+            bvn += _ndtr_local(-max(dh, k))
         else:
             bvn = -bvn
             if k > dh:
-                bvn += _norm.cdf(k) - _norm.cdf(dh)
+                bvn += _ndtr_local(k) - _ndtr_local(dh)
 
         return max(0.0, min(1.0, bvn))
 
@@ -254,7 +436,14 @@ def bivariate_normal_cdf(
     bivariate normal integral. Journal of Statistical Computation and
     Simulation, 35, 101-107.
     """
-    from scipy.stats import norm as _norm
+    if HAS_NUMBA:
+        return _bivariate_normal_cdf_jit(
+            float(x1), float(x2), float(rho),
+            _GL6_W, _GL6_X, _GL12_W, _GL12_X, _GL20_W, _GL20_X
+        )
+
+    # Pure Python fallback
+    from scipy.special import ndtr as _ndtr_local
 
     x1, x2, rho = float(x1), float(x2), float(rho)
 
@@ -263,15 +452,15 @@ def bivariate_normal_cdf(
 
     # Handle edge cases
     if abs(rho) < 1e-15:
-        return float(_norm.cdf(x1) * _norm.cdf(x2))
+        return float(_ndtr_local(x1) * _ndtr_local(x2))
 
     if rho > 1.0 - 1e-15:
-        return float(_norm.cdf(min(x1, x2)))
+        return float(_ndtr_local(min(x1, x2)))
 
     if rho < -1.0 + 1e-15:
         if x1 + x2 < 0:
             return 0.0
-        return float(max(0.0, _norm.cdf(x1) + _norm.cdf(x2) - 1.0))
+        return float(max(0.0, _ndtr_local(x1) + _ndtr_local(x2) - 1.0))
 
     # Genz (2004) BVND algorithm: computes P(X > -x1, Y > -x2 | rho)
     # which equals P(X < x1, Y < x2 | rho) by symmetry of standard normal.

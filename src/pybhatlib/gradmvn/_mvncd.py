@@ -22,11 +22,521 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.special import ndtr as _ndtr
 from scipy.stats import multivariate_normal as _scipy_mvn
-from scipy.stats import norm
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
 from pybhatlib.vecup._ldlt import ldlt_decompose, ldlt_rank1_update, ldlt_rank2_update
+
+# ---------------------------------------------------------------------------
+# Numba JIT support
+# ---------------------------------------------------------------------------
+try:
+    import numba
+    from pybhatlib.vecup._ldlt import HAS_NUMBA, _ldlt_decompose_jit, _ldlt_rank1_update_jit
+except ImportError:
+    HAS_NUMBA = False
+
+import math as _math
+
+if HAS_NUMBA:
+    @numba.njit(cache=True)
+    def _ndtr_jit(x):
+        """Numba-compatible standard normal CDF via erfc."""
+        return 0.5 * _math.erfc(-x / _math.sqrt(2.0))
+
+    @numba.njit(cache=True)
+    def _std_npdf_jit(x):
+        """Numba-compatible standard normal PDF."""
+        return (1.0 / _math.sqrt(2.0 * _math.pi)) * _math.exp(-0.5 * x * x)
+
+    @numba.njit(cache=True)
+    def _mvncd_me_core_jit(a_ord, L, D, K):
+        """JIT-compiled ME core conditioning loop.
+
+        Parameters
+        ----------
+        a_ord : ndarray, shape (K,) — reordered upper limits
+        L : ndarray, shape (K, K) — LDLT lower triangular factor
+        D : ndarray, shape (K,) — LDLT diagonal factor
+        K : int — number of dimensions
+
+        Returns
+        -------
+        prob : float — MVNCD probability
+        """
+        prob = 1.0
+        pi = np.zeros(K)
+        H = K
+
+        for h in range(H):
+            n = H - h  # remaining dimension
+
+            sigma_h = D[0]
+            if sigma_h < 1e-15:
+                sigma_h = 1e-15
+            sd_h = _math.sqrt(sigma_h)
+
+            w_h = (a_ord[h] - pi[0]) / sd_h
+            p_h = _ndtr_jit(w_h)
+            if p_h < 1e-300:
+                p_h = 1e-300
+            prob *= p_h
+
+            if prob < 1e-300:
+                return 0.0
+
+            if n <= 1:
+                break
+
+            # Truncated moments
+            phi_w = _std_npdf_jit(w_h)
+            Phi_w = _ndtr_jit(w_h)
+            if Phi_w < 1e-300:
+                Phi_w = 1e-300
+            lambda_h = -phi_w / Phi_w
+            var_z = 1.0 + lambda_h * (w_h - lambda_h)
+            if var_z < 1e-15:
+                var_z = 1e-15
+
+            mu_tilde = pi[0] + sd_h * lambda_h
+            Omega_h = sigma_h * var_z
+
+            # Update pi for remaining variables
+            shift = mu_tilde - pi[0]
+            for j in range(1, n):
+                pi[j] += L[j, 0] * shift
+
+            # LDLT rank-1 update
+            alpha = Omega_h
+            v = L[1:n, 0].copy()
+
+            L_sub, D_sub = _ldlt_rank1_update_jit(
+                L[1:n, 1:n].copy(), D[1:n].copy(), v, alpha
+            )
+
+            # Trim: prepare arrays for next iteration
+            L = L_sub
+            D = D_sub
+            pi_new = pi[1:n].copy()
+            pi = pi_new
+
+        if prob < 0.0:
+            return 0.0
+        if prob > 1.0:
+            return 1.0
+        return prob
+
+    @numba.njit(cache=True)
+    def _univariate_truncate_and_update_jit(L, D, pi, w_h, sigma_h, n):
+        """JIT-compiled univariate truncation + LDLT rank-1 update + trim.
+
+        Returns updated (L_new, D_new, pi_out) with dimension reduced by 1.
+        """
+        sd_h = _math.sqrt(sigma_h)
+        phi_w = _std_npdf_jit(w_h)
+        Phi_w = _ndtr_jit(w_h)
+        if Phi_w < 1e-300:
+            Phi_w = 1e-300
+        lambda_h = -phi_w / Phi_w
+        var_z = 1.0 + lambda_h * (w_h - lambda_h)
+        if var_z < 1e-15:
+            var_z = 1e-15
+
+        mu_tilde = pi[0] + sd_h * lambda_h
+        Omega_h = sigma_h * var_z
+
+        shift = mu_tilde - pi[0]
+        for j in range(1, n):
+            pi[j] += L[j, 0] * shift
+
+        alpha = Omega_h
+        v = L[1:n, 0].copy()
+        L_sub, D_sub = _ldlt_rank1_update_jit(
+            L[1:n, 1:n].copy(), D[1:n].copy(), v, alpha
+        )
+
+        n_new = n - 1
+        L_new = np.eye(n_new)
+        L_new[:n_new, :n_new] = L_sub[:n_new, :n_new]
+        D_new = D_sub[:n_new].copy()
+        pi_new = pi[1:n].copy()
+        pi_out = np.zeros(n_new)
+        pi_out[:n_new] = pi_new[:n_new]
+
+        return L_new, D_new, pi_out
+
+    # ------------------------------------------------------------------
+    # Phase 2: Batch MVNCD with shared covariance (parallel via prange)
+    # ------------------------------------------------------------------
+
+    @numba.njit(cache=True)
+    def _mvncd_single_shared_cov_jit(a, L_base, D_base, K):
+        """Evaluate MVNCD for a single observation with pre-computed LDLT.
+
+        Handles reordering internally and dispatches to bivariate or ME core.
+
+        Parameters
+        ----------
+        a : ndarray, shape (K,)
+            Upper integration limits.
+        L_base : ndarray, shape (K, K)
+            LDLT lower triangular factor of the shared covariance.
+        D_base : ndarray, shape (K,)
+            LDLT diagonal factor of the shared covariance.
+        K : int
+            Dimension.
+
+        Returns
+        -------
+        prob : float
+        """
+        if K == 1:
+            sd = _math.sqrt(max(L_base[0, 0] * D_base[0] * L_base[0, 0], 1e-30))
+            return _ndtr_jit(a[0] / sd)
+
+        if K == 2:
+            # Reconstruct covariance for bivariate case
+            # sigma = L @ diag(D) @ L.T
+            s00 = L_base[0, 0] * D_base[0] * L_base[0, 0]
+            s01 = L_base[0, 0] * D_base[0] * L_base[1, 0] + 0.0
+            # More precisely: s[i,j] = sum_k L[i,k]*D[k]*L[j,k]
+            s11 = L_base[1, 0] * D_base[0] * L_base[1, 0] + L_base[1, 1] * D_base[1] * L_base[1, 1]
+            s01 = L_base[1, 0] * D_base[0] * L_base[0, 0]
+
+            sd1 = _math.sqrt(max(s00, 1e-30))
+            sd2 = _math.sqrt(max(s11, 1e-30))
+            if sd1 > 1e-15 and sd2 > 1e-15:
+                rho = s01 / (sd1 * sd2)
+            else:
+                rho = 0.0
+            if rho > 0.9999:
+                rho = 0.9999
+            if rho < -0.9999:
+                rho = -0.9999
+            # Cannot call _bivariate_normal_cdf_jit here because it needs GL arrays
+            # Use _bvn_cdf_from_params_jit instead (inlined below)
+            return _bvn_cdf_standardized_jit(a[0] / sd1, a[1] / sd2, rho)
+
+        # K >= 3: reorder and run ME core
+        # Reorder by |a_k / sqrt(sigma_kk)| ascending
+        # Compute sigma_kk from LDLT: sigma_kk = sum_j L[k,j]^2 * D[j]
+        sds = np.empty(K)
+        z = np.empty(K)
+        for k in range(K):
+            var_k = 0.0
+            for j in range(k + 1):
+                var_k += L_base[k, j] * L_base[k, j] * D_base[j]
+            sds[k] = _math.sqrt(max(var_k, 1e-30))
+            z[k] = abs(a[k]) / sds[k]
+
+        # Simple insertion sort for small K (typically K <= 9)
+        order = np.arange(K)
+        for i in range(1, K):
+            key_z = z[i]
+            key_o = order[i]
+            j = i - 1
+            while j >= 0 and z[j] > key_z:
+                z[j + 1] = z[j]
+                order[j + 1] = order[j]
+                j -= 1
+            z[j + 1] = key_z
+            order[j + 1] = key_o
+
+        # Reorder a
+        a_ord = np.empty(K)
+        for i in range(K):
+            a_ord[i] = a[order[i]]
+
+        # Reorder sigma: sigma_ord = sigma[order, :][:, order]
+        # Reconstruct full sigma from LDLT, then reorder and re-decompose
+        sigma_full = np.zeros((K, K))
+        for i in range(K):
+            for j in range(K):
+                val = 0.0
+                for k in range(min(i, j) + 1):
+                    val += L_base[i, k] * D_base[k] * L_base[j, k]
+                sigma_full[i, j] = val
+
+        sigma_ord = np.zeros((K, K))
+        for i in range(K):
+            for j in range(K):
+                sigma_ord[i, j] = sigma_full[order[i], order[j]]
+
+        # LDLT decompose reordered sigma
+        L_ord, D_ord = _ldlt_decompose_jit(sigma_ord)
+
+        return _mvncd_me_core_jit(a_ord, L_ord, D_ord, K)
+
+    @numba.njit(cache=True)
+    def _bvn_cdf_standardized_jit(x1, x2, rho):
+        """Bivariate standard normal CDF for standardized inputs.
+
+        Simplified Genz BVND algorithm inlined for Numba compatibility
+        without GL array parameters.
+        """
+        TWOPI = 2.0 * _math.pi
+
+        # Edge cases
+        if abs(rho) < 1e-15:
+            return _ndtr_jit(x1) * _ndtr_jit(x2)
+        if rho > 1.0 - 1e-15:
+            return _ndtr_jit(min(x1, x2))
+        if rho < -1.0 + 1e-15:
+            val = _ndtr_jit(x1) + _ndtr_jit(x2) - 1.0
+            return max(0.0, val) if x1 + x2 >= 0 else 0.0
+
+        dh = -x1
+        dk = -x2
+        r = rho
+        abs_r = abs(r)
+
+        # GL6 weights and abscissae (hardcoded for Numba)
+        gl6_w0 = 0.1713244923791704
+        gl6_w1 = 0.3607615730481386
+        gl6_w2 = 0.4679139345726910
+        gl6_x0 = 0.9324695142031521
+        gl6_x1 = 0.6612093864662645
+        gl6_x2 = 0.2386191860831969
+
+        # GL12
+        gl12_w = np.array([
+            0.0471753363865118, 0.1069393259953184, 0.1600783285433462,
+            0.2031674267230659, 0.2334925365383548, 0.2491470458134028,
+        ])
+        gl12_x = np.array([
+            0.9815606342467192, 0.9041172563704749, 0.7699026741943047,
+            0.5873179542866175, 0.3678314989981802, 0.1252334085114689,
+        ])
+
+        # GL20
+        gl20_w = np.array([
+            0.0176140071391521, 0.0406014298003869, 0.0626720483341091,
+            0.0832767415767048, 0.1019301198172404, 0.1181945319615184,
+            0.1316886384491766, 0.1420961093183820, 0.1491729864726037,
+            0.1527533871307258,
+        ])
+        gl20_x = np.array([
+            0.9931285991850949, 0.9639719272779138, 0.9122344282513259,
+            0.8391169718222188, 0.7463319064601508, 0.6360536807265150,
+            0.5108670019508271, 0.3737060887154195, 0.2277858511416451,
+            0.0765265211334973,
+        ])
+
+        if abs_r < 0.925:
+            # Low-to-moderate correlation
+            hk = dh * dk
+            bvn = 0.0
+            if abs_r > 0:
+                hs = (dh * dh + dk * dk) / 2.0
+                asr = _math.asin(r)
+                if abs_r < 0.3:
+                    # GL6 (3 symmetric pairs)
+                    for i in range(3):
+                        w_i = gl6_w0 if i == 0 else (gl6_w1 if i == 1 else gl6_w2)
+                        x_i = gl6_x0 if i == 0 else (gl6_x1 if i == 1 else gl6_x2)
+                        for isign in range(2):
+                            sign = 1.0 if isign == 0 else -1.0
+                            sn = _math.sin(asr * (sign * x_i + 1.0) / 2.0)
+                            denom = 1.0 - sn * sn
+                            if denom < 1e-30:
+                                denom = 1e-30
+                            bvn += w_i * _math.exp((sn * hk - hs) / denom)
+                elif abs_r < 0.75:
+                    # GL12 (6 symmetric pairs)
+                    for i in range(6):
+                        for isign in range(2):
+                            sign = 1.0 if isign == 0 else -1.0
+                            sn = _math.sin(asr * (sign * gl12_x[i] + 1.0) / 2.0)
+                            denom = 1.0 - sn * sn
+                            if denom < 1e-30:
+                                denom = 1e-30
+                            bvn += gl12_w[i] * _math.exp((sn * hk - hs) / denom)
+                else:
+                    # GL20 (10 symmetric pairs)
+                    for i in range(10):
+                        for isign in range(2):
+                            sign = 1.0 if isign == 0 else -1.0
+                            sn = _math.sin(asr * (sign * gl20_x[i] + 1.0) / 2.0)
+                            denom = 1.0 - sn * sn
+                            if denom < 1e-30:
+                                denom = 1e-30
+                            bvn += gl20_w[i] * _math.exp((sn * hk - hs) / denom)
+                bvn *= asr / (2.0 * TWOPI)
+            result = bvn + _ndtr_jit(-dh) * _ndtr_jit(-dk)
+        else:
+            # High correlation
+            if r < 0:
+                k = -dk
+                hk = -dh * dk
+            else:
+                k = dk
+                hk = dh * dk
+
+            ass1 = (1.0 - r) * (1.0 + r)
+            a_val = _math.sqrt(max(ass1, 0.0))
+            bs = (dh - k) ** 2
+            c = (4.0 - hk) / 8.0
+            d = (12.0 - hk) / 16.0
+
+            if ass1 > 0:
+                asr = -(bs / ass1 + hk) / 2.0
+            else:
+                asr = -200.0
+
+            if asr > -100:
+                bvn = (
+                    a_val
+                    * _math.exp(asr)
+                    * (
+                        1.0
+                        - c * (bs - ass1) * (1.0 - d * bs / 5.0) / 3.0
+                        + c * d * ass1 * ass1 / 5.0
+                    )
+                )
+            else:
+                bvn = 0.0
+
+            if -hk < 100:
+                b = _math.sqrt(bs)
+                if a_val > 1e-30:
+                    bvn -= (
+                        _math.exp(-hk / 2.0)
+                        * _math.sqrt(TWOPI)
+                        * _ndtr_jit(-b / a_val)
+                        * b
+                        * (1.0 - c * bs * (1.0 - d * bs / 5.0) / 3.0)
+                    )
+
+            a_half = a_val / 2.0
+            for i in range(10):
+                for isign in range(2):
+                    sign = 1.0 if isign == 0 else -1.0
+                    xs = (a_half * (sign * gl20_x[i] + 1.0)) ** 2
+                    rs = _math.sqrt(max(1.0 - xs, 0.0))
+                    if xs < 1e-30:
+                        continue
+                    asr2 = -(bs / xs + hk) / 2.0
+                    if asr2 > -100:
+                        if rs > 1e-30:
+                            bvn += a_half * gl20_w[i] * _math.exp(asr2) * (
+                                _math.exp(-hk * (1.0 - rs) / (2.0 * (1.0 + rs))) / rs
+                                - (1.0 + c * xs * (1.0 + d * xs))
+                            )
+
+            bvn = -bvn / TWOPI
+
+            if r > 0:
+                bvn += _ndtr_jit(-max(dh, k))
+            else:
+                bvn = -bvn
+                if k > dh:
+                    bvn += _ndtr_jit(k) - _ndtr_jit(dh)
+
+            result = bvn
+
+        if result < 0.0:
+            return 0.0
+        if result > 1.0:
+            return 1.0
+        return result
+
+    @numba.njit(parallel=True, cache=True)
+    def _mvncd_batch_shared_cov_jit(a_all, L_base, D_base, K):
+        """Evaluate MVNCD for N observations with shared covariance in parallel.
+
+        Parameters
+        ----------
+        a_all : ndarray, shape (N, K)
+            Upper integration limits for each observation.
+        L_base : ndarray, shape (K, K)
+            LDLT lower triangular factor of the shared covariance.
+        D_base : ndarray, shape (K,)
+            LDLT diagonal factor of the shared covariance.
+        K : int
+            Dimension.
+
+        Returns
+        -------
+        log_probs : ndarray, shape (N,)
+            Log-probabilities for each observation.
+        """
+        N = a_all.shape[0]
+        log_probs = np.empty(N)
+        for q in numba.prange(N):
+            prob = _mvncd_single_shared_cov_jit(a_all[q], L_base, D_base, K)
+            if prob < 1e-300:
+                prob = 1e-300
+            log_probs[q] = _math.log(prob)
+        return log_probs
+
+
+    @numba.njit(cache=True)
+    def _mvncd_batch_shared_cov_seq_jit(a_all, L_base, D_base, K):
+        """Sequential JIT batch: evaluate MVNCD for all observations.
+
+        Faster than prange for small N (<1000) because it avoids thread
+        scheduling overhead while still benefiting from JIT compilation
+        and eliminating per-observation Python dispatch.
+        """
+        N = a_all.shape[0]
+        log_probs = np.empty(N)
+        for q in range(N):
+            prob = _mvncd_single_shared_cov_jit(a_all[q], L_base, D_base, K)
+            if prob < 1e-300:
+                prob = 1e-300
+            log_probs[q] = _math.log(prob)
+        return log_probs
+
+    @numba.njit(cache=True)
+    def _mvncd_batch_percov_seq_jit(a_all, sigma_all, K):
+        """Sequential JIT batch with per-observation covariance."""
+        N = a_all.shape[0]
+        log_probs = np.empty(N)
+        for q in range(N):
+            L_q, D_q = _ldlt_decompose_jit(sigma_all[q])
+            prob = _mvncd_single_shared_cov_jit(a_all[q], L_q, D_q, K)
+            if prob < 1e-300:
+                prob = 1e-300
+            log_probs[q] = _math.log(prob)
+        return log_probs
+
+    @numba.njit(parallel=True, cache=True)
+    def _mvncd_batch_percov_jit(a_all, sigma_all, K):
+        """Evaluate MVNCD for N observations with per-observation covariance.
+
+        Parameters
+        ----------
+        a_all : ndarray, shape (N, K)
+            Upper integration limits for each observation.
+        sigma_all : ndarray, shape (N, K, K)
+            Per-observation covariance matrices.
+        K : int
+            Dimension.
+
+        Returns
+        -------
+        log_probs : ndarray, shape (N,)
+            Log-probabilities for each observation.
+        """
+        N = a_all.shape[0]
+        log_probs = np.empty(N)
+        for q in numba.prange(N):
+            L_q, D_q = _ldlt_decompose_jit(sigma_all[q])
+            prob = _mvncd_single_shared_cov_jit(a_all[q], L_q, D_q, K)
+            if prob < 1e-300:
+                prob = 1e-300
+            log_probs[q] = _math.log(prob)
+        return log_probs
+
+
+
 
 
 def mvncd(
@@ -228,6 +738,75 @@ def mvncd_batch(
     return xp.array(probs)
 
 
+def mvncd_log_batch(
+    a_all: NDArray,
+    sigma: NDArray,
+    *,
+    method: str = "me",
+    per_obs_sigma: NDArray | None = None,
+) -> NDArray:
+    """Compute log-MVNCD for N observations, parallelized via Numba prange.
+
+    Optimized for the MNP observation loop: returns log-probabilities directly
+    and avoids Python-level per-observation overhead.
+
+    Parameters
+    ----------
+    a_all : ndarray, shape (N, K)
+        Upper integration limits for each observation.
+    sigma : ndarray, shape (K, K)
+        Shared covariance matrix (used when per_obs_sigma is None).
+    method : str
+        MVNCD method. Parallel batch only supports "me" (uses JIT core).
+        Other methods fall back to sequential evaluation.
+    per_obs_sigma : ndarray, shape (N, K, K) or None
+        Per-observation covariance matrices. If provided, each observation
+        uses its own covariance (for mixed MNP with random coefficients).
+
+    Returns
+    -------
+    log_probs : ndarray, shape (N,)
+        Log-probability for each observation.
+    """
+    a_all = np.asarray(a_all, dtype=np.float64)
+    sigma = np.asarray(sigma, dtype=np.float64)
+    N = a_all.shape[0]
+    K = a_all.shape[1]
+
+    # Try JIT parallel batch (ME method only, NumPy arrays, Numba available)
+    if HAS_NUMBA and method == "me":
+        if per_obs_sigma is not None:
+            sigma_all = np.asarray(per_obs_sigma, dtype=np.float64)
+            if N < 1000:
+                return _mvncd_batch_percov_seq_jit(a_all, sigma_all, K)
+            else:
+                return _mvncd_batch_percov_jit(a_all, sigma_all, K)
+        else:
+            # Shared covariance: pre-compute LDLT once
+            from pybhatlib.vecup._ldlt import _ldlt_decompose_jit
+            L_base, D_base = _ldlt_decompose_jit(sigma)
+            # Use sequential JIT for small N (prange overhead dominates),
+            # parallel for large N where thread scheduling is amortized
+            if N < 1000:
+                return _mvncd_batch_shared_cov_seq_jit(a_all, L_base, D_base, K)
+            else:
+                return _mvncd_batch_shared_cov_jit(a_all, L_base, D_base, K)
+
+    # Fallback: sequential evaluation with any method
+    log_probs = np.empty(N, dtype=np.float64)
+    xp = get_backend("numpy")
+    for q in range(N):
+        if per_obs_sigma is not None:
+            sig_q = per_obs_sigma[q]
+        else:
+            sig_q = sigma
+        prob = mvncd(xp.array(a_all[q]), xp.array(sig_q), method=method, xp=xp)
+        prob = max(prob, 1e-300)
+        log_probs[q] = np.log(prob)
+    return log_probs
+
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -309,7 +888,7 @@ def _mvncd_me(a: np.ndarray, sigma: np.ndarray) -> float:
 
     if K == 1:
         sd = np.sqrt(sigma[0, 0])
-        return float(norm.cdf(a[0] / sd))
+        return float(_ndtr(a[0] / sd))
 
     if K == 2:
         return _bvn_cdf(a, sigma)
@@ -321,6 +900,11 @@ def _mvncd_me(a: np.ndarray, sigma: np.ndarray) -> float:
     L = np.asarray(L, dtype=np.float64)
     D = np.asarray(D, dtype=np.float64)
 
+    # Dispatch to JIT core if available
+    if HAS_NUMBA:
+        return _mvncd_me_core_jit(a_ord, L, D, K)
+
+    # Pure Python fallback
     prob = 1.0
     pi = np.zeros(K, dtype=np.float64)
     H = K
@@ -332,7 +916,7 @@ def _mvncd_me(a: np.ndarray, sigma: np.ndarray) -> float:
         sd_h = np.sqrt(sigma_h)
 
         w_h = (a_ord[h] - pi[0]) / sd_h
-        p_h = float(norm.cdf(w_h))
+        p_h = float(_ndtr(w_h))
         prob *= max(1e-300, p_h)
 
         if prob < 1e-300:
@@ -342,49 +926,28 @@ def _mvncd_me(a: np.ndarray, sigma: np.ndarray) -> float:
             break
 
         # Truncated moments E[Z|Z<=w] and Var[Z|Z<=w] for standard normal
-        phi_w = norm.pdf(w_h)
-        Phi_w = max(norm.cdf(w_h), 1e-300)
+        phi_w = _std_npdf(w_h)
+        Phi_w = max(_ndtr(w_h), 1e-300)
         lambda_h = -phi_w / Phi_w  # E[Z | Z <= w_h]
-        # Var[Z | Z <= w_h] = 1 - w_h * (phi/Phi) - (phi/Phi)^2
-        #                    = 1 + w_h * lambda - lambda^2
-        #                    = 1 + lambda * (w_h - lambda)
         var_z = 1.0 + lambda_h * (w_h - lambda_h)
         var_z = max(var_z, 1e-15)
 
         mu_tilde = pi[0] + sd_h * lambda_h
         Omega_h = sigma_h * var_z
 
-        # Update pi for remaining variables
-        # pi_j += L[j,0] * D[0] * (mu_tilde - pi[0]) / D[0]
-        #       = L[j,0] * (mu_tilde - pi[0])
         shift = mu_tilde - pi[0]
         for j in range(1, n):
             pi[j] += L[j, 0] * shift
 
-        # LDLT rank-1 update: A_new = A + alpha * v v^T
-        # The sub-LDLT (L_sub @ D_sub @ L_sub^T) does NOT include the
-        # column-0 contribution D[0]*v*v^T from the full matrix.
-        # So the conditional covariance is: L_sub@D_sub@L_sub^T + Omega_h*v*v^T
-        # Hence alpha = Omega_h (not Omega_h - D[0]).
         alpha = Omega_h
         v = L[1:n, 0].copy()
 
-        L_sub = L[1:n, 1:n].copy()
-        D_sub = D[1:n].copy()
+        L_sub, D_sub = ldlt_rank1_update(L[1:n, 1:n], D[1:n], v, alpha)
 
-        L_sub, D_sub = ldlt_rank1_update(L_sub, D_sub, v, alpha)
-
-        # Trim: shift arrays
-        a_ord_rest = a_ord[h + 1:]
+        L = L_sub
+        D = D_sub
         pi_new = pi[1:n].copy()
-
-        # Prepare for next iteration
-        n_new = n - 1
-        L = np.eye(n_new, dtype=np.float64)
-        L[:n_new, :n_new] = L_sub[:n_new, :n_new]
-        D = D_sub[:n_new].copy()
-        pi = np.zeros(n_new, dtype=np.float64)
-        pi[:n_new] = pi_new[:n_new]
+        pi = pi_new
 
     return max(0.0, min(1.0, prob))
 
@@ -401,9 +964,15 @@ def _univariate_truncate_and_update(
 
     Returns updated (L, D, pi) with dimension reduced by 1.
     """
+    if HAS_NUMBA:
+        return _univariate_truncate_and_update_jit(
+            L.copy(), D.copy(), pi.copy(), float(w_h), float(sigma_h), n
+        )
+
+    # Pure Python fallback
     sd_h = np.sqrt(sigma_h)
-    phi_w = norm.pdf(w_h)
-    Phi_w = max(norm.cdf(w_h), 1e-300)
+    phi_w = _std_npdf(w_h)
+    Phi_w = max(_ndtr(w_h), 1e-300)
     lambda_h = -phi_w / Phi_w
     var_z = max(1.0 + lambda_h * (w_h - lambda_h), 1e-15)
 
@@ -489,12 +1058,12 @@ def _mvncd_ovus(a: np.ndarray, sigma: np.ndarray) -> float:
             # Denominator is Phi of FIRST variable (the one being estimated),
             # not the second (the screened variable). See paper step (1):
             # P_1 = Phi(w_1) * BVN(w_1,w_2)/Phi(w_1) — denominator is Phi(w_1).
-            p_denom = float(norm.cdf(w_next_0))
-            p_h = bvn / p_denom if p_denom > 1e-300 else float(norm.cdf(w_next_0))
+            p_denom = float(_ndtr(w_next_0))
+            p_h = bvn / p_denom if p_denom > 1e-300 else float(_ndtr(w_next_0))
         else:
             # Only 1 variable left — just Phi
             w_last = (a_ord[h_idx + 1] - pi[0]) / np.sqrt(max(D[0], 1e-15))
-            p_h = float(norm.cdf(w_last))
+            p_h = float(_ndtr(w_last))
 
         prob *= max(1e-300, p_h)
         if prob < 1e-300:
@@ -646,7 +1215,7 @@ def _mvncd_bme(a: np.ndarray, sigma: np.ndarray) -> float:
             sigma_h = max(D[0], 1e-15)
             sd_h = np.sqrt(sigma_h)
             w_h = (a_ord[h_idx] - pi[0]) / sd_h
-            p_h = float(norm.cdf(w_h))
+            p_h = float(_ndtr(w_h))
             prob *= max(1e-300, p_h)
             h_idx += 1
 
@@ -820,7 +1389,7 @@ def _mvncd_tvbs(a: np.ndarray, sigma: np.ndarray) -> float:
             sigma_h = max(D[0], 1e-15)
             sd_h = np.sqrt(sigma_h)
             w_h = (a_ord[h_idx] - pi[0]) / sd_h
-            prob *= max(1e-300, float(norm.cdf(w_h)))
+            prob *= max(1e-300, float(_ndtr(w_h)))
             h_idx += 1
 
     return max(0.0, min(1.0, prob))
@@ -911,7 +1480,7 @@ def _mvncd_ovbs(a: np.ndarray, sigma: np.ndarray) -> float:
             # accounted for), not the last two. See paper step (1):
             # P_1 = TVN(1,2,3)/BVN(1,2) — denominator is BVN of first two.
             bvn_denom = bivariate_normal_cdf(ws[0], ws[1], corr[0, 1])
-            p_h = tvn / bvn_denom if bvn_denom > 1e-300 else float(norm.cdf(ws[0]))
+            p_h = tvn / bvn_denom if bvn_denom > 1e-300 else float(_ndtr(ws[0]))
         elif n_new == 2:
             # Bivariate screening: P *= BVN / Phi
             cov2 = _extract_subcov(L[:2, :2], D[:2], 2)
@@ -923,12 +1492,12 @@ def _mvncd_ovbs(a: np.ndarray, sigma: np.ndarray) -> float:
             w1 = (a_ord[h_idx + 2] - pi[1]) / sd_1
             bvn = bivariate_normal_cdf(w0, w1, rho)
             # Denominator is Phi of FIRST variable (consistent with OVUS)
-            p_denom = float(norm.cdf(w0))
-            p_h = bvn / p_denom if p_denom > 1e-300 else float(norm.cdf(w0))
+            p_denom = float(_ndtr(w0))
+            p_h = bvn / p_denom if p_denom > 1e-300 else float(_ndtr(w0))
         else:
             # 1 variable left
             w_last = (a_ord[h_idx + 1] - pi[0]) / np.sqrt(max(D[0], 1e-15))
-            p_h = float(norm.cdf(w_last))
+            p_h = float(_ndtr(w_last))
 
         prob *= max(1e-300, p_h)
         if prob < 1e-300:
@@ -966,7 +1535,7 @@ def _mvncd_tg(a: np.ndarray, sigma: np.ndarray) -> float:
 
     if K == 1:
         sd = np.sqrt(sigma[0, 0])
-        return float(norm.cdf(a[0] / sd))
+        return float(_ndtr(a[0] / sd))
 
     if K == 2:
         return _bvn_cdf(a, sigma)
@@ -988,7 +1557,7 @@ def _mvncd_tg(a: np.ndarray, sigma: np.ndarray) -> float:
         sd_h = np.sqrt(sigma_h)
 
         w_h = (a_ord[h] - mu[0]) / sd_h
-        p_h = float(norm.cdf(w_h))
+        p_h = float(_ndtr(w_h))
         prob *= max(1e-300, p_h)
 
         if prob < 1e-300:
@@ -998,8 +1567,8 @@ def _mvncd_tg(a: np.ndarray, sigma: np.ndarray) -> float:
             break
 
         # Truncated moments: E[Z|Z<=w] for standard normal
-        phi_w = norm.pdf(w_h)
-        Phi_w = max(norm.cdf(w_h), 1e-300)
+        phi_w = _std_npdf(w_h)
+        Phi_w = max(_ndtr(w_h), 1e-300)
         lambda_h = -phi_w / Phi_w  # E[Z | Z <= w_h]
 
         mu_tilde = mu[0] + sd_h * lambda_h
@@ -1119,7 +1688,7 @@ def _mvncd_tgbme(a: np.ndarray, sigma: np.ndarray) -> float:
             sigma_h = max(D[0], 1e-15)
             sd_h = np.sqrt(sigma_h)
             w_h = (a_ord[h_idx] - mu[0]) / sd_h
-            prob *= max(1e-300, float(norm.cdf(w_h)))
+            prob *= max(1e-300, float(_ndtr(w_h)))
             h_idx += 1
 
     return max(0.0, min(1.0, prob))

@@ -32,6 +32,9 @@ results/
 
 # Original GAUSS source
 chandra_code/
+UTAcode_0402/
+slides/
+docs/
 
 # Project-local docs (not for repo)
 CLAUDE.md
