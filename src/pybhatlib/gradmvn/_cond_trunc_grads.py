@@ -12,7 +12,13 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.gradmvn._bivariate_trunc import (
     truncated_bivariate_cov,
@@ -271,8 +277,8 @@ def gcondmeantrunc(
         sig2 = float(X11[0, 0])
         sig1 = np.sqrt(sig2)
         w = (C[0] - mu[0]) / sig1
-        phi_w = norm.pdf(w)
-        Phi_w = max(norm.cdf(w), 1e-300)
+        phi_w = _std_npdf(w)
+        Phi_w = max(_ndtr(w), 1e-300)
         lam = -phi_w / Phi_w
         mutrunc = np.array([mu[0] + sig1 * lam])
 
@@ -393,8 +399,8 @@ def gcondcovtrunc(
         sig2 = float(X11[0, 0])
         sig1 = np.sqrt(sig2)
         w = (C[0] - mu[0]) / sig1
-        phi_w = norm.pdf(w)
-        Phi_w = max(norm.cdf(w), 1e-300)
+        phi_w = _std_npdf(w)
+        Phi_w = max(_ndtr(w), 1e-300)
         lam = -phi_w / Phi_w
         sig_trunc_val = sig2 * (1.0 + lam * (w - lam))
         sig_trunc = np.array([[max(sig_trunc_val, 1e-15)]])

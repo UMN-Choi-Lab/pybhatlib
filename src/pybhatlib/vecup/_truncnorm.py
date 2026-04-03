@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
 
@@ -41,15 +47,15 @@ def truncated_normal_mean_var(
     alpha = (lower - mu) / sigma if np.isfinite(lower) else -np.inf
     beta = (upper - mu) / sigma if np.isfinite(upper) else np.inf
 
-    Phi_alpha = norm.cdf(alpha)
-    Phi_beta = norm.cdf(beta)
+    Phi_alpha = _ndtr(alpha)
+    Phi_beta = _ndtr(beta)
     Z = Phi_beta - Phi_alpha
 
     if Z < 1e-300:
         return 0.5 * (lower + upper) if np.isfinite(lower) and np.isfinite(upper) else mu, 0.0
 
-    phi_alpha = norm.pdf(alpha) if np.isfinite(alpha) else 0.0
-    phi_beta = norm.pdf(beta) if np.isfinite(beta) else 0.0
+    phi_alpha = _std_npdf(alpha) if np.isfinite(alpha) else 0.0
+    phi_beta = _std_npdf(beta) if np.isfinite(beta) else 0.0
 
     # Truncated mean
     mu_trunc = mu + sigma * (phi_alpha - phi_beta) / Z

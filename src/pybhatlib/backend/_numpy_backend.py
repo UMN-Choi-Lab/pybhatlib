@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import scipy.linalg
+import scipy.special
 import scipy.stats
 
 
@@ -232,22 +233,23 @@ class NumpyBackend:
     @staticmethod
     def normal_pdf(x):
         """Standard normal PDF."""
-        return scipy.stats.norm.pdf(x)
+        return (1.0 / np.sqrt(2.0 * np.pi)) * np.exp(-0.5 * np.asarray(x)**2)
 
     @staticmethod
     def normal_cdf(x):
         """Standard normal CDF."""
-        return scipy.stats.norm.cdf(x)
+        return scipy.special.ndtr(x)
 
     @staticmethod
     def normal_ppf(p):
         """Standard normal quantile (inverse CDF)."""
-        return scipy.stats.norm.ppf(p)
+        return scipy.special.ndtri(p)
 
     @staticmethod
     def normal_logpdf(x):
         """Standard normal log-PDF."""
-        return scipy.stats.norm.logpdf(x)
+        x_arr = np.asarray(x)
+        return -0.5 * (np.log(2.0 * np.pi) + x_arr**2)
 
     # --- Type checking ---
     @staticmethod

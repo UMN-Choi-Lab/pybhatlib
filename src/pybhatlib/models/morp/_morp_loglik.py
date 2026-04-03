@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
 
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd_rect

@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr, ndtri as _ndtri
 
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.models._base import BaseModel
@@ -186,7 +186,7 @@ class MORPModel(BaseModel):
         # t-stats and p-values
         with np.errstate(divide="ignore", invalid="ignore"):
             t_stat = np.where(se > 0, theta_hat / se, 0.0)
-            p_value = 2.0 * (1.0 - norm.cdf(np.abs(t_stat)))
+            p_value = 2.0 * (1.0 - _ndtr(np.abs(t_stat)))
 
         # Extract thresholds and correlation matrix
         _, thresholds, sigma = _unpack_morp_params(
@@ -233,12 +233,12 @@ class MORPModel(BaseModel):
             if n_thresh <= 0:
                 continue
             # First threshold: standard normal quantile
-            q = norm.ppf(1.0 / self.n_categories[d])
+            q = _ndtri(1.0 / self.n_categories[d])
             theta0[idx] = q
             idx += 1
             # Subsequent thresholds: log-spacing
             for j in range(1, n_thresh):
-                spacing = norm.ppf((j + 1) / self.n_categories[d]) - norm.ppf(
+                spacing = _ndtri((j + 1) / self.n_categories[d]) - _ndtri(
                     j / self.n_categories[d]
                 )
                 theta0[idx] = np.log(max(spacing, 0.1))

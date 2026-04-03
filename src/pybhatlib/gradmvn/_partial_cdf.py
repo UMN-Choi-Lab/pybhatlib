@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
 from pybhatlib.gradmvn._mvncd import mvncd
@@ -94,7 +93,9 @@ def partial_mvn_cdf(
     from scipy.stats import multivariate_normal
 
     if len(p_idx) == 1:
-        f_p = norm.pdf(points_np[0], loc=mu_p[0], scale=np.sqrt(sigma_pp[0, 0]))
+        _scale = np.sqrt(sigma_pp[0, 0])
+        _z = (points_np[0] - mu_p[0]) / _scale
+        f_p = (1.0 / (np.sqrt(2.0 * np.pi) * _scale)) * np.exp(-0.5 * _z * _z)
     else:
         f_p = multivariate_normal.pdf(points_np, mean=mu_p, cov=sigma_pp)
 

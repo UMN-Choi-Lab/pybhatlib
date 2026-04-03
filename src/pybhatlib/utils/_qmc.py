@@ -45,8 +45,8 @@ def halton_normal(n: int, d: int, seed: int | None = None) -> NDArray:
     draws : (n, d) array
         Standard normal quasi-random draws.
     """
-    from scipy.stats import norm
+    from scipy.special import ndtri
     u = halton_sequence(n, d, seed=seed)
     # Clip to avoid infinite values at boundaries
     u = np.clip(u, 1e-10, 1.0 - 1e-10)
-    return norm.ppf(u)
+    return ndtri(u)

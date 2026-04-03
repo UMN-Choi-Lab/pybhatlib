@@ -24,7 +24,13 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.gradmvn._univariate import bivariate_normal_cdf
 
@@ -86,10 +92,10 @@ def truncated_bivariate_mean(
     alpha1_cond = (alpha1 - rho * alpha2) / denom
 
     # delta_i = phi(alpha_i) * Phi((alpha_j - rho*alpha_i) / sqrt(1-rho^2))
-    phi1 = norm.pdf(alpha1)
-    phi2 = norm.pdf(alpha2)
-    Phi_2g1 = norm.cdf(alpha2_cond)
-    Phi_1g2 = norm.cdf(alpha1_cond)
+    phi1 = _std_npdf(alpha1)
+    phi2 = _std_npdf(alpha2)
+    Phi_2g1 = _ndtr(alpha2_cond)
+    Phi_1g2 = _ndtr(alpha1_cond)
 
     delta1 = phi1 * Phi_2g1
     delta2 = phi2 * Phi_1g2
@@ -155,10 +161,10 @@ def truncated_bivariate_cov(
     alpha2_cond = (alpha2 - rho * alpha1) / denom
     alpha1_cond = (alpha1 - rho * alpha2) / denom
 
-    phi1 = norm.pdf(alpha1)
-    phi2 = norm.pdf(alpha2)
-    Phi_2g1 = norm.cdf(alpha2_cond)
-    Phi_1g2 = norm.cdf(alpha1_cond)
+    phi1 = _std_npdf(alpha1)
+    phi2 = _std_npdf(alpha2)
+    Phi_2g1 = _ndtr(alpha2_cond)
+    Phi_1g2 = _ndtr(alpha1_cond)
 
     delta1 = phi1 * Phi_2g1
     delta2 = phi2 * Phi_1g2

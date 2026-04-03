@@ -16,7 +16,13 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.gradmvn._univariate import bivariate_normal_cdf
 
@@ -54,7 +60,7 @@ def grad_noncdfn(
     invsig2 = 1.0 / sig2
     invsig = np.sqrt(invsig2)
     w = (x - mu) * invsig
-    phi_w = norm.pdf(w)
+    phi_w = _std_npdf(w)
 
     g_mu = -invsig * phi_w
     g_sig2 = phi_w * (-0.5 * invsig2 * w)
@@ -93,9 +99,9 @@ def grad_cdf_bvn(
     tr1 = (w2 - rho * w1) / rhotilde
     tr2 = (w1 - rho * w2) / rhotilde
 
-    gw1 = norm.pdf(w1) * norm.cdf(tr1)
-    gw2 = norm.pdf(w2) * norm.cdf(tr2)
-    grho = (1.0 / rhotilde) * norm.pdf(w1) * norm.pdf(tr1)
+    gw1 = _std_npdf(w1) * _ndtr(tr1)
+    gw2 = _std_npdf(w2) * _ndtr(tr2)
+    grho = (1.0 / rhotilde) * _std_npdf(w1) * _std_npdf(tr1)
 
     return gw1, gw2, grho
 
@@ -125,12 +131,12 @@ def grad_cdf_bvn_by_cdfn(
         Partial derivatives w.r.t. w₁, w₂, ρ.
     """
     bivarcdf = bivariate_normal_cdf(w1, w2, rho)
-    univarcdf = norm.cdf(w1)
+    univarcdf = _ndtr(w1)
 
     gw1_bvn, gw2_bvn, grho_bvn = grad_cdf_bvn(w1, w2, rho)
 
     # Quotient rule: d(f/g) = (g·df - f·dg) / g²
-    gw1 = (univarcdf * gw1_bvn - bivarcdf * norm.pdf(w1)) / (univarcdf**2)
+    gw1 = (univarcdf * gw1_bvn - bivarcdf * _std_npdf(w1)) / (univarcdf**2)
     gw2 = gw2_bvn / univarcdf
     grho = grho_bvn / univarcdf
 
@@ -169,8 +175,8 @@ def grad_univariate_normal_trunc(
     sig = np.sqrt(sig2)
     w = (trpoint - mu) / sig
 
-    phi_w = norm.pdf(w)
-    Phi_w = norm.cdf(w)
+    phi_w = _std_npdf(w)
+    Phi_w = _ndtr(w)
     if Phi_w < 1e-300:
         Phi_w = 1e-300
 
@@ -264,14 +270,14 @@ def grad_bivariate_normal_trunc(
     trcomp = rho * newtrpoint - newtrpointrev
     trcomprev = trcomp[::-1]
 
-    pd1 = norm.pdf(newtrpoint)
+    pd1 = _std_npdf(newtrpoint)
     pd2 = pd1[::-1]
-    cd1 = norm.cdf(tr1)
+    cd1 = _ndtr(tr1)
     cd2 = cd1[::-1]
 
     del1 = pd1 * cd2
     del2 = pd2 * cd1
-    pdf2 = (1.0 / rhotilde) * pd1[0] * norm.pdf(tr1[1])
+    pdf2 = (1.0 / rhotilde) * pd1[0] * _std_npdf(tr1[1])
 
     # Truncated mean (standardized): Bhat (2018) Eq. (4)
     mu_trunc = (-rho * del2 - del1) / P
@@ -331,7 +337,7 @@ def grad_bivariate_normal_trunc(
     # Truncated variance (standardized): Bhat (2018) Eq. (5)
     sig_trunc = (
         (P - newtrpoint * pd1 * cd2 - rho**2 * newtrpointrev * pd2 * cd1
-         + rhotilde * rho * pd2 * norm.pdf(tr1)) / P
+         + rhotilde * rho * pd2 * _std_npdf(tr1)) / P
         - mu_trunc**2
     )
 
@@ -339,7 +345,7 @@ def grad_bivariate_normal_trunc(
     sig12_trunc = (
         (rho * P
          - rho * newtrpoint[0] * pd1[0] * cd2[0]
-         + rhotilde * pd1[0] * norm.pdf(tr2[0])
+         + rhotilde * pd1[0] * _std_npdf(tr2[0])
          - rho * newtrpointrev[0] * pd2[0] * cd1[0]) / P
         - np.prod(mu_trunc)
     )

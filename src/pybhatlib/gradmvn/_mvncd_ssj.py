@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr, ndtri as _ndtri
 
 from pybhatlib.utils._qmc import halton_sequence
 
@@ -58,7 +58,7 @@ def _mvncd_ssj(
 
     if K == 1:
         sd = np.sqrt(sigma[0, 0])
-        return float(norm.cdf(a[0] / sd))
+        return float(_ndtr(a[0] / sd))
 
     # Cholesky decomposition: sigma = C @ C.T
     try:
@@ -93,7 +93,7 @@ def _mvncd_ssj(
                 s += C[k, j] * y[j]
 
             cond_upper = (a[k] - s) / C[k, k]
-            Phi_upper = norm.cdf(cond_upper)
+            Phi_upper = _ndtr(cond_upper)
 
             e_prod *= Phi_upper
 
@@ -109,7 +109,7 @@ def _mvncd_ssj(
                 elif p_k > 1.0 - 1e-15:
                     y[k] = cond_upper
                 else:
-                    y[k] = norm.ppf(p_k)
+                    y[k] = _ndtri(p_k)
 
         prob_sum += e_prod
 

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
+from scipy.special import ndtr as _ndtr
+
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd_rect
 from pybhatlib.models.morp._morp_loglik import _unpack_morp_params
@@ -105,9 +107,8 @@ def morp_ate(
                 else:
                     z_upper = (tau_d[j] - mu_q[d]) / sd_d
 
-                from scipy.stats import norm
-                p_upper = norm.cdf(z_upper) if np.isfinite(z_upper) else 1.0
-                p_lower = norm.cdf(z_lower) if np.isfinite(z_lower) else 0.0
+                p_upper = _ndtr(z_upper) if np.isfinite(z_upper) else 1.0
+                p_lower = _ndtr(z_lower) if np.isfinite(z_lower) else 0.0
                 pred_probs[d][q, j] = max(0.0, p_upper - p_lower)
 
     # Mean across observations

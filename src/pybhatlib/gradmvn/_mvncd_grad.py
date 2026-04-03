@@ -16,7 +16,13 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
 from pybhatlib.gradmvn._mvncd import mvncd
@@ -110,7 +116,7 @@ def _grad_a_numerical(
     if K == 1:
         # Analytic: dPhi(a/sd)/da = phi(a/sd) / sd
         sd = np.sqrt(sigma[0, 0])
-        return np.array([norm.pdf(a[0] / sd) / sd])
+        return np.array([_std_npdf(a[0] / sd) / sd])
 
     eps = 1e-6
     grad = np.zeros(K, dtype=np.float64)

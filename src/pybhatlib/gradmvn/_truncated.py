@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
 from pybhatlib.gradmvn._mvncd import mvncd
@@ -46,9 +52,9 @@ def truncated_normal_pdf(
     z_lo = (lower - mu) / sigma if np.isfinite(lower) else -np.inf
     z_hi = (upper - mu) / sigma if np.isfinite(upper) else np.inf
 
-    phi_z = norm.pdf(z)
-    Phi_hi = norm.cdf(z_hi)
-    Phi_lo = norm.cdf(z_lo)
+    phi_z = _std_npdf(z)
+    Phi_hi = _ndtr(z_hi)
+    Phi_lo = _ndtr(z_lo)
     denom = Phi_hi - Phi_lo
 
     if denom < 1e-300:
@@ -91,9 +97,9 @@ def truncated_normal_cdf(
     z_lo = (lower - mu) / sigma if np.isfinite(lower) else -np.inf
     z_hi = (upper - mu) / sigma if np.isfinite(upper) else np.inf
 
-    Phi_z = norm.cdf(z)
-    Phi_lo = norm.cdf(z_lo)
-    Phi_hi = norm.cdf(z_hi)
+    Phi_z = _ndtr(z)
+    Phi_lo = _ndtr(z_lo)
+    Phi_hi = _ndtr(z_hi)
     denom = Phi_hi - Phi_lo
 
     if denom < 1e-300:
@@ -237,8 +243,8 @@ def _mvn_rect_prob(
     # For K=1, direct computation
     if K == 1:
         sd = np.sqrt(sigma[0, 0])
-        p_upper = norm.cdf((upper[0] - mu[0]) / sd) if np.isfinite(upper[0]) else 1.0
-        p_lower = norm.cdf((lower[0] - mu[0]) / sd) if np.isfinite(lower[0]) else 0.0
+        p_upper = _ndtr((upper[0] - mu[0]) / sd) if np.isfinite(upper[0]) else 1.0
+        p_lower = _ndtr((lower[0] - mu[0]) / sd) if np.isfinite(lower[0]) else 0.0
         return max(0.0, p_upper - p_lower)
 
     # Check for infinite bounds

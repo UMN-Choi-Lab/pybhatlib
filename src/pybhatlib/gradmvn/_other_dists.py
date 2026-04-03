@@ -7,7 +7,13 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 from pybhatlib.backend._array_api import array_namespace, get_backend
 
@@ -71,7 +77,7 @@ def skew_normal_pdf(
         Scale parameter.
     """
     z = (x - mu) / sigma
-    return 2.0 / sigma * norm.pdf(z) * norm.cdf(alpha * z)
+    return 2.0 / sigma * _std_npdf(z) * _ndtr(alpha * z)
 
 
 def skew_normal_cdf(
@@ -81,13 +87,13 @@ def skew_normal_cdf(
     z = (x - mu) / sigma
     # For alpha = 0, reduces to standard normal CDF
     if abs(alpha) < 1e-15:
-        return float(norm.cdf(z))
+        return float(_ndtr(z))
 
     # Use the relationship: F(x; alpha) = Phi(z) - 2*T(z, alpha)
     # where T is Owen's T function
     from scipy.special import owens_t
 
-    return float(norm.cdf(z) - 2.0 * owens_t(z, alpha))
+    return float(_ndtr(z) - 2.0 * owens_t(z, alpha))
 
 
 # --- Skew-t distribution ---

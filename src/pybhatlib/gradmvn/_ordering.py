@@ -15,7 +15,14 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
+
+
+_INV_SQRT_2PI = 1.0 / np.sqrt(2.0 * np.pi)
+
+def _std_npdf(x):
+    """Standard normal PDF, faster than scipy.stats.norm.pdf."""
+    return _INV_SQRT_2PI * np.exp(-0.5 * x * x)
 
 
 def gge_ordering(a: NDArray, sigma: NDArray) -> NDArray:
@@ -82,8 +89,8 @@ def gge_ordering(a: NDArray, sigma: NDArray) -> NDArray:
 
         # Standardized truncation point for variable 0
         lam = (a_work[h] - mu_cond[0]) / R[0, 0]
-        phi_lam = norm.pdf(lam)
-        Phi_lam = max(norm.cdf(lam), 1e-300)
+        phi_lam = _std_npdf(lam)
+        Phi_lam = max(_ndtr(lam), 1e-300)
         mu_tilde = -phi_lam / Phi_lam  # E[Z | Z <= lam] for std normal
 
         # Truncated variance factor: Var[Z | Z <= lam] = 1 + mu_tilde*(lam + mu_tilde)

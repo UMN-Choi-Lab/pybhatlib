@@ -11,7 +11,7 @@ import time
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
 
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.io._data_loader import load_data
@@ -634,7 +634,7 @@ class MNPModel(BaseModel):
 
         with np.errstate(divide="ignore", invalid="ignore"):
             t_stat = np.where(se > 0, b_report / se, 0.0)
-            p_value = 2.0 * (1.0 - norm.cdf(np.abs(t_stat)))
+            p_value = 2.0 * (1.0 - _ndtr(np.abs(t_stat)))
 
         # Correlation matrix of reporting parameters
         if hess_inv is not None:
