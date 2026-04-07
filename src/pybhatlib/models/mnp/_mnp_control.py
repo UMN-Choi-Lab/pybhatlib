@@ -87,3 +87,11 @@ class MNPControl:
     seed: int | None = None
     analytic_grad: bool = True
     startb: NDArray | None = None
+    device: str = "cpu"
+    """Device for computation: "cpu", "cuda", "cuda:0", or "auto".
+    "auto" selects GPU when N >= gpu_threshold and CUDA is available."""
+    gpu_threshold: int = 5000
+    """Minimum N for automatic GPU dispatch when device="auto"."""
+    torch_compile: bool = False
+    """If True, use torch.compile on GPU MVNCD kernels (requires device != "cpu").
+    Adds ~5s one-time compilation cost, then 2-20x faster per iteration."""

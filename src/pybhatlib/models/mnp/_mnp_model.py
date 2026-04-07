@@ -179,13 +179,55 @@ class MNPModel(BaseModel):
         else:
             theta0 = self._default_start_values()
 
-        # Define objective function
-        def objective(theta):
-            return mnp_loglik(
-                theta, self.X, self.y, self.avail,
-                self.n_alts, self.n_beta, self.control,
-                self.ranvar_indices, return_gradient=True, xp=xp,
+        # Resolve device
+        use_gpu = False
+        gpu_device = "cpu"
+        if self.control.device != "cpu":
+            try:
+                import torch
+                if self.control.device == "auto":
+                    use_gpu = (
+                        torch.cuda.is_available()
+                        and self.N >= self.control.gpu_threshold
+                        and (self.n_alts - 1) == 2  # K=2 only for now
+                    )
+                else:
+                    use_gpu = torch.cuda.is_available() and "cuda" in self.control.device
+                if use_gpu:
+                    gpu_device = "cuda" if self.control.device == "auto" else self.control.device
+            except ImportError:
+                pass
+
+        if use_gpu:
+            import torch
+            from pybhatlib.models.mnp._mnp_grad_gpu import mnp_gradient_gpu
+
+            X_gpu = torch.tensor(
+                np.asarray(self.X, dtype=np.float64),
+                dtype=torch.float64, device=gpu_device,
             )
+            y_gpu = torch.tensor(
+                np.asarray(self.y, dtype=np.int64),
+                dtype=torch.int64, device=gpu_device,
+            )
+
+            if self.control.verbose >= 1:
+                print(f"  Device: {gpu_device} (GPU accelerated)")
+
+            def objective(theta):
+                return mnp_gradient_gpu(
+                    theta, X_gpu, y_gpu,
+                    self.n_alts, self.n_beta, self.control,
+                    self.ranvar_indices, device=gpu_device,
+                )
+        else:
+            # Define objective function (CPU path)
+            def objective(theta):
+                return mnp_loglik(
+                    theta, self.X, self.y, self.avail,
+                    self.n_alts, self.n_beta, self.control,
+                    self.ranvar_indices, return_gradient=True, xp=xp,
+                )
 
         # Optimize
         start_time = time.time()
