@@ -777,7 +777,7 @@ def mvncd_log_batch(
     if HAS_NUMBA and method == "me":
         if per_obs_sigma is not None:
             sigma_all = np.asarray(per_obs_sigma, dtype=np.float64)
-            if N < 1000:
+            if N < 50000:
                 return _mvncd_batch_percov_seq_jit(a_all, sigma_all, K)
             else:
                 return _mvncd_batch_percov_jit(a_all, sigma_all, K)
@@ -785,9 +785,10 @@ def mvncd_log_batch(
             # Shared covariance: pre-compute LDLT once
             from pybhatlib.vecup._ldlt import _ldlt_decompose_jit
             L_base, D_base = _ldlt_decompose_jit(sigma)
-            # Use sequential JIT for small N (prange overhead dominates),
-            # parallel for large N where thread scheduling is amortized
-            if N < 1000:
+            # Sequential JIT is faster than prange for all tested N < 50000
+            # (prange has ~15ms thread pool startup overhead).
+            # Only use parallel for very large N where amortization pays off.
+            if N < 50000:
                 return _mvncd_batch_shared_cov_seq_jit(a_all, L_base, D_base, K)
             else:
                 return _mvncd_batch_shared_cov_jit(a_all, L_base, D_base, K)

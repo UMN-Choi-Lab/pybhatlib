@@ -80,6 +80,18 @@ def mnp_loglik(
     N = X_np.shape[0]
     I = n_alts  # number of alternatives
 
+    if return_gradient:
+        # Analytic gradient computes both nll and grad in one pass,
+        # avoiding a redundant forward-only evaluation.
+        if (
+            control.analytic_grad
+            and control.method in ("me", "ovus")
+        ):
+            return mnp_analytic_gradient(
+                theta_np, X_np, y_np, avail, n_alts, n_beta,
+                control, ranvar_indices,
+            )
+
     # Unpack parameters
     params = _unpack_params(theta_np, n_beta, I, control, ranvar_indices)
     beta = params["beta"]
@@ -111,16 +123,7 @@ def mnp_loglik(
     nll = -mean_ll
 
     if return_gradient:
-        # Use analytic gradient when available (ME or OVUS method)
-        if (
-            control.analytic_grad
-            and control.method in ("me", "ovus")
-        ):
-            return mnp_analytic_gradient(
-                theta_np, X_np, y_np, avail, n_alts, n_beta,
-                control, ranvar_indices,
-            )
-        # Numerical gradient fallback
+        # Numerical gradient fallback (analytic path handled above)
         grad = _numerical_gradient(
             theta_np, X_np, y_np, avail, n_alts, n_beta,
             control, ranvar_indices, xp
