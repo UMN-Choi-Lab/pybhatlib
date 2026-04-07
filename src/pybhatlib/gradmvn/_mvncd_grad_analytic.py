@@ -563,3 +563,176 @@ def _grad_me_adjoint_python(
 
     # Convert d(log P) to d(P)
     return prob, prob * grad_a_log, prob * grad_sigma_log
+
+
+# ---------------------------------------------------------------------------
+# Vectorized batch gradient for K=2 (bivariate normal)
+# ---------------------------------------------------------------------------
+
+def mvncd_grad_batch_k2(
+    a_all: NDArray,
+    sigma: NDArray,
+) -> tuple[NDArray, NDArray, NDArray]:
+    """Vectorized BVN gradient for N observations with shared covariance.
+
+    Computes prob, grad_a, grad_sigma_vech for all observations at once
+    using NumPy vectorized operations, eliminating the Python per-obs loop.
+
+    The BVN CDF uses the exact Genz BVND algorithm (via JIT-compiled
+    per-observation calls). The gradient uses exact analytic formulas that
+    are naturally vectorizable.
+
+    Parameters
+    ----------
+    a_all : ndarray, shape (N, 2)
+        Upper integration limits for each observation.
+    sigma : ndarray, shape (2, 2)
+        Shared covariance matrix.
+
+    Returns
+    -------
+    prob : ndarray, shape (N,)
+        MVNCD probability for each observation (exact BVN CDF).
+    grad_a : ndarray, shape (N, 2)
+        d(prob)/d(a) for each observation.
+    grad_sigma_vech : ndarray, shape (N, 3)
+        d(prob)/d(sigma_vech) for each observation, order (s11, s12, s22).
+    """
+    N = a_all.shape[0]
+
+    # Extract covariance parameters
+    s11, s12, s22 = sigma[0, 0], sigma[0, 1], sigma[1, 1]
+    sd1 = np.sqrt(max(s11, 1e-30))
+    sd2 = np.sqrt(max(s22, 1e-30))
+    rho = float(np.clip(s12 / (sd1 * sd2), -0.9999, 0.9999))
+    rhotilde = np.sqrt(1.0 - rho * rho)
+
+    # Standardize: w = a / sd
+    w1 = a_all[:, 0] / sd1
+    w2 = a_all[:, 1] / sd2
+
+    # --- Exact BVN CDF via JIT-compiled Genz algorithm ---
+    if HAS_NUMBA:
+        from pybhatlib.gradmvn._mvncd import _bvn_cdf_standardized_jit
+        prob = np.empty(N, dtype=np.float64)
+        for i in range(N):
+            prob[i] = _bvn_cdf_standardized_jit(w1[i], w2[i], rho)
+    else:
+        from pybhatlib.gradmvn._univariate import bivariate_normal_cdf
+        prob = np.array([
+            bivariate_normal_cdf(w1[i], w2[i], rho) for i in range(N)
+        ])
+    prob = np.maximum(prob, 1e-300)
+
+    # --- Vectorized exact BVN gradient ---
+    # Conditional limits for gradient formulas
+    tr1 = (w2 - rho * w1) / rhotilde
+    tr2 = (w1 - rho * w2) / rhotilde
+
+    # Standard normal PDF and CDF (vectorized via scipy.special.ndtr)
+    phi_w1 = _INV_SQRT_2PI * np.exp(-0.5 * w1 * w1)
+    phi_w2 = _INV_SQRT_2PI * np.exp(-0.5 * w2 * w2)
+    Phi_tr1 = _ndtr(tr1)
+    Phi_tr2 = _ndtr(tr2)
+
+    # Exact BVN gradient w.r.t. standardized limits and correlation
+    gw1 = phi_w1 * Phi_tr1
+    gw2 = phi_w2 * Phi_tr2
+    phi_tr1 = _INV_SQRT_2PI * np.exp(-0.5 * tr1 * tr1)
+    grho = (1.0 / rhotilde) * phi_w1 * phi_tr1
+
+    # Destandardize: grad_a = gw / sd
+    grad_a = np.column_stack([gw1 / sd1, gw2 / sd2])
+
+    # Grad w.r.t. covariance parameters (vech order: s11, s12, s22)
+    # Chain rule through standardization:
+    #   dP/ds11 = -(gw1*w1 + grho*rho) / (2*s11)
+    #   dP/ds12 = grho / (sd1*sd2)
+    #   dP/ds22 = -(gw2*w2 + grho*rho) / (2*s22)
+    grad_s11 = -(gw1 * w1 + grho * rho) / (2.0 * s11)
+    grad_s12 = grho / (sd1 * sd2)
+    grad_s22 = -(gw2 * w2 + grho * rho) / (2.0 * s22)
+
+    grad_sigma_vech = np.column_stack([grad_s11, grad_s12, grad_s22])
+
+    return prob, grad_a, grad_sigma_vech
+
+
+def mvncd_grad_batch_k2_perobs(
+    a_all: NDArray,
+    sigma_all: NDArray,
+) -> tuple[NDArray, NDArray, NDArray]:
+    """Vectorized BVN gradient for N observations with per-observation covariance.
+
+    Each observation has its own 2x2 covariance matrix. The BVN gradient
+    formulas only depend on (sd1, sd2, rho) which are extracted as N-vectors
+    and processed in parallel.
+
+    Parameters
+    ----------
+    a_all : ndarray, shape (N, 2)
+        Upper integration limits for each observation.
+    sigma_all : ndarray, shape (N, 2, 2)
+        Per-observation covariance matrices.
+
+    Returns
+    -------
+    prob : ndarray, shape (N,)
+        Exact BVN CDF for each observation.
+    grad_a : ndarray, shape (N, 2)
+        d(prob)/d(a) for each observation.
+    grad_sigma_vech : ndarray, shape (N, 3)
+        d(prob)/d(sigma_vech) for each observation, order (s11, s12, s22).
+    """
+    N = a_all.shape[0]
+
+    # Extract per-obs covariance parameters as vectors
+    s11 = sigma_all[:, 0, 0]
+    s12 = sigma_all[:, 0, 1]
+    s22 = sigma_all[:, 1, 1]
+
+    sd1 = np.sqrt(np.maximum(s11, 1e-30))
+    sd2 = np.sqrt(np.maximum(s22, 1e-30))
+    rho = np.clip(s12 / (sd1 * sd2), -0.9999, 0.9999)
+    rhotilde = np.sqrt(1.0 - rho * rho)
+
+    # Standardize
+    w1 = a_all[:, 0] / sd1
+    w2 = a_all[:, 1] / sd2
+
+    # --- Exact BVN CDF via JIT-compiled Genz algorithm ---
+    if HAS_NUMBA:
+        from pybhatlib.gradmvn._mvncd import _bvn_cdf_standardized_jit
+        prob = np.empty(N, dtype=np.float64)
+        for i in range(N):
+            prob[i] = _bvn_cdf_standardized_jit(w1[i], w2[i], rho[i])
+    else:
+        from pybhatlib.gradmvn._univariate import bivariate_normal_cdf
+        prob = np.array([
+            bivariate_normal_cdf(w1[i], w2[i], rho[i]) for i in range(N)
+        ])
+    prob = np.maximum(prob, 1e-300)
+
+    # --- Vectorized exact BVN gradient ---
+    tr1 = (w2 - rho * w1) / rhotilde
+    tr2 = (w1 - rho * w2) / rhotilde
+
+    phi_w1 = _INV_SQRT_2PI * np.exp(-0.5 * w1 * w1)
+    phi_w2 = _INV_SQRT_2PI * np.exp(-0.5 * w2 * w2)
+    Phi_tr1 = _ndtr(tr1)
+    Phi_tr2 = _ndtr(tr2)
+
+    gw1 = phi_w1 * Phi_tr1
+    gw2 = phi_w2 * Phi_tr2
+    phi_tr1 = _INV_SQRT_2PI * np.exp(-0.5 * tr1 * tr1)
+    grho = (1.0 / rhotilde) * phi_w1 * phi_tr1
+
+    grad_a = np.column_stack([gw1 / sd1, gw2 / sd2])
+
+    grad_s11 = -(gw1 * w1 + grho * rho) / (2.0 * s11)
+    grad_s12 = grho / (sd1 * sd2)
+    grad_s22 = -(gw2 * w2 + grho * rho) / (2.0 * s22)
+
+    grad_sigma_vech = np.column_stack([grad_s11, grad_s12, grad_s22])
+
+    return prob, grad_a, grad_sigma_vech
