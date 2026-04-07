@@ -250,31 +250,35 @@ Biggest wins at small-to-medium N where kernel launch overhead dominates.
 
 BHATLIB Table 1 models (IID, Flexible, +AGE45, Random OVTT, 2-seg Mixture)
 estimated end-to-end on replicated TRAVELMODE dataset. Times include
-model setup, optimization (BFGS), and convergence. Post-JIT-warmup.
+model setup, optimization (BFGS), and convergence. All warmup costs
+(Numba JIT, torch.compile tracing) are excluded — each N gets its own
+warmup pass before timing.
 
 | N | CPU (s) | GPU eager (s) | GPU compiled (s) | Best | Speedup vs CPU |
 |---|---------|---------------|-------------------|------|----------------|
-| 210 | **0.5** | 6.8 | 4.9 | CPU | — |
-| 1,000 | **1.0** | 4.6 | 2.0 | CPU | — |
-| 5,000 | 4.0 | 4.8 | **2.1** | GPU compiled | 1.9x |
-| 10,000 | 8.3 | 4.8 | **2.1** | GPU compiled | 4.0x |
-| 50,000 | 39.0 | 5.1 | **2.5** | GPU compiled | 15.6x |
+| 210 | **0.7** | 6.1 | 2.9 | CPU | — |
+| 1,000 | **0.9** | 5.0 | 2.1 | CPU | — |
+| 5,000 | 4.0 | 5.0 | **2.0** | GPU compiled | 2.0x |
+| 10,000 | 8.1 | 5.0 | **2.1** | GPU compiled | 3.9x |
+| 50,000 | 38.0 | 4.9 | **2.4** | GPU compiled | 16.1x |
 
 Per-model breakdown at N=50,000:
 
 | Model | CPU (s) | GPU compiled (s) | Speedup |
 |-------|---------|-------------------|---------|
-| (a)(i) IID | 1.1 | 0.06 | 17x |
+| (a)(i) IID | 1.0 | 0.07 | 15x |
 | (a)(ii) Flexible | 2.5 | 0.21 | 12x |
-| (b) +AGE45 | 3.3 | 0.27 | 12x |
-| (c) Random OVTT | 8.4 | 0.54 | 16x |
-| (d) 2-seg Mixture | 23.8 | 1.41 | 17x |
+| (b) +AGE45 | 3.1 | 0.27 | 11x |
+| (c) Random OVTT | 8.5 | 0.54 | 16x |
+| (d) 2-seg Mixture | 22.9 | 1.28 | 18x |
 
 Key observations:
 - GPU compiled time is **near-constant** (~2-2.5s total) regardless of N
-- CPU scales linearly with N (0.5s at 210 → 39s at 50K)
-- Break-even at **N ≈ 2,000** for full Table 1
+- CPU scales linearly with N (0.7s at 210 → 38s at 50K)
+- Break-even at **N ≈ 3,000** for full Table 1
 - Mixture model dominates total time in all configurations
+- GPU eager is slower than CPU even at N=50K for Table 1 total
+  (mixture model's per-group loop overhead); torch.compile is essential
 
 ### Usage
 
