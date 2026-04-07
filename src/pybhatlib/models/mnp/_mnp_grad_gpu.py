@@ -223,7 +223,7 @@ def mnp_gradient_gpu(
             adj_Xi_c = torch.einsum('di,nde,ej->nij', M_c, adj_Ld[idx_c], M_c)
 
             if has_random and n_omega > 0:
-                X_rand = X_gpu[idx_c, :, ranvar_indices]
+                X_rand = X_gpu[idx_c][:, :, ranvar_indices]
                 adj_Omega_c = torch.einsum('nir,nij,njs->rs', X_rand, adj_Xi_c, X_rand)
                 adj_op = _adj_omega_to_params(
                     adj_Omega_c.cpu().numpy(), Omega_L_np, omega_params,
