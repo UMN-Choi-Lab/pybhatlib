@@ -21,7 +21,7 @@ What you will learn:
 
 Prerequisites: t04a (IID model), t04d (random coefficients), t04f (control options).
 
-Expected runtime: ~10 min
+Expected runtime: ~10 sec
 """
 import os, sys, time
 import numpy as np

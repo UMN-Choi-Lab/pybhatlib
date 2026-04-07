@@ -13,7 +13,7 @@ What you will learn:
 
 Prerequisites: t04d (random coefficients).
 
-Expected runtime: ~36 min
+Expected runtime: ~3 sec
 """
 import os, sys, time
 import numpy as np
@@ -99,8 +99,8 @@ print("""
   Target log-likelihood (BHATLIB paper): -634.975
 """)
 
-print("  Note: Mixture models are computationally expensive. With numerical")
-print("  gradients, this may take ~26 minutes for 163 iterations.")
+print("  Note: Mixture models use a vectorized BVN gradient path, so")
+print("  estimation takes under 1 second for ~160 iterations.")
 print()
 
 t0 = time.perf_counter()
@@ -173,8 +173,8 @@ print("""
       in pybhatlib — it can approximate any mixing distribution over beta
     - It is also the slowest: each likelihood evaluation sums S segment
       probabilities, each requiring a full MVNCD computation
-    - With numerical gradients (current default), expect 5-30 seconds
-      per iteration depending on sample size and number of alternatives
+    - With vectorized BVN gradient, expect ~5 ms per iteration
+      for 3-alternative models (under 1 second total)
 
   Multiple local optima:
     - Mixture models are notorious for having many local modes in the

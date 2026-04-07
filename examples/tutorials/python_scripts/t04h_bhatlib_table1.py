@@ -30,7 +30,7 @@ Target log-likelihoods (BHATLIB paper Table 1):
   (c)      -635.871
   (d)      -634.975
 
-Expected runtime: ~45 min
+Expected runtime: ~3 sec
 """
 import os, sys, time
 import numpy as np
@@ -434,13 +434,9 @@ print("""
 
   Computational note:
 
-    Estimation time grows substantially from IID (fastest) to
-    mixture (slowest).  The IID model has a closed-form differenced
-    covariance, requiring no MVNCD integration.  Models (a)(ii)
-    through (c) require MVNCD evaluations per observation.  The
-    mixture model (d) doubles the MVNCD calls (one per segment per
-    observation) and uses numerical gradients, making it the most
-    computationally demanding specification.
+    With vectorized BVN gradients and Numba JIT, all five models
+    complete in under 3 seconds total (including JIT warmup).
+    After warmup, each model takes well under 1 second.
 """)
 
 print("  Tutorial complete.")

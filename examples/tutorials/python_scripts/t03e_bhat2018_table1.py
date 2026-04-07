@@ -22,7 +22,7 @@ Configuration:
   - Set N_TESTS = 1000 for full replication of the paper (~10 min)
   - H_VALUES = [5, 7, 10] by default; add [12, 15, 18, 20] for full table
 
-Expected runtime: ~30 min
+Expected runtime: ~2.5 min
 """
 import os, sys, time
 import numpy as np

@@ -15,7 +15,7 @@ What you will learn:
 
 Prerequisites: t04b (flexible covariance).
 
-Expected runtime: ~6 min
+Expected runtime: ~2 sec
 """
 import os, sys, time
 import numpy as np

@@ -10,7 +10,7 @@ What you will learn:
 
 Prerequisites: t00 (quickstart).
 
-Expected runtime: ~1 min
+Expected runtime: ~5 sec
 """
 import os, sys
 import numpy as np

@@ -12,7 +12,7 @@ What you will learn:
 
 Prerequisites: t03d (univariate CDFs) recommended.
 
-Expected runtime: ~15 sec
+Expected runtime: ~5 sec
 """
 import os, sys, time
 import numpy as np

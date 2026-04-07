@@ -12,7 +12,7 @@ What you will learn:
 
 Prerequisites: None (this is the first tutorial).
 
-Expected runtime: ~1 min
+Expected runtime: ~5 sec
 """
 import os, sys
 import numpy as np

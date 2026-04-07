@@ -14,7 +14,7 @@ What you will learn:
 
 Prerequisites: t00 (quickstart).
 
-Expected runtime: ~1 min
+Expected runtime: ~2 sec (includes JIT compilation on first run)
 """
 import os, sys, time
 import numpy as np

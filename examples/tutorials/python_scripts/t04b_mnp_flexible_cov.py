@@ -13,7 +13,7 @@ What you will learn:
 
 Prerequisites: t04a (IID model).
 
-Expected runtime: ~4 min
+Expected runtime: ~3 sec (includes JIT compilation on first run)
 """
 import os, sys, time
 import numpy as np
