@@ -41,14 +41,14 @@
 | Model | Original | Phase 1-3 | Phase 1-2 | Total | Target LL | Achieved LL |
 |-------|----------|-----------|-----------|-------|-----------|-------------|
 | | (pre-opt) | (Numba JIT + analytic grad) | (+ vectorized gradient) | speedup | | |
-| **(a)(i) IID** | ~60 s | 3.3 s | **1.7 s**† | **35x** | -670.956 | -670.956 |
-| **(a)(ii) Flexible** | ~240 s | 3.0 s | **0.1 s** | **2,400x** | -661.111 | -661.111 |
-| **(b) +AGE45** | ~180 s | 3.2 s | **0.1 s** | **1,800x** | -659.285 | -659.284 |
-| **(c) Random OVTT** | ~360 s | 9.1 s | **0.2 s** | **1,800x** | -635.871 | -635.871 |
-| **(d) Mixture nseg=2** | ~2,160 s | 43.8 s | **0.6 s** | **3,600x** | -634.975 | -632.912‡ |
-| **Table 1 (all 5)** | **~50 min** | **~56 s** | **~2.7 s** | **~1,100x** | | |
+| **Numba JIT warmup** | — | — | **1.5 s** (one-time) | — | — | — |
+| **(a)(i) IID** | ~60 s | 3.3 s | **0.02 s** | **3,000x** | -670.956 | -670.956 |
+| **(a)(ii) Flexible** | ~240 s | 3.0 s | **0.04 s** | **6,000x** | -661.111 | -661.111 |
+| **(b) +AGE45** | ~180 s | 3.2 s | **0.05 s** | **3,600x** | -659.285 | -659.284 |
+| **(c) Random OVTT** | ~360 s | 9.1 s | **0.18 s** | **2,000x** | -635.871 | -635.871 |
+| **(d) Mixture nseg=2** | ~2,160 s | 43.8 s | **0.26 s** | **8,300x** | -634.975 | -632.912‡ |
+| **Table 1 (all 5)** | **~50 min** | **~56 s** | **0.5 s** + 1.5s JIT | **~1,700x** | | |
 
-† Includes ~1.5s one-time Numba JIT compilation; subsequent runs ~0.1s.
 ‡ Mixture local optimum — optimizer found a better mode on this dataset (LL is higher).
 
 ### Where Time Was Actually Spent (Profiling Findings)
@@ -245,6 +245,36 @@ Break-even: **N ≈ 3,000** (GPU compiled) vs N ≈ 5,000 (GPU eager).
 
 torch.compile fuses ~50 elementwise kernel launches into optimized Triton kernels.
 Biggest wins at small-to-medium N where kernel launch overhead dominates.
+
+### Full Table 1 Benchmark: All 5 Models at Varying N
+
+BHATLIB Table 1 models (IID, Flexible, +AGE45, Random OVTT, 2-seg Mixture)
+estimated end-to-end on replicated TRAVELMODE dataset. Times include
+model setup, optimization (BFGS), and convergence. Post-JIT-warmup.
+
+| N | CPU (s) | GPU eager (s) | GPU compiled (s) | Best | Speedup vs CPU |
+|---|---------|---------------|-------------------|------|----------------|
+| 210 | **0.5** | 6.8 | 4.9 | CPU | — |
+| 1,000 | **1.0** | 4.6 | 2.0 | CPU | — |
+| 5,000 | 4.0 | 4.8 | **2.1** | GPU compiled | 1.9x |
+| 10,000 | 8.3 | 4.8 | **2.1** | GPU compiled | 4.0x |
+| 50,000 | 39.0 | 5.1 | **2.5** | GPU compiled | 15.6x |
+
+Per-model breakdown at N=50,000:
+
+| Model | CPU (s) | GPU compiled (s) | Speedup |
+|-------|---------|-------------------|---------|
+| (a)(i) IID | 1.1 | 0.06 | 17x |
+| (a)(ii) Flexible | 2.5 | 0.21 | 12x |
+| (b) +AGE45 | 3.3 | 0.27 | 12x |
+| (c) Random OVTT | 8.4 | 0.54 | 16x |
+| (d) 2-seg Mixture | 23.8 | 1.41 | 17x |
+
+Key observations:
+- GPU compiled time is **near-constant** (~2-2.5s total) regardless of N
+- CPU scales linearly with N (0.5s at 210 → 39s at 50K)
+- Break-even at **N ≈ 2,000** for full Table 1
+- Mixture model dominates total time in all configurations
 
 ### Usage
 
