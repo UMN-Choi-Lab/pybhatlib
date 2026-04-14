@@ -121,7 +121,7 @@ If your change touches any code under `src/pybhatlib/gradmvn/`,
 requesting review:
 
 ```bash
-jupyter nbconvert --to notebook --execute docs/tutorials/t04h_bhatlib_table1.ipynb
+jupyter nbconvert --to notebook --execute examples/tutorials/t04h_bhatlib_table1.ipynb
 ```
 
 Include the resulting LL values in the PR description. If they differ from
