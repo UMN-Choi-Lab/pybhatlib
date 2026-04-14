@@ -1,0 +1,12 @@
+# CODEOWNERS for pybhatlib
+#
+# Lines in this file follow the pattern:
+#   <path-glob>  <@username-or-@org/team>
+#
+# The last matching rule wins. When a PR touches a matching path, the owner
+# is automatically requested for review. On a private repo under the Free
+# plan this is not enforced — but it makes the review expectation visible on
+# every PR and sends the owner an email notification.
+
+# Default owner for everything
+*   benchoi93@gmail.com
