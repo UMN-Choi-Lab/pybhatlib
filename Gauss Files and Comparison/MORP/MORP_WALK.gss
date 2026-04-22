@@ -1,0 +1,998 @@
+/*********************************************************************************************************************************************
+** Written by C. Bhat, March 2024
+** (C) Copyright 2024 by Bhat
+** All Rights Reserved.
+**********************************************************************************************************************************************/
+/* This is cross-sectional MULTIVARIATE ORDERED MODEL model using a variety of different analytic approximation methods for the
+multivariate cumulative normal; The code uses analytic gradients, all written by Bhat.
+**********************************************************************************************************************************************
+** The File Header must accompany all files using any portion, in whole or in part, of this source code, and the many gradient
+library procedures and other procedures written by Bhat and used by this code;
+**********************************************************************************************************************************************
+** Please cite the following two papers, on which this code is based, if you use this code in any way:
+
+Bhat, C.R. (2018), "New Matrix-Based Methods for the Analytic Evaluation of the Multivariate Cumulative
+Normal Distribution Function," Transportation Research Part B, Vol. 109, pp. 238-256
+
+Saxena, S., Bhat, C.R., and Pinjari, A.R. (2023), "Separation-based Parameterization Strategies for Estimation
+of Restricted Covariance Matrices in Multivariate Model Systems," Journal of Choice Modelling, Vol. 47, 100411
+
+********************************************************************************************************************************************
+
+Available analytic methods:
+
+_method =
+"SSJ"                     - Switzer, Solow, and Joe Method
+"TG"                      - Trinh and Genz's univariate conditioning approximation procedure
+"ME"                      - The traditional ME approach, implemented in a new matrix-based and LDLT-based manner
+"OVUS"                    - One-variate univariate screening approach
+"OVBS"                    - One-variate bivariate screening approach
+"TGBME"                   - Trinh and Genz's bivariate conditioning approximation procedure
+"BME"                     - Bivariate ME approach
+"TVBS"                    - Two-variate bivariate screening approach   */
+
+library maxlik ;
+maxset;
+format /m1/rzt 1,6;
+Gausset;
+clearg all;
+
+/*******************************************************************************************************************************************
+Global Variable Definition and Settings
+********************************************************************************************************************************************/
+_method = "OVUS";
+
+/* How do you want to parameterize the Cholesky of the Correlation Matrix */
+
+_Spher = 0;        /* Put _Spher =1 if you want spherical coordinate parameterization and 0 if you want radial coordinate parameterization */
+
+/* Want to estimate all-independent model? */
+
+_indep=0;
+
+/* Want to estimate independent model first before estimating joint model? Value is irrelevant if _indep=1;  */
+
+_indepfirst=0;
+
+/* Number of observations in data set */
+
+nobs = 1583; /* VERY IMPORTANT; This should correspond to the number of total observations in the data set */
+
+/* Number of ordinal variables */
+
+nord = 4;
+
+/**********************************************************************************************************************************************
+Main modification area for different runs
+***********************************************************************************************************************************************/
+
+/* Specify path to the csv file corresponding to the dataset*/
+fname= "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MORP\\Example_Walk.csv";
+
+dataset_name = csvReadM(fname);
+tempdata = csvreadM(fname,2);
+headers = getheaders(fname);
+
+/* Specify path where the .dat file corresponding to the dataset gets saved*/
+dat_file = "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MORP\\Example_Walk.dat";
+ret = saved(tempdata,dat_file, headers);
+dataset = dat_file;
+
+
+/* position of pointer to observation number in data set */
+{ obsid,ivobsid } = indices(dataset,"ID");
+
+/* The dataset should have a column of one (named UNO) and a column of zero (named SERO) */
+{ _ddv,_uno  } = indices(dataset,"UNO"); /* pointer to uno variable */
+{ _ddv,_sero } = indices(dataset,"SERO"); /* pointer to sero variable */
+
+/* specify dependent outcomes in ordered-response model component below; the dependent outcomes should STRICTLY take a value of 1,2,3,4...;
+if an ordered-response outcome takes the values 0,1,2,3...., add one to this dependent variable ;
+if an ordered-response outcome does not exist then put the SPECIFIC value of 0 for the individual in the ordered-response
+dependent outcome column in the data set, AND then provide availability in davordname variable below; dvordname and davordname are
+1 x nord vectors  */
+
+dvordname = { Happy Meaning Stress Tired };
+
+/* If an ordered variable is not available for specific individuals create an appropriate variable
+in data set that takes a value of zero for those individuals and a value of one for other individuals; put the name of the variable below
+for each ordered response variable; Number of columns below should be the same as the number of columns in dvordname */
+
+davordname = { uno uno uno uno };
+
+
+/* definition of independent variables in ordered-response equation; names of iv variables in a matrix of size
+nord x (total # of coefficients to be estimated across all ordered-response models*/
+
+let ivord =        {	female age20   util   sero    sero    sero     sero    sero   sero   sero     sero ,
+    sero   sero    sero   female  age65   sero     sero    sero   sero   sero     sero ,
+    sero   sero    sero   sero    sero    age65    morning util   sero   sero     sero	,
+    sero   sero    sero   sero    sero    sero     sero    sero   age65  morning  util };
+
+var_ordnames  =      { Hfemale Hage20 Hutil	  Mfemale Mage65  Sage65  Smorning Sutil  Tage65 Tmorning Tutil	};
+
+
+/**********************************************************************************************************************************************
+correlation restriction specification; with high dimensions and "high-depth" zero correlations, things can get tricky
+**********************************************************************************************************************************************/
+
+_correst = 0;    /* Put a value of zero if no correlation restriction */
+
+correst = { 1 1 1 1,        /* Upper diagonal matrix with a diagonal of ones; off-diagonal elements of 1 indicate active correlations */
+    0 1 1 0,        /* correst is relevant only if _correst=1 */
+    0 0 1 1,
+    0 0 0 1 };
+
+/**********************************************************************************************************************************************
+Actual program area begins; NO NEED TO TOUCH ANYTHING BELOW
+**********************************************************************************************************************************************/
+
+
+/* declare global variables */
+declare _OMEGACORR ?= 0;
+declare _XOMEGAXT ?=0;
+declare _x1symmetric ?= 0;
+declare _x2symmetric ?= 0;
+declare _x1diagonal ?= 0;
+declare _x2diagonal ?= 0;
+declare _x2correlation ?= 0;
+declare _xinvsymmetric ?= 0;
+declare _xinvcorrelation ?= 0;
+declare _xinvdiagonal ?= 0;
+declare _omsymmetric ?= 0;
+declare _omdiagonal ?= 0;
+declare _omegacorr ?= 0;
+declare _condcov ?= 0;
+declare _condspecialcov ?= 0;
+declare _cholesky ?= 0;
+declare _cholcov ?= 0;
+declare _condcovspecial ?= 0;
+declare _condcovmeantrunc ?= 0;
+declare _condcovsigtrunc ?= 0;
+declare _covarr ?= 1;
+declare _optimal ?= 0;
+declare ProdA_symmetric ?=1;
+declare ProdA_correlation ?=0;
+declare ProdA_diagonal ?=1;
+declare _diagA ?=0;
+declare _diagL ?=1;
+declare _cholcov ?=1;
+declare ProdB_diagonal ?=1;
+declare ProdB_symmetric ?=1;
+declare ProdB_correlation ?=1;
+declare _randper ?= 0;
+declare _lowest ?= 0;
+declare _norepeat ?=0;
+declare _randd ?=0;
+declare _perms ?= 1;
+/**********************************************************************************************************************************************
+correlation restriction specification
+**********************************************************************************************************************************************/
+
+scal = 1;        /* Scale used in parameterizations */
+
+seed10 = 70000000;   /* In case allowing SSJ method  */
+
+/* Number of rows to be read by likelihood function */
+__row = nobs;
+infin=200;
+minfin=-200;
+_weight = _uno;
+ivnameord = {};
+indxivord = {};
+if nord>0;
+    { vdvord,dvord } = indices(dataset,dvordname');
+    { vdavord,davord } = indices(dataset,davordname');
+    { ivnameord,indxivord } = indices(dataset,(vecr(ivord)));
+    ivnameord = var_ordnames';
+    ncoeford = cols(ivord); /* Number of coefficients to be estimated across all ordered-response exogenous variables  */
+else;
+    ncoeford=0;
+endif;
+
+ntotcoef=ncoeford;
+
+
+/*****************************************************************************************************************************************/
+/*                           Specification of coefficient types and start values/_max_active settings                                                   */
+/*****************************************************************************************************************************************/
+
+open fin = ^dataset;
+do until eof(fin);
+    dta = readr(fin,nobs);
+    if nord>0;
+        yord = dta[.,dvord];
+        yord = (yord.==0)+yord.*(yord.!=0);
+        yavord = dta[.,davord];
+        yiord = dta[.,indxivord];
+    endif;
+    
+endo;
+fin = close(fin);
+
+nordcont = nord;
+nkernnom =  (nordcont*(nordcont-1))/2;      /* Number of correlation parameters due to ordinal variables */
+totdep = nordcont;
+totdim = nordcont;                      /*  MUST be at least 2, based on the fact that there should be at leats two dependent outcomes */
+nker = (totdim-1)*(totdim)/2;               /* Total number of correlation parameters */
+
+
+/* Arrangement starting values so that coefficients of all thresholds in ordered-response,
+then coeffs. of all independent variables in ordered-response, cholesky of kernel correlation elements.
+*/
+
+b={};
+
+if nord>0;
+    thresh = {};
+    threlbl={};
+    numthresh = {};
+    ncord = {};
+    maskdown={};
+    maskup = {};
+    indxdown={};
+    indxup = {};
+    indxdoub = {};
+    for i(1,nord,1);
+        { ncordtemp, threshtemp } = init(dataset,yord[.,i]);
+        masktemp = reshape(seqa(1,1,ncordtemp+1)',1,ncordtemp+1);    /* All mask matrices are number of threshold+2 for each ordinal variable, to include -inf and +inf) */
+        masktempdown = masktemp.==yord[.,i];
+        masktempup = masktemp.==yord[.,i]+1;
+        thresh=thresh|threshtemp;
+        threlbl =  threlbl|(0 $+ "THRESH" $+ ftocv(seqa(1,1,ncordtemp-1),2,0));
+        numthresh=numthresh|rows(threshtemp);
+        ncord=ncord|ncordtemp;
+        maskdown = maskdown~masktempdown;
+        maskup = maskup~masktempup;
+        indxdown = indxdown~(masktempdown[.,1].==1);
+        indxup = indxup~(masktempup[.,ncordtemp+1].==1);
+        indxsing = indxdown+indxup;
+        indxdoub = 1-indxsing;
+        nummask = sumc(ncord+1);
+        nummask1 = cumsumc(0|(ncord+1));
+    endfor;
+else;
+    numthresh=0;
+    numthresh1=0;
+endif;
+
+if nord>0;
+    nthresh = sumc(numthresh);
+    nthresh1=cumsumc(0|numthresh);
+    b = b|thresh|zeros(ncoeford,1);
+    ivvnameord = threlbl|ivnameord;
+    activeord = ones(nthresh+ncoeford,1);
+else;
+    nthresh=0;
+    nthresh1=0;
+    activeord = {};
+endif;
+
+_max_active = activeord;
+
+startker = eye(totdim);
+j=0;
+
+startker = chol(startker);
+if _spher;
+    startker = revcholspherparmunconst(startker);
+else;
+    startker = revnewcholparm(startker);
+endif;
+
+nscale=0;  //no scale in ordered response varible
+
+/* associating columns with variable names for output */
+
+kername =  0 $+ "ker" $+ ftocv(seqa(1,1,nker),2,0);
+if nscale>0;
+    scalname = 0 $+ "scale" $+ ftocv(seqa(1,1,nscale),2,0);
+else;
+    scalname = {};
+endif;
+_max_ParNames1= ivvnameord;
+_max_active = activeord;
+_max_GradProc=&lgd;
+_max_CovPar = 2;
+_max_Options = { bfgs stepbt };
+_max_maxiters = 500;
+_max_gradTol = 0.5e-3;
+
+print "analytic approximation method used is ";
+_method;
+
+if _indep==1 or (_indep==0 and _indepfirst==1);
+    _correst=0;
+    _max_active = activeord|zeros(nker,1);
+    kername =  0 $+ "ker" $+ ftocv(seqa(1,1,nker),2,0);
+    _max_parnames = _max_parnames1|kername;
+    b = b|startker;
+    { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b));
+    b=x;
+endif;
+
+if _indep==0;
+    startker = 0.05*ones(totdim,totdim);   /* DO NOT CHANGE THIS; NEED SOME PERTURBATION FROM ZERO TO KICK-START ITERATIONS */
+    startker = diagrv(startker,ones(totdim,1));
+    j=0;
+    startker = chol(startker);
+    if _spher;
+        startker = revcholspherparmunconst(startker);
+    else;
+        startker = revnewcholparm(startker);
+    endif;
+    if _correst;
+        { numact,actindx,inactindx } = restcorindx(correst);
+        startker = startker[actindx];
+        nker = numact;
+        kername =  0 $+ "ker" $+ ftocv(seqa(1,1,nker),2,0);
+        _max_parnames = _max_parnames1|kername;
+        nkertot = rows(actindx)+rows(inactindx);
+    else;
+        nkertot=nker;
+        kername =  0 $+ "ker" $+ ftocv(seqa(1,1,nker),2,0);
+        _max_parnames = _max_parnames1|kername;
+    endif;
+    b = b|startker;
+    
+    _max_active = activeord|ones(nker,1);
+    { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b));
+    
+endif;
+
+/*****************************************************************************************************************************************/
+/*                                     obtaining covariance matrix in a last iteration                                                   */
+/*****************************************************************************************************************************************/
+
+if _indep==0;
+    b=x;
+    bker = b[nthresh+ncoeford+1:nthresh+ncoeford+nker];
+    
+    if _spher;
+        if _correst==1;
+            { bker,capomegaindx } = restcholspherunconstscaled(bker,correst,scal);
+        endif;
+        bker = cholspherparmunconstscaled(bker,scal);
+    else;
+        if _correst==1;
+            { bker,capomegaindx } = restcholunconstscaled(bker,correst,scal);
+        endif;
+        bker = newcholparmscaled(bker,scal);
+    endif;
+    bker1 = bker'*bker;
+    bker = vecndup(bker'*bker);
+    if _correst;
+        nker = rows(bker);
+        kername =  0 $+ "ker" $+ ftocv(seqa(1,1,nker),2,0);
+        _max_ker = vecndup(correst);
+    else;
+        _max_ker = ones(rows(bker),1);
+    endif;
+    _max_parnames = _max_parnames1|kername;
+    _max_active = activeord|_max_ker;
+    b = b[1:nthresh+ncoeford]|bker;
+    _max_GradProc=&lgd1;
+    _max_CovPar = 2;
+    _max_Options = { bfgs stepbt };
+    _max_maxiters = 0;
+    { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr1,b));
+    print "The estimated correlation matrix is:";
+    print bker1;
+endif;
+
+
+/* procedure for log likelihood function calculation */
+
+proc lpr(x,dta);
+    local e1,p0,popass,xfinord,yifinord,i,j,xthresh,xker,xscal,cholker,omegastar, covker,omegker,xthreshi,
+        xup,seednext,seed20,vsubq,xisubq,Msubq,indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w,final,
+        indxcompq,xgg,threshtmp,selq;
+    local xfin,zq,maskdownq,maskupq,ytempord,prepsing,prepsingdown,prepsingup,prepdoub,xdownord,xupord,capomegaindx,xggord,xdown;
+    
+    e1 = rows(dta);
+    p0 = zeros(e1,1);
+    popass = dta[.,ivobsid];
+    
+    if nord>0;
+        xfinord = x[nthresh+1:nthresh+ncoeford];
+        yifinord = yiord;
+        xthresh={};
+        threshtmp = x[1:nthresh];
+        for i(1,nord,1);
+            xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+            xthresh=xthresh|xthreshi;
+        endfor;
+    else;
+        xfinord = {};
+    endif;
+    
+    if ntotcoef>0;
+        xfin = xfinord;
+    else;
+        xfin = 0;
+    endif;
+    xker = x[nthresh+ncoeford+1:nthresh+ncoeford+nker];
+    xscal=0;
+    if _spher;
+        if _correst==1;
+            { xker,capomegaindx } = restcholspherunconstscaled(xker,correst,scal);
+        endif;
+        cholker = cholspherparmunconstscaled(xker,scal);
+    else;
+        if _correst==1;
+            { xker,capomegaindx } = restcholunconstscaled(xker,correst,scal);
+        endif;
+        cholker = newcholparmscaled(xker,scal);
+    endif;
+    omegastar = cholker'*cholker;
+    covker = omegastar;
+    omegker=(covker);
+    if popass[1]==1;
+        seednext=seed10;
+    endif;
+    
+    Pcomp={};
+    for i1(1,e1,1);
+        selq={};
+        selq = selq|((yavord[i1,.])');
+        selq = selif(eye(nordcont),selq);
+        if ntotcoef>0;
+            zq = zeros(totdep,ntotcoef);
+        else;
+            zq = 0;
+        endif;
+        indxcompq = zeros(nordcont,1);
+        if nord>0;
+            maskdownq = zeros(nord,nummask);
+            maskupq = zeros(nord,nummask);
+            prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));
+            prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+            prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+            prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+            ytempord = yiord[i1,.];
+            ytempord = reshape(ytempord,nord,ncoeford);
+            zq[1:nord,1:ncoeford]=ytempord;
+        endif;
+        
+        for j(1,nord,1);
+            maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+            maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+            xdownord = prepdoub*maskdownq*xthresh;
+            xupord= prepdoub*maskupq*xthresh;
+            xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+        endfor;
+        xgg = xggord;
+        xdown = xdownord;
+        xup = xupord;
+        indxcompq = ((indxup[i1,.])');
+        
+        seed20=seednext;
+        
+        Msubq = eye(nordcont);
+        indxoneq = zeros(nordcont,1);
+        indxeqq = zeros(nordcont,1);
+        Vsubq = zq*xfin;
+        xisubq = (omegker);
+        indxoneq[1:nord] = (indxsing[i1,.])';
+        
+        xgg = selq*xgg;
+        xdown = selq*xdown;
+        xup = selq*xup;
+        indxoneq=selq*indxoneq;
+        indxcompq = selq*indxcompq;
+        indxeqq = selq*indxeqq;
+        Msubq = selq*Msubq;
+        Bsubq = Msubq*((Vsubq));
+        newxisubq = Msubq*xisubq*Msubq';
+        
+        { P,sss } = cdorrectmvn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq);
+        
+        Pcomp = pcomp|P;
+        seednext=sss;
+    endfor;
+    
+    w=zeros(e1,1);
+    if pcomp > w;
+        final=ln(pcomp);
+    else;
+        print "yes";
+        final=ln(pcomp-((pcomp.<=w).*(pcomp-0.0001)));
+    endif;
+    retp(dta[.,_weight].*final);
+endp;
+
+
+proc lgd(x,dta);
+    local e1,p0,popass,xfinord,yifinord,i,j,xthresh,xker,xscal, cholker,omegastar, covker,omegker,xthreshi, xup,seednext,seed20,vsubq,
+        xisubq,Msubq,indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w, indxcompq,xgg, xfin,zq,maskdownq,maskupq,ytempord,prepsing,
+        prepsingdown,prepsingup,prepdoub, xdownord,xupord,capomegaindx,xggord,xdown,newsdoubstar,numact,actindx,inactindx,gscal;
+    local threshtmp,selq,gordthreshfin,selordq,selordqq,hunordq,hordq, gW1,gomegastar, gker,gtempstar,gfinal, gBsubq,gnewxisubq,
+        gxg,gxdown,gxup,gVsubq,gxmu,gxmufinal,gxthreshord,gxggord,gxdownord,gxupord,gxthreshfin ,gfinstar,gordfin,gthreshfini,g,g1,gcovker,gxupo,gxdowno;
+    
+    e1 = rows(dta);
+    p0 = zeros(e1,1);
+    popass = dta[.,ivobsid];
+    
+    if nord>0;
+        xfinord = x[nthresh+1:nthresh+ncoeford];
+        yifinord = yiord;
+        xthresh={};
+        threshtmp = x[1:nthresh];
+        for i(1,nord,1);
+            xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+            xthresh=xthresh|xthreshi;
+        endfor;
+    else;
+        xfinord = {};
+    endif;
+    
+    if ntotcoef>0;
+        xfin = xfinord;
+    else;
+        xfin = 0;
+    endif;
+    
+    xker = x[nthresh+ncoeford+1:nthresh+ncoeford+nker];
+    xscal=0;
+    
+    
+    if _spher;
+        if _correst==1;
+            { xker,capomegaindx } = restcholspherunconstscaled(xker,correst,scal);
+        endif;
+        cholker = cholspherparmunconstscaled(xker,scal);
+    else;
+        if _correst==1;
+            { xker,capomegaindx } = restcholunconstscaled(xker,correst,scal);
+        endif;
+        cholker = newcholparmscaled(xker,scal);
+    endif;
+    
+    omegastar = cholker'*cholker;
+    covker = omegastar;
+    omegker=(covker);
+    
+    _OMEGACORR=0;
+    _XOMEGAXT=0;
+    { gW1,gomegastar } = gradcovcor(Covker);                           /* gW1 is [b] X [a*(a+1)/2]; gomegastar is [b*(b+1)/2] X [a*(a+1)/2]; a=[nordcont],  b=(nordcont) */
+    /* { gcholcor } = gcholeskycor(omegastar);                            /* gcholcor is [(b*(b+1)/2] x [(b*(b+1)/2] matrix */  */
+    
+    if _spher;
+        if _correst==0;
+            { gker,gscal } = gcholspherunconstcorscaled(omegastar,scal);        /* gker is [(totdim*(totdim-1)/2] x [(totdim*(totdim-1)/2] matrix */
+        elseif _correst==1;
+            { newsdoubstar,gker,capomegaindx,numact,actindx,inactindx  } = grestcholspherunconstcorscaled(omegastar,correst,scal);
+        endif;
+    else;
+        if _correst==0;
+            { gker,gscal } = gnewcholparmcorscaled(omegastar,scal);
+        elseif _correst==1;
+            { newsdoubstar,gker,capomegaindx,numact,actindx,inactindx  } = grestcholunconstcorscaled(omegastar,correst,scal);
+        endif;
+    endif;
+    
+    gtempstar = gker*gomegastar;                                        /* [totdim*(totdim-1)/2] x [totdep*(totdep+1)/2]  */
+    
+    if popass[1]==1;
+        seednext=seed10;
+    endif;
+    
+    Pcomp={};
+    gfinal = {};
+    for i1(1,e1,1);
+        selq={};
+        selordq = ((yavord[i1,.])');
+        selq = selq|selordq;
+        hordq = sumc(selordq);
+        
+        selq = selif(eye(nordcont),selq);
+        if ntotcoef>0;
+            zq = zeros(totdep,ntotcoef);
+        else;
+            zq = 0;
+        endif;
+        indxcompq = zeros(nordcont,1);
+        if nord>0;
+            selordqq = ((selq[1:hordq,1:nord])');   /* nord x hordq matrix  */
+            maskdownq = zeros(nord,nummask);                                /* nord x [(total number of thresholds+2) across all ordinal outcome ] */
+            maskupq = zeros(nord,nummask);
+            prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+            prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+            prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+            prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+            ytempord = yiord[i1,.];
+            ytempord = reshape(ytempord,nord,ncoeford);
+            zq[1:nord,1:ncoeford]=ytempord;
+        endif;
+        
+        for j(1,nord,1);
+            maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+            maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+            xdownord = prepdoub*maskdownq*xthresh;
+            xupord= prepdoub*maskupq*xthresh;
+            xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+        endfor;
+        
+        xgg = xggord;
+        xdown = xdownord;
+        xup = xupord;
+        indxcompq = ((indxup[i1,.])');
+        
+        seed20=seednext;
+        Msubq = eye(nordcont);
+        indxoneq = zeros(nordcont,1);
+        indxeqq = zeros(nordcont,1);
+        
+        Msubq = selq*Msubq;
+        Vsubq = zq*xfin;
+        xisubq = (omegker);
+        
+        gcovker = gomegxomegax(Msubq);         /* [b*(b+1)/2]X[h*(h+1)/2]; a=(totdep), b=(nordcont) */
+        
+        if nord>0;
+            indxoneq[1:nord] = (indxsing[i1,.])';
+        endif;
+        xgg = selq*xgg;
+        xdown = selq*xdown;
+        xup = selq*xup;
+        indxoneq=selq*indxoneq;
+        indxcompq = selq*indxcompq;
+        indxeqq = selq*indxeqq;
+        Bsubq = Msubq*((Vsubq));    /* B sub q is (b)x1 ; M sub q is h x a matrix (h=b only when all alternatives are available in nominal and all non-nominal outcomes are available); b = nc3+nordcont ; a = sumc(nc)+nordcont  */
+        newxisubq = Msubq*xisubq*Msubq';
+        _covarr = 1;
+        { P,gBsubq,gnewxisubq,gxg,gxdown,gxup,sss } = gradcdorrectmvn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq);
+        gVsubq = Msubq';
+        gxmu = zq';
+        gxmufinal = gxmu*gVsubq*gBsubq;
+        hunordq = 0;
+        if nord>0;
+            gxthreshord = selordqq*gxg[hunordq+1:hunordq+hordq];                                    /* All three below are nord X 1 vectors; hordq=nord if all ordered outcomes are available for individual */
+            gxdowno = selordqq*gxdown[hunordq+1:hunordq+hordq];
+            gxupo = selordqq*gxup[hunordq+1:hunordq+hordq];
+            gxggord=((prepsingdown*maskupq+prepsingup*maskdownq)')*gxthreshord;
+            gxdownord = ((prepdoub*maskdownq)')*gxdowno;
+            gxupord = ((prepdoub*maskupq)')*gxupo;
+            gxthreshfin = gxggord+gxdownord+gxupord;  /* Accumulate across all observations and remove first and last elements (-inf and +inf) */
+        endif;
+        
+        gordthreshfin={};
+        for j(1,nord,1);
+            gthreshfini = gxthreshfin[nummask1[j]+1:nummask1[j+1]];
+            gthreshfini = gthreshfini[2:ncord[j]];
+            gordthreshfin = gordthreshfin|gthreshfini;
+        endfor;
+        if nord>0;
+            gordfin = gordthreshfin|gxmufinal[1:ncoeford];
+        else;
+            gordfin = {};
+        endif;
+        
+        gfinstar = gtempstar*gcovker*gnewxisubq;                          /* [b x (b+1)/2] x 1 vector */
+        
+        Pcomp = pcomp|P;
+        g = (gordfin')~(gfinstar');
+        
+        gfinal = gfinal|g;
+        seednext=sss;
+    endfor;
+    
+    w=zeros(e1,1);
+    if pcomp <= w;
+        pcomp=pcomp-((pcomp.<=w).*(pcomp-0.0001));
+    endif;
+    g1 = gfinal./pcomp;
+    retp(dta[.,_weight].*g1);
+endp;
+
+
+proc lpr1(x,dta);
+    local e1,p0,popass,xfinord,yifinord,i,j,xthresh,xker,xscal,omegastar, covker,omegker,xup,seednext,seed20,vsubq,xisubq,Msubq,
+        indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w,final,indxcompq,xgg, xfin,zq,maskdownq,maskupq,ytempord,prepsing,prepsingdown,prepsingup,prepdoub;
+    local xdownord,xupord,xggord,xdown,xthreshi,threshtmp,selq;
+    
+    
+    e1 = rows(dta);
+    p0 = zeros(e1,1);
+    popass = dta[.,ivobsid];
+    
+    if nord>0;
+        xfinord = x[nthresh+1:nthresh+ncoeford];
+        yifinord = yiord;
+        xthresh={};
+        threshtmp = x[1:nthresh];
+        for i(1,nord,1);
+            xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+            xthresh=xthresh|xthreshi;
+        endfor;
+    else;
+        xfinord = {};
+    endif;
+    
+    
+    if ntotcoef>0;
+        xfin = xfinord;
+    else;
+        xfin = 0;
+    endif;
+    
+    xker = x[nthresh+ncoeford+1:nthresh+ncoeford+nker];
+    xscal=0;
+    
+    if popass[1]==1;
+        seednext=seed10;
+    endif;
+    
+    omegastar = matndupdiagonefull(xker);
+    covker = omegastar;
+    omegker=(covker);
+    
+    
+    Pcomp={};
+    for i1(1,e1,1);
+        selq={};
+        selq = selq|((yavord[i1,.])');
+        
+        selq = selif(eye(nordcont),selq);
+        if ntotcoef>0;
+            zq = zeros(totdep,ntotcoef);
+        else;
+            zq = 0;
+        endif;
+        indxcompq = zeros(nordcont,1);
+        
+        if nord>0;
+            maskdownq = zeros(nord,nummask);                                /* nord x [(total number of thresholds+2) across all ordinal outcome ] */
+            maskupq = zeros(nord,nummask);
+            prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+            prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+            prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+            prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+            ytempord = yiord[i1,.];
+            ytempord = reshape(ytempord,nord,ncoeford);
+            zq[1:nord,1:ncoeford]=ytempord;
+        endif;
+        
+        for j(1,nord,1);
+            maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+            maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+            xdownord = prepdoub*maskdownq*xthresh;
+            xupord= prepdoub*maskupq*xthresh;
+            xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+        endfor;
+        xgg = xggord;
+        xdown = xdownord;
+        xup = xupord;
+        indxcompq = ((indxup[i1,.])');
+        seed20=seednext;
+        Msubq = eye(nordcont);
+        indxoneq = zeros(nordcont,1);
+        indxeqq = zeros(nordcont,1);
+        
+        Vsubq = zq*xfin;
+        xisubq = (omegker);
+        indxoneq[1:nord] = (indxsing[i1,.])';
+        xgg = selq*xgg;
+        xdown = selq*xdown;
+        xup = selq*xup;
+        indxoneq=selq*indxoneq;
+        indxcompq = selq*indxcompq;
+        indxeqq = selq*indxeqq;
+        
+        Msubq = selq*Msubq;
+        Bsubq = Msubq*((Vsubq));
+        newxisubq = Msubq*xisubq*Msubq';
+        
+        { P,sss } = cdorrectmvn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq);
+        
+        Pcomp = pcomp|P;
+        seednext=sss;
+    endfor;
+    
+    w=zeros(e1,1);
+    if pcomp > w;
+        final=ln(pcomp);
+    else;
+        print "yes";
+        final=ln(pcomp-((pcomp.<=w).*(pcomp-0.0001)));
+    endif;
+    retp(dta[.,_weight].*final);
+endp;
+
+
+proc lgd1(x,dta);
+    local e1,p0,popass,xfinord,yifinord,i,j,xthresh,xker,xscal, omegastar, covker,omegker,xthreshi,xup,seednext,seed20,vsubq,xisubq,Msubq,
+        indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w, indxcompq,xgg, xfin,zq,maskdownq,maskupq,ytempord,prepsing,prepsingdown,prepsingup,prepdoub;
+    local xdownord,xupord,xggord,xdown, threshtmp,selq,gordthreshfin,selordq,selordqq,hunordq,hordq;
+    local gW1,gomegastar,gtempstar,gfinal, gBsubq,gnewxisubq,gxg,gxdown,gxup,gVsubq,gxmu,gxmufinal,gxthreshord,gxggord,gxdownord,
+        gxupord,gxthreshfin, gfinstar,gordfin,gthreshfini,g,g1,gcovker, gxdowno, gxupo;
+    
+    e1 = rows(dta);
+    p0 = zeros(e1,1);
+    popass = dta[.,ivobsid];
+    
+    
+    if nord>0;
+        xfinord = x[nthresh+1:nthresh+ncoeford];
+        yifinord = yiord;
+        xthresh={};
+        threshtmp = x[1:nthresh];
+        for i(1,nord,1);
+            xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+            xthresh=xthresh|xthreshi;
+        endfor;
+    else;
+        xfinord = {};
+    endif;
+    
+    if ntotcoef>0;
+        xfin = xfinord;   /*  (ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont)x1 vector */
+    else;
+        xfin = 0;
+    endif;
+    
+    xker = x[nthresh+ncoeford+1:nthresh+ncoeford+nker];
+    
+    xscal=0;
+    
+    omegastar = matndupdiagonefull(xker);
+    covker = omegastar;
+    omegker=(covker);
+    
+    _OMEGACORR=0;
+    _XOMEGAXT=0;
+    { gW1,gomegastar } = gradcovcor(Covker);                           /* gW1 is [b] X [a*(a+1)/2]; gomegastar is [b*(b+1)/2] X [a*(a+1)/2]; a=[nordcont],  b=(ordcont) */
+    
+    gtempstar = gomegastar;
+    
+    if popass[1]==1;
+        seednext=seed10;
+    endif;
+    
+    Pcomp={};
+    gfinal = {};
+    for i1(1,e1,1);
+        selq={};
+        selordq = ((yavord[i1,.])');
+        selq = selq|selordq;
+        hordq = sumc(selordq);
+        
+        selq = selif(eye(nordcont),selq);
+        if ntotcoef>0;
+            zq = zeros(totdep,ntotcoef);
+        else;
+            zq = 0;
+        endif;
+        indxcompq = zeros(nordcont,1);
+        hunordq=0;
+        if nord>0;
+            selordqq = ((selq[hunordq+1:hunordq+hordq,1:nord])');   /* nord x hordq matrix  */
+            maskdownq = zeros(nord,nummask);                                /* nord x [(total number of thresholds+2) across all ordinal outcome ] */
+            maskupq = zeros(nord,nummask);
+            prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+            prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+            prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+            prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+            ytempord = yiord[i1,.];
+            ytempord = reshape(ytempord,nord,ncoeford);
+            zq[1:nord,1:ncoeford]=ytempord;
+        endif;
+        
+        for j(1,nord,1);
+            maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+            maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+            xdownord = prepdoub*maskdownq*xthresh;
+            xupord= prepdoub*maskupq*xthresh;
+            xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+        endfor;
+        xgg = xggord;
+        xdown = xdownord;
+        xup = xupord;
+        indxcompq = ((indxup[i1,.])');
+        
+        
+        seed20=seednext;
+        Msubq = eye(nordcont);
+        indxoneq = zeros(nordcont,1);
+        indxeqq = zeros(nordcont,1);
+        
+        Msubq = selq*Msubq;
+        Vsubq = zq*xfin;
+        xisubq = (omegker);
+        gcovker = gomegxomegax(Msubq);
+        
+        if nord>0;
+            indxoneq[1:nord] = (indxsing[i1,.])';
+        endif;
+        
+        xgg = selq*xgg;
+        xdown = selq*xdown;
+        xup = selq*xup;
+        indxoneq=selq*indxoneq;
+        indxcompq = selq*indxcompq;
+        indxeqq = selq*indxeqq;
+        Bsubq = Msubq*((Vsubq));
+        newxisubq = Msubq*xisubq*Msubq';
+        _covarr = 1;
+        if ntotcoef==0;
+            Bsubq = zeros(rows(newxisubq),1);
+        endif;
+        { P,gBsubq,gnewxisubq,gxg,gxdown,gxup,sss } = gradcdorrectmvn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq);
+        
+        gVsubq = Msubq';                                                      /* (totdep))x (h) matrix; i.e. a x h matrix */
+        gxmu = zq';
+        gxmufinal = gxmu*gVsubq*gBsubq;
+        gxthreshord = selordqq*gxg[hunordq+1:hunordq+hordq];                                    /* All three below are nord X 1 vectors; hordq=nord if all ordered outcomes are available for individual */
+        gxdowno = selordqq*gxdown[hunordq+1:hunordq+hordq];
+        gxupo = selordqq*gxup[hunordq+1:hunordq+hordq];
+        gxggord=((prepsingdown*maskupq+prepsingup*maskdownq)')*gxthreshord;
+        gxdownord = ((prepdoub*maskdownq)')*gxdowno;
+        gxupord = ((prepdoub*maskupq)')*gxupo;
+        gxthreshfin = gxggord+gxdownord+gxupord;  /* Accumulate across all observations and remove first and last elements (-inf and +inf) */
+        gordthreshfin={};
+        for j(1,nord,1);
+            gthreshfini = gxthreshfin[nummask1[j]+1:nummask1[j+1]];
+            gthreshfini = gthreshfini[2:ncord[j]];
+            gordthreshfin = gordthreshfin|gthreshfini;
+        endfor;
+        gordfin = gordthreshfin|gxmufinal[1:ncoeford];
+        
+        gfinstar = gtempstar*gcovker*gnewxisubq;                          /* [b x (b+1)/2] x 1 vector */
+        
+        Pcomp = pcomp|P;
+        g = (gordfin')~(gfinstar');
+        
+        gfinal = gfinal|g;
+        seednext=sss;
+    endfor;
+    
+    w=zeros(e1,1);
+    if pcomp <= w;
+        pcomp=pcomp-((pcomp.<=w).*(pcomp-0.0001));
+    endif;
+    g1 = gfinal./pcomp;
+    retp(dta[.,_weight].*g1);
+endp;
+
+proc (2) = init(dataset,dvv);
+    local fin,dta,obs,c,ncon,i,j,st,p,s,n;
+    open fin = ^dataset;
+    do until eof(fin);
+        dta = readr(fin,nobs);
+        obs = rows(dvv);
+        c = unique(dvv,1);
+        n = rows(c);
+        ncon = n-1;
+        i = 0;
+        s = zeros(n,1);
+        do until i == n;
+            i=i+1;
+            s[i]=sumc(dta[.,_weight].*(dvv .== i));
+        endo;
+    endo;
+    fin = close(fin);
+    clear p;
+    j=1;
+    do until j == n+1;
+        p=p|s[j]+p[rows(p)];
+        j=j+1;
+    endo;
+    p=trimr(p,1,1)/p[rows(p)];
+    st = cdfni(p);
+    retp(n,st);
+endp;
+
+proc (1) = init1(dataset,dvv);
+    local fin,dta,obs,c;
+    open fin = ^dataset;
+    do until eof(fin);
+        dta = readr(fin,nobs);
+        obs = rows(dta);
+        c = sumc(dvv);
+        c = ln(c/c[1]);
+        c = c[2:rows(c)];
+        c = (sqrt(3)*c)/(pi);
+    endo;
+    fin = close(fin);
+    retp(c);
+endp;

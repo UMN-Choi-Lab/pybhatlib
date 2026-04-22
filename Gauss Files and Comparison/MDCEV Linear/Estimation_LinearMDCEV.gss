@@ -1,0 +1,547 @@
+/* Written by C. Bhat, March 2018; Modified by SS */
+
+/* This is code for a MDCEV model with a linear outside good utility.
+   
+   Before using this code, the reader should read (and cite) the following papers:
+   
+   Bhat, C.R. (2018), "A New Flexible Multiple Discrete-Continuous Extreme Value (MDCEV) Choice Model," Transportation Research Part B. 
+   The paper is available at http://www.ce.utexas.edu/prof/bhat/ABSTRACTS/New_MDCEV.pdf.  
+   
+   Bhat, C.R. (2008), "The Multiple Discrete-Continuous Extreme Value (MDCEV) Model: Role of Utility Function Parameters, Identification 
+   Considerations, and Model Extensions,"  Transportation Research Part B, Vol. 42, No. 3, pp. 274-303 */
+
+library maxlik;
+
+/***************************************************************************************************************************************************
+                                                       Global Variable Definitions
+****************************************************************************************************************************************************/
+clearg __row,nobs,_config,_alp0to1,_price,nc,dataset,_po,nvarm,nvardel,nvargam;
+
+/***************************************************************************************************************************************************
+                                                       User Inputs
+****************************************************************************************************************************************************/
+__row    = 1500;    // Number of rows to be read at a time by the log-likelihood function
+nobs     = __row;    // Number of observations in the dataset
+nc       = 5;       // Number of alternatives (in the universal choice set) including outside goods
+
+
+/*****************************Input directory of the data file and for the results to be saved*******************************************************/
+
+/* Specify path to the csv file corresponding to the dataset*/
+fname= "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MDCEV Linear\\WorkshopData_ToursimExp.csv";
+dataset_name = csvReadM(fname);
+tempdata = csvreadM(fname,2);
+headers = getheaders(fname);
+
+/* Specify path where the .dat file corresponding to the dataset gets saved*/
+dat_file = "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MDCEV Linear\\WorkshopData_ToursimExp.dat";
+ret = saved(tempdata,dat_file, headers);
+dataset = dat_file;
+
+/****************************************************************************************************************************************************
+                                                     Variable Specification Area
+****************************************************************************************************************************************************/
+
+/* position of pointer to observation number in data set */
+{pointer, _PO} = indices(dataset, "ID");
+
+/* Position of UNO variable (i.e., the column of ones) in data set. The dataset should consist of a column of ones.
+   Modify if the label (in double-quotes) of the column of ones in your dataset is different from "uno"  */
+
+{ unov,ivuno } = indices(dataset,"uno");
+
+/* Position of SERO variable (i.e., the column of zeros) in data set.  The dataset should consist of a column of zeros.
+   Modify if the label (in double-quotes) of the column of zeros in your dataset is different from "sero"  */
+
+{ serov,ivsero } = indices(dataset,"sero");
+
+/* Position of WEIGHT variable (i.e., the column of weights). If the data has weights, then the dataset should consist of a column of weights.
+   Modify the label (in double-quotes) with the label of the weight variable, if your data has weights  */
+
+{ weight,wtind } = indices(dataset,"uno");
+
+/* Specify dependent outcomes below; (i.e., the consumption quantities for each alternative - NOT consumption expenditures for each alternative);
+Provide labels (one label in each double-quote) of the dependent variables (i.e., consumption quantities) in your dataset.
+Number of labels = number of alternatives; first label below should correspond to essential outside good   */
+
+dvunordname = { Transp Accomod FandB Shp Recr };
+
+/* Provide labels of price variables (one label in each double-quote). Number of labels = number of alternatives.
+   First good (i.e., outside good, or the first of the outside goods if there are several) should be specified as a numeraire good with 
+   price one (UNO). Provide all UNO variables if there is no price variation */
+
+davunordname = { uno uno uno uno uno };
+
+
+/* Definition of INDEPENDENT variables in discrete baseline. First good is always consumed (i.e., the outside goods), and the first good 
+   is numeraire. In the following specification, ivm1, ivm2, ivm3... contain independent variable specifications (on right hand side) 
+   for baseline utility (PSI) for alternatives 1, 2, 3..; Add a row for ivm6 below if there is a 6th alternative, another additional 
+   row for ivm7 if there is a 7th alternative, ... (number of rows = number of alternatives);
+   Number of columns = Number of variables including alternative specific constants; consider first alternative as base  */ 
+
+let ivmt = {
+sero	sero	sero	sero	sero	    sero	sero	sero    sero   sero ,
+uno	    sero	sero	sero	urban       sero	sero	sero    stlt3  st410 ,
+sero	uno	    sero	sero	sero	    urban	sero	sero    sero   sero  ,
+sero	sero	uno	    sero    sero	    sero	urban	sero	sero   sero ,
+sero	sero	sero	uno	   	sero	    sero	sero	urban   sero   sero  
+};
+   
+// Associating parameters with variable names
+varnam =  { ASCAcc ASCFnB ASCShp ASCRec urbAcc urbFnB urbshp urbRec stl3Acc st410acc };
+varnam = varnam';
+
+/* In the following specification, ivgt contains input data specifications (on the right hand side) for translation parameters 
+   (gammas) for alternatives 1, 2, 3, etc.; 
+   Number of rows = number of alternatives; 
+   Number of columns = Nnumber of parameters in the satiation functions; 
+   The coefficient gamma for first good is normalized to zero later in _max_active (no gamma for first good) */
+
+let ivgt = {
+uno    sero     sero   sero	  sero   sero    sero	sero	sero   sero  sero    sero   sero  ,
+sero   uno      sero   sero   sero   urban   sero	sero	stlt3  st410 sero    sero   sero  ,
+sero   sero     uno    sero   sero   sero	urban	sero	sero   sero  b51q11  sero   sero  ,
+sero   sero     sero   uno	  sero   sero	sero	urban	sero   sero  sero    b51q11 sero  ,
+sero   sero     sero   sero   uno    sero	sero	sero	sero   sero  sero    sero   b51q11 };
+
+// Associating parameters with variable names
+varngam =   { G_out GAcc GFnB GShp GRec urbAcc urbFnB urbshp stl3Acc st410acc trlFnB trlShp trlRec };
+varngam = varngam';
+/**************************************************************************************************************************************************
+                               Vectorizing the specification to fetch the corresponding data from the data set
+**************************************************************************************************************************************************/
+
+{ choicm,f } = indices(dataset,dvunordname'); 
+{ cprice,fp } = indices(dataset,davunordname');
+
+{ v,ivm } = indices(dataset,(vecr(ivmt)));
+{ v,ivg } = indices(dataset,(vecr(ivgt)));
+/****************************************************************************************************************************************************
+                                              Initialization, starting values, and preliminaries
+****************************************************************************************************************************************************/                                              
+
+nvarm = cols(ivmt);     // number of variables in baseline utility   = number of columns in ivm1, do not modify this
+nvargam = cols(ivgt);   // number of variables in translation        = number of columns in ivg1, do not modify this
+
+flagchm = f';
+flagprcm = fp';
+eqmatgam = eye(nvargam);
+
+/**************************** Vector of starting values and active parameters  ****************************************************************************/
+
+b = zeros(nvarm,1)|-1000*ones(1,1)|zeros(rows(EQMATGAM)-1,1)|0;       /*exp(0) as starting value for the scale parameter*/
+_max_active = ones(nvarm,1)|zeros(1,1)|ones(rows(eqmatgam)-1,1)|1;   /*The last value in the _max_active corresponds to that of the scale parameter*/
+
+/**************************************** Other Maxlik globals *************************************************************************************/
+
+_max_ParNames = varnam|varngam|"sigm";     /* Appending all the parameters (or coefficient) names */
+_max_Options = { bfgs stepbt };
+_max_GradProc = &lgd;                       /* proc lgd corresponds to the gradient function */
+_max_maxIters = 2000;                       /* maximum number of iterations */
+_max_CovPar = 2;                            /* modify according to the type of standard errors you need*/
+
+/****************************************************************************************************************************************************
+                                ACTUAL PROGRAM AREA BEGINS, DO NOT HAVE TO MODIFY ANYTHING BELOW THIS LINE
+****************************************************************************************************************************************************/
+
+/****************************************************************************************************************************************************
+                                                     Reading the dataset
+****************************************************************************************************************************************************/
+ open fin = ^dataset;
+ dtamat = readr(fin,nobs);
+ fin = close(fin);
+ hh = getheaders(dataset);
+ hh = hh';
+
+/****************************************************************************************************************************************************
+                                              procedure call to maximum likelihood procedure
+****************************************************************************************************************************************************/
+
+{ x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b));
+
+/****************************************************************************************************************************************************
+                              procedure call again to maximum likelihood procedure to get actual scale parameter
+****************************************************************************************************************************************************/
+
+b = x[1:(rows(x)-1)]|exp(x[rows(x)]);
+_max_maxiters = 0;
+_max_GradProc = &lgd1;
+{ x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr1,b));
+
+/****************************************************************************************************************************************************
+                                                     Procedure definitions begin
+****************************************************************************************************************************************************/
+
+/****************************************************************************************************************************************************
+                                              procedure for log likelihood function calculation
+****************************************************************************************************************************************************/
+
+proc lpr(x,dta);
+local e1,xgam,v2,u2,j,v,u,b,m,c,xsigm,newf,z,h,vdisc,pdisc,pcont,w1,z1,f,wt,vcont,bnew,i,vtildek1consum,vtildek1noncon,vdarrok1consum;
+e1 = rows(dta);
+wt = dta[.,wtind];
+xgam = eqmatgam'*x[nvarm+1:nvarm+rows(eqmatgam)];
+xsigm = exp(x[nvarm+rows(eqmatgam)+1]);
+
+v2 = (ones(nc,1) .*. x[1:nvarm])*~(dta[.,ivm])';
+u2 = (ones(nc,1) .*. xgam)*~(dta[.,ivg])';
+
+j=1;
+v = {};
+u = {};
+
+do until j == nc+1;
+  v = v~(sumc(v2[(j-1)*nvarm+1:(j*nvarm),.]));
+  u = u~(sumc(u2[(j-1)*nvargam+1:(j*nvargam),.]));
+  j = j+1;
+endo;
+u[.,1]=-1000*ones(e1,1); 
+clear v2;
+
+f = exp(u[.,2:cols(u)]);
+b = dta[.,flagchm[2:cols(flagchm)]] .> 0;
+newf = dta[.,flagchm[2:cols(flagchm)]]*1;
+m = 1+sumc((b'));
+h = nc-m;
+
+c = (b)./((newf+f));
+c = c./(dta[.,flagprcm[2:cols(flagprcm)]]);
+c = substute(c,b.==0,1);
+c = prodc((c'));
+vdisc = v[.,2:nc]-ln(dta[.,flagprcm[2:nc]]);
+v[.,1] = v[.,1]-ln(dta[.,flagprcm[1]]);
+v[.,2:nc] = v[.,2:nc]-ln((newf+f)./f)-ln(dta[.,flagprcm[2:nc]]);
+vdisc = v[.,1]-vdisc;
+vcont = v[.,1]-v[.,2:nc];
+bnew = b;
+
+pdisc = zeros(e1,1);
+pcont = zeros(e1,1);
+
+for i(1,e1,1);
+    if h[i]>0;
+        vtildek1noncon = (selif(((vdisc[i,.])'),((bnew[i,.])').==0));  
+    endif;
+    if m[i]-1>0;
+        vtildek1consum = (selif(((vdisc[i,.])'),((bnew[i,.])').==1));  
+        vdarrok1consum = (selif(((vcont[i,.])'),((bnew[i,.])').==1));  
+    endif;
+    if h[i]>0 and m[i]-1>0; 
+        pdisc[i] = 1;
+        pcont[i] = c[i]*(nonpdfcdfmvlogit(vdarrok1consum,vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1)));
+    elseif m[i]-1==0;  
+        pdisc[i] = noncdfmvlogit(vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        pcont[i] = 1;
+    elseif h[i]==0;  /* if all inside goods consumed */
+        pdisc[i] = 1;
+        pcont[i] = c[i]*nonpdfmvlogit(vdarrok1consum,zeros(nc-1,1),xsigm*ones(nc-1,1));
+    endif;
+endfor;
+
+z = pdisc.*pcont;
+w1=zeros(e1,1);
+if z > w1;
+    z1=ln(z);
+else;
+    print "yes";
+    z=z-((z.<=w1).*(z-0.0001));
+    z1=missrv(z,0.0001*ones(rows(z),1));
+    z1 = ln(z1);
+endif;
+retp(wt.*z1);
+endp;
+
+/****************************************************************************************************************************************************
+                                        procedure for gradient of log likelihood function calculation
+****************************************************************************************************************************************************/
+
+proc lgd(x,dta);
+local e1,xgam,v2,u2,j,v,u,b,m,c,xsigm,newf,z,h,vdisc,pdisc,pcont,f,wt,vcont,bnew,i,vtildek1consum,vtildek1noncon,vdarrok1consum;
+local indx1,gcont,gdisc,gsigcont,gsigdisc,ggam2,indxnoncon,indxcon,enoncon,econ,gconti,gdisci,gmua,gmub,gsigconti,gsigdisci,gmu,g2v,g2g,gv,gg,
+      ggv,prr,ggam,gsiggg;
+e1 = rows(dta);
+wt = dta[.,wtind];
+xgam = eqmatgam'*x[nvarm+1:nvarm+rows(eqmatgam)];
+xsigm = exp(x[nvarm+rows(eqmatgam)+1]);
+v2 = (ones(nc,1) .*. x[1:nvarm])*~(dta[.,ivm])';
+u2 = (ones(nc,1) .*. xgam)*~(dta[.,ivg])';
+
+j=1;
+v = {};
+u = {};
+do until j == nc+1;
+  v = v~(sumc(v2[(j-1)*nvarm+1:(j*nvarm),.]));
+  u = u~(sumc(u2[(j-1)*nvargam+1:(j*nvargam),.]));
+
+  j = j+1;
+endo;
+u[.,1]=-1000*ones(e1,1); 
+clear v2;
+
+f = exp(u[.,2:cols(u)]);
+b = dta[.,flagchm[2:cols(flagchm)]] .> 0;
+newf = dta[.,flagchm[2:cols(flagchm)]]*1;
+prr = dta[.,flagprcm[2:cols(flagprcm)]];
+m = 1+sumc((b'));
+h = nc-m;        
+
+c = (b)./((newf+f));
+c = c./(dta[.,flagprcm[2:cols(flagprcm)]]);
+c = substute(c,b.==0,1);
+c = prodc((c'));
+vdisc = v[.,2:nc]-ln(dta[.,flagprcm[2:nc]]);
+v[.,1] = v[.,1]-ln(dta[.,flagprcm[1]]);
+v[.,2:nc] = v[.,2:nc]-ln((newf+f)./f)-ln(dta[.,flagprcm[2:nc]]);
+vdisc = v[.,1]-vdisc;
+vcont = v[.,1]-v[.,2:nc];
+bnew = b;
+
+pdisc = zeros(e1,1);
+pcont = zeros(e1,1);
+
+indx1 = seqa(1,1,nc-1);
+gcont = zeros(e1,nc-1);
+gdisc = zeros(e1,nc-1);
+gsigcont = zeros(e1,nc-1);
+gsigdisc = zeros(e1,nc-1);
+ggam2 = zeros(e1,nc-1);
+
+for i(1,e1,1);
+    indxnoncon = selif(indx1,(((bnew[i,.])').==0));
+    indxcon = selif(indx1,((bnew[i,.])'));
+    enoncon = rows(indxnoncon);
+    econ = rows(indxcon);
+    if h[i]>0;
+        vtildek1noncon = (vdisc[i,indxnoncon])';  
+    endif;
+    if m[i]-1>0;
+        vtildek1consum = (vdisc[i,indxcon])';  
+        vdarrok1consum = (vcont[i,indxcon])';  
+    endif;
+    
+    if h[i]>0 and m[i]-1>0; /* if some inside goods consumed and other not */
+        pdisc[i] = 1;
+        pcont[i] = c[i]*(nonpdfcdfmvlogit(vdarrok1consum,vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1)));
+        ggam2[i,indxcon'] = (-pcont[i].*((newf[i,indxcon']+f[i,indxcon'])^-1)).*f[i,indxcon'];
+        { gconti,gdisci,gmua,gmub,gsigconti,gsigdisci } = gradnonpdfcdfmvlogit(vdarrok1consum,vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        gcont[i,indxcon'] = gconti';
+        gdisc[i,indxnoncon'] = gdisci';
+        gsigdisc[i,indxcon'] = gsigconti';
+        gsigdisc[i,indxnoncon'] = gsigdisci';
+    elseif m[i]-1==0;  /* if no inside goods consumed */
+        pdisc[i] = noncdfmvlogit(vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        { gdisci,gmu,gsigdisci } = gradnoncdfmvlogit(vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        pcont[i] = 1;
+        gdisc[i,indxnoncon'] = gdisci';
+        gsigdisc[i,indxnoncon'] = gsigdisci';
+    elseif h[i]==0;  /* if all inside goods consumed */
+        pdisc[i] = 1;
+        pcont[i] = c[i]*nonpdfmvlogit(vdarrok1consum,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        ggam2[i,.] = (-pcont[i].*((newf[i,.]+f[i,.])^-1)).*f[i,.];
+        { gconti,gmu,gsigconti } = gradnonpdfmvlogit(vdarrok1consum,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        gcont[i,indxcon'] = gconti';
+        gsigdisc[i,indxcon'] = gsigconti';
+    endif;
+endfor;
+
+ggv = c.*((sumc((gdisc'))+sumc((gcont')))~(-(gdisc+gcont)));
+gsiggg = (c.*(sumc((gsigdisc'))+sumc((gsigcont'))))*xsigm;
+ggam = (zeros(e1,1))~(((c.*(-(newf./f)./(newf+f)).*gcont).*f)+ggam2);
+
+g2v = ones(1,nvarm).*.ggv';
+g2g = ones(1,nvargam).*.ggam';
+
+gv = (reshape((sumc(g2v.*(reshape(((dta[.,ivm])'),nc,e1*nvarm))))',nvarm,e1))';
+gg = (reshape((sumc(g2g.*(reshape(((dta[.,ivg])'),nc,e1*nvargam))))',nvargam,e1))';
+
+z = pdisc.*pcont;
+
+retp(wt.*((gv~gg*eqmatgam'~gsiggg)./z));
+endp;
+
+/****************************************************************************************************************************************************
+                                   procedure for log likelihood function calculation with actual acale parameter
+****************************************************************************************************************************************************/
+
+proc lpr1(x,dta);
+local e1,u2,xgam,v2,j,v,u,b,m,c,xsigm,newf,z,h,vdisc,pdisc,pcont,w1,z1,f,wt,vcont,bnew,i,vtildek1consum,vtildek1noncon,vdarrok1consum;
+e1 = rows(dta);
+wt = dta[.,wtind];
+xgam = eqmatgam'*x[nvarm+1:nvarm+rows(eqmatgam)];
+xsigm = (x[nvarm+rows(eqmatgam)+1]);
+
+v2 = (ones(nc,1) .*. x[1:nvarm])*~(dta[.,ivm])';
+u2 = (ones(nc,1) .*. xgam)*~(dta[.,ivg])';
+
+j=1;
+v = {};
+u = {};
+
+do until j == nc+1;
+  v = v~(sumc(v2[(j-1)*nvarm+1:(j*nvarm),.]));
+  u = u~(sumc(u2[(j-1)*nvargam+1:(j*nvargam),.]));
+  j = j+1;
+endo;
+u[.,1]=-1000*ones(e1,1); 
+clear v2;
+
+f = exp(u[.,2:cols(u)]);
+b = dta[.,flagchm[2:cols(flagchm)]] .> 0;
+newf = dta[.,flagchm[2:cols(flagchm)]]*1;
+m = 1+sumc((b'));
+h = nc-m;
+
+c = (b)./((newf+f));
+c = c./(dta[.,flagprcm[2:cols(flagprcm)]]);
+c = substute(c,b.==0,1);
+c = prodc((c'));
+vdisc = v[.,2:nc]-ln(dta[.,flagprcm[2:nc]]);
+v[.,1] = v[.,1]-ln(dta[.,flagprcm[1]]);
+v[.,2:nc] = v[.,2:nc]-ln((newf+f)./f)-ln(dta[.,flagprcm[2:nc]]);
+vdisc = v[.,1]-vdisc;
+vcont = v[.,1]-v[.,2:nc];
+bnew = b;
+
+pdisc = zeros(e1,1);
+pcont = zeros(e1,1);
+
+for i(1,e1,1);
+    if h[i]>0;
+        vtildek1noncon = (selif(((vdisc[i,.])'),((bnew[i,.])').==0));  
+    endif;
+    if m[i]-1>0;
+        vtildek1consum = (selif(((vdisc[i,.])'),((bnew[i,.])').==1));  
+        vdarrok1consum = (selif(((vcont[i,.])'),((bnew[i,.])').==1));  
+    endif;
+    if h[i]>0 and m[i]-1>0; 
+        pdisc[i] = 1;
+        pcont[i] = c[i]*(nonpdfcdfmvlogit(vdarrok1consum,vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1)));
+    elseif m[i]-1==0;  
+        pdisc[i] = noncdfmvlogit(vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        pcont[i] = 1;
+    elseif h[i]==0;  /* if all inside goods consumed */
+        pdisc[i] = 1;
+        pcont[i] = c[i]*nonpdfmvlogit(vdarrok1consum,zeros(nc-1,1),xsigm*ones(nc-1,1));
+    endif;
+endfor;
+
+z = pdisc.*pcont;
+w1=zeros(e1,1);
+if z > w1;
+    z1=ln(z);
+else;
+    print "yes";
+    z=z-((z.<=w1).*(z-0.0001));
+    z1=missrv(z,0.0001*ones(rows(z),1));
+    z1 = ln(z1);
+endif;
+retp(wt.*z1);
+endp;  
+
+/****************************************************************************************************************************************************
+                         procedure for gradient function of log likelihood function calculation to get actual scale parameter
+****************************************************************************************************************************************************/
+
+proc lgd1(x,dta);
+local e1,xgam,v2,u2,j,v,u,b,m,c,xsigm,newf,z,h,vdisc,pdisc,pcont,f,wt,vcont,bnew,i,vtildek1consum,vtildek1noncon,vdarrok1consum;
+local indx1,gcont,gdisc,gsigcont,gsigdisc,ggam2,indxnoncon,indxcon,enoncon,econ,gconti,gdisci,gmua,gmub,gsigconti,gsigdisci,gmu,g2v,g2g,gv,gg,
+      ggv,prr,ggam,gsiggg;
+e1 = rows(dta);
+wt = dta[.,wtind];
+xgam = eqmatgam'*x[nvarm+1:nvarm+rows(eqmatgam)];
+xsigm = (x[nvarm+rows(eqmatgam)+1]);
+v2 = (ones(nc,1) .*. x[1:nvarm])*~(dta[.,ivm])';
+u2 = (ones(nc,1) .*. xgam)*~(dta[.,ivg])';
+
+j=1;
+v = {};
+u = {};
+do until j == nc+1;
+  v = v~(sumc(v2[(j-1)*nvarm+1:(j*nvarm),.]));
+  u = u~(sumc(u2[(j-1)*nvargam+1:(j*nvargam),.]));
+
+  j = j+1;
+endo;
+u[.,1]=-1000*ones(e1,1); 
+clear v2;
+
+f = exp(u[.,2:cols(u)]);
+b = dta[.,flagchm[2:cols(flagchm)]] .> 0;
+newf = dta[.,flagchm[2:cols(flagchm)]]*1;
+prr = dta[.,flagprcm[2:cols(flagprcm)]];
+m = 1+sumc((b'));
+h = nc-m;        
+
+c = (b)./((newf+f));
+c = c./(dta[.,flagprcm[2:cols(flagprcm)]]);
+c = substute(c,b.==0,1);
+c = prodc((c'));
+vdisc = v[.,2:nc]-ln(dta[.,flagprcm[2:nc]]);
+v[.,1] = v[.,1]-ln(dta[.,flagprcm[1]]);
+v[.,2:nc] = v[.,2:nc]-ln((newf+f)./f)-ln(dta[.,flagprcm[2:nc]]);
+vdisc = v[.,1]-vdisc;
+vcont = v[.,1]-v[.,2:nc];
+bnew = b;
+
+pdisc = zeros(e1,1);
+pcont = zeros(e1,1);
+
+indx1 = seqa(1,1,nc-1);
+gcont = zeros(e1,nc-1);
+gdisc = zeros(e1,nc-1);
+gsigcont = zeros(e1,nc-1);
+gsigdisc = zeros(e1,nc-1);
+ggam2 = zeros(e1,nc-1);
+
+for i(1,e1,1);
+    indxnoncon = selif(indx1,(((bnew[i,.])').==0));
+    indxcon = selif(indx1,((bnew[i,.])'));
+    enoncon = rows(indxnoncon);
+    econ = rows(indxcon);
+    if h[i]>0;
+        vtildek1noncon = (vdisc[i,indxnoncon])';  
+    endif;
+    if m[i]-1>0;
+        vtildek1consum = (vdisc[i,indxcon])';  
+        vdarrok1consum = (vcont[i,indxcon])';  
+    endif;
+    
+    if h[i]>0 and m[i]-1>0; /* if some inside goods consumed and other not */
+        pdisc[i] = 1;
+        pcont[i] = c[i]*(nonpdfcdfmvlogit(vdarrok1consum,vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1)));
+        ggam2[i,indxcon'] = (-pcont[i].*((newf[i,indxcon']+f[i,indxcon'])^-1)).*f[i,indxcon'];
+        { gconti,gdisci,gmua,gmub,gsigconti,gsigdisci } = gradnonpdfcdfmvlogit(vdarrok1consum,vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        gcont[i,indxcon'] = gconti';
+        gdisc[i,indxnoncon'] = gdisci';
+        gsigdisc[i,indxcon'] = gsigconti';
+        gsigdisc[i,indxnoncon'] = gsigdisci';
+    elseif m[i]-1==0;  /* if no inside goods consumed */
+        pdisc[i] = noncdfmvlogit(vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        { gdisci,gmu,gsigdisci } = gradnoncdfmvlogit(vtildek1noncon,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        pcont[i] = 1;
+        gdisc[i,indxnoncon'] = gdisci';
+        gsigdisc[i,indxnoncon'] = gsigdisci';
+    elseif h[i]==0;  /* if all inside goods consumed */
+        pdisc[i] = 1;
+        pcont[i] = c[i]*nonpdfmvlogit(vdarrok1consum,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        ggam2[i,.] = (-pcont[i].*((newf[i,.]+f[i,.])^-1)).*f[i,.];
+        { gconti,gmu,gsigconti } = gradnonpdfmvlogit(vdarrok1consum,zeros(nc-1,1),xsigm*ones(nc-1,1));
+        gcont[i,indxcon'] = gconti';
+        gsigdisc[i,indxcon'] = gsigconti';
+    endif;
+endfor;
+
+ggv = c.*((sumc((gdisc'))+sumc((gcont')))~(-(gdisc+gcont)));
+gsiggg = (c.*(sumc((gsigdisc'))+sumc((gsigcont'))))*xsigm;
+ggam = (zeros(e1,1))~(((c.*(-(newf./f)./(newf+f)).*gcont).*f)+ggam2);
+
+g2v = ones(1,nvarm).*.ggv';
+g2g = ones(1,nvargam).*.ggam';
+
+gv = (reshape((sumc(g2v.*(reshape(((dta[.,ivm])'),nc,e1*nvarm))))',nvarm,e1))';
+gg = (reshape((sumc(g2g.*(reshape(((dta[.,ivg])'),nc,e1*nvargam))))',nvargam,e1))';
+
+z = pdisc.*pcont;
+
+retp(wt.*((gv~gg*eqmatgam'~gsiggg)./z));
+endp;

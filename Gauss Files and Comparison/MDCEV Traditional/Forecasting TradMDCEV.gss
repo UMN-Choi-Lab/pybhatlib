@@ -1,0 +1,322 @@
+/**************************************************************************************************************************************************
+                                       Efficient Forecasting Code with the MDCEV Model with Gamma Profile
+*************************************************************************************************************************************************/
+
+/* If you use this code, please cite the following paper(s):
+
+Pinjari A.R., Bhat, C.R. (2021). Computationally efficient forecasting procedures for Kuhn-Tucker consumer demand model systems:
+Application to residential energy consumption analysis, Journal of Choice Modelling, 39, 2021.
+
+Bhat, C.R. (2008), "The Multiple Discrete-Continuous Extreme Value (MDCEV) Model: Role of Utility Function Parameters, Identification
+Considerations, and Model Extensions,"  Transportation Research Part B, Vol. 42, No. 3, pp. 274-303
+
+Note: This code predicts consumptions. If you want the expenditures, simply multiply the consumptions by the corresponding unit prices   */
+
+/******************************************************************************************************************************************
+                                              Global Variable Definition and Settings
+*******************************************************************************************************************************************/
+clearg z,p,_dd,datatset,_outa,_dmsave,indxrc,rr,constr,eqmat,_unity,kk,seqq,nrcoef,nrep,bmdcev;
+clearg nobs,_dd,_dataset,nc,nvar,nind,_outa,nrcoef,indxrc,_rcoef,_rcofnlos,lst,first,nlos,ndimp,ndim;
+clearg qr,prec,err,stt,rep,nr;
+
+nobs     = 500;     // Number of observations for which you want to do the simulation
+numout   = 1;       // Number of outside goods (i.e., always consumed goods)
+nc       = 6;       // Number of alternatives (in the universal choice set) including outside goods
+_gumbel  = 1;       // 1 if Gumbel error terms are used to simulate the unobserved heterogeneity (i.e., the error terms),
+                    // 0 if no error terms are used for forecasting.
+                    // if _gumbel = 0, then set nr=1
+nr       = 200;      // Number of sets of error term Halton draws overwhich you want to simulate the unobserved heterogeneity
+seed1    = 232445;   // Seed for the set of error draws. Put any random number.
+
+/********************************************************Input directory of the data file *******************************************************/
+
+/* Specify path to the csv file corresponding to the dataset*/
+fname= "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MDCEV Traditional\\Workshop_SCAG_Vali.csv";
+dataset_name = csvReadM(fname);
+tempdata = csvreadM(fname,2);
+headers = getheaders(fname);
+
+/* Specify path where the .dat file corresponding to the dataset gets saved*/
+dat_file = "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MDCEV Traditional\\Workshop_SCAG_Vali.dat";
+ret = saved(tempdata,dat_file, headers);
+dataset = dat_file;
+
+/* The forecast results are saved in savedout. savedout must be an xlsx file */
+savedout = "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MDCEV Traditional\\fout1.xlsx"; /* Ouput file to save the ATE presictions*/
+
+
+/****************************************************************************************************************************************************
+                                                          Variable Specification Area
+****************************************************************************************************************************************************/
+
+/* position of pointer to observation number in data set */
+{pointer, _PO} = indices(dataset, "ID");
+
+
+/* Position of UNO variable (i.e., the column of ones) in data set. The dataset should consist of a column of ones.
+   Modify if the label (in double-quotes) of the column of ones in your dataset is different from "uno"  */
+
+{ unov,ivuno } = indices(dataset,"uno");
+
+/* Position of SERO variable (i.e., the column of zeros) in data set. The dataset should consist of a column of zeros.
+   Modify if the label (in double-quotes) of the column of zeros in your dataset is different from "sero"  */
+
+{ serov,ivsero } = indices(dataset,"sero");
+
+/* Position of WEIGHT variable (i.e., the column of weights). If the data has weights, then the dataset should consist of a column of weights.
+              Modify the label (in double-quotes) with the label of the weight variable, if your data has weights  */
+
+{ weight,wtind } = indices(dataset,"uno");
+
+/* Specify total budgrt column name*/
+bdgt = "tot";
+
+/* Specify dependent outcomes below; (i.e., the consumption quantities for each alternative - NOT consumption expenditures for each alternative);
+Provide labels (one label in each double-quote) of the dependent variables (i.e., consumption quantities) in your dataset.
+Number of labels = number of alternatives; first label below should correspond to essential outside good   */
+
+dvunordname = { alt_out Esc Ho Soc AR Eo };
+
+/* Provide labels of price variables (one label in each double-quote). Number of labels = number of alternatives.
+   First good (i.e., outside good, or the first of the outside goods if there are several) should be specified as a numeraire good with 
+   price one (UNO). Provide all UNO variables if there is no price variation */
+
+davunordname = { uno uno uno uno uno uno };
+
+/* Definition of INDEPENDENT variables in the baseline preference; 
+   First good is always consumed (i.e., the outside goods), and the first good is numeraire;
+   Number of rows = number of alternatives; 
+   Number of columns = Number of variables including alternative specific constants; 
+   Consider first alternative as base  */ 
+
+let ivmt =        {
+sero	sero	sero	sero	sero	sero	sero	sero	sero	sero	sero  	sero ,
+uno	    sero	sero	sero	sero    gend1   sero	sero	Lin     sero	sero  	sero ,
+sero	uno	    sero	sero	sero	sero	gend1   sero	sero	Lin    	sero  	sero ,
+sero	sero	uno	    sero	sero	sero	sero	gend1   sero	sero	sero  	sero ,
+sero	sero	sero	uno	    sero	sero	sero	sero	sero	sero    sero    sero ,
+sero	sero	sero	sero    uno 	sero	sero	sero	sero	sero    Lin     Min  };
+
+// Associating parameters with variable names
+varnam =  { ASC_Esc ASC_ho ASC_Soc ASC_AR ASC_Eo male_Esc male_ho male_Soc Lin_Esc Lin_ho Lin_Eo Min_Eo };
+varnam = varnam';
+
+/* In the following specification, ivgt contains input data specifications (on the right hand side) for translation parameters 
+   (gammas) for alternatives 1, 2, 3, etc.; 
+   Number of rows = number of alternatives; 
+   Number of columns = Nnumber of parameters in the satiation functions; 
+   The coefficient gamma for first good is normalized to zero later in _max_active (no gamma for first good) */
+
+let ivgt = {
+uno    sero     sero   sero	   sero  sero	sero   sero	    sero ,
+sero   uno      sero   sero    sero  sero	sero   sero     sero ,
+sero   sero     uno    sero    sero  sero	gend1  sero     sero ,
+sero   sero     sero   uno	   sero  sero	sero   gend1    sero ,
+sero   sero     sero   sero    uno   sero	sero   sero     sero ,
+sero   sero     sero   sero    sero  uno	sero   sero     gend1 };
+
+// Associating parameters with variable names
+varngam =  { G_Out G_Esc G_ho G_Soc G_AR G_Eo male_ho male_Soc male_Eo };
+
+varngam = varngam';
+
+/**************************************************************************************************************************************************
+                                  Vectorizing the specification to fetch the corresponding data from the data set
+**************************************************************************************************************************************************/
+
+
+{ choicm,f } = indices(dataset,dvunordname'); 
+{ cprice,fp } = indices(dataset,davunordname');
+{ bud, budindx } = indices(dataset,bdgt);
+{ v,ivm } = indices(dataset,(vecr(ivmt)));
+{ v,ivg } = indices(dataset,(vecr(ivgt)));
+
+/****************************************************************************************************************************************************
+                                  Initialization, starting values, and preliminaries; No need to touch anything below
+****************************************************************************************************************************************************/                                              
+
+nvarm = cols(ivmt);     // number of variables in baseline utility   = number of columns in ivm1, do not modify this
+nvargam = cols(ivgt);   // number of variables in translation        = number of columns in ivg1, do not modify this
+
+
+flagchm = f';
+flagprcm = fp';
+eqmatgam = eye(nvargam);
+/****************************************************************************************************************************************************
+                                                        Provide parameter estimates
+****************************************************************************************************************************************************/
+
+/* provide the MDCEV parameters below. First, baseline utility parameters, then satiation parameters. 
+Important Note: For the scale parameters provide the final value estimated after translating the estimated parameter.
+That is scale is parameterized as exp(phi), and phi is estimated in the first set. Later, the scale value is reported 
+after taking the exponent of phi. Provide the exp(phi) value here. */
+
+bmdcev = {-7.39239121578661	-6.42057807639353	-7.44906839935493	-7.85216331773815	-7.65861778182842	-0.164928007300082	-0.407533664258343	0.307263210595357	-0.214678412882477	-0.477189321264891	0.150364185216926	0.198529678905685	-1000	3.21383738428094	5.77559537159195	5.17501657808303	2.71832624987124	3.35770034885699	-0.768111780753459	0.305578510488026	0.217655928770776	0.608382796802063};
+bmdcev = bmdcev';
+
+/* enter variable name below for which you would want to test treatment effects; Works for binary, multinomial and count variables;
+Supports multiple entries such as changevar = {  age45, age4560, age60 }; */
+
+changevar = { gend1 };// make sure these names match with that in the dataset
+
+/* enter variable value below associated with base or treatment effects*/
+changeval = { 0 }; //should match dimension of changevar
+
+/* Check the following variables:
+For share predictions, see "pred_share"
+For individual level probablities, see "ind_prob"
+*/
+
+open fin = ^dataset;
+do until eof(fin);
+  dta = readr(fin,nobs);
+endo;
+fin = close(fin);
+
+for kk(1, rows(changevar)*cols(changevar), 1);
+    { junk, ind } = indices(dataset, changevar[kk]);
+     dta[., ind] = changeval[kk]*ones(rows(dta),1);
+endfor;
+headers = getheaders(dataset);
+ret = saved(dta, "tempate.dat", headers);
+dataset = "tempate.dat";
+
+
+/****************************************************************************************************************************************************
+                                            Reading the dataset and calling the forecasting procedure
+****************************************************************************************************************************************************/
+open fin = ^dataset;
+dtamat = readr(fin,nobs);
+fin = close(fin);
+hh = getheaders(dataset);
+hh = hh';
+
+Forecasts = {};
+for rep(1,nr,1);
+    pred = forec(bmdcev,dtamat);
+    Forecasts = Forecasts|pred;
+    seed1 = seed1 + nobs*nr;
+endfor;
+ret = xlswrite(Forecasts,savedout,"A1");
+
+/****************************************************************************************************************************************************
+                                Printing the results: Add statements in accordance with the number of alternatives and their labels
+****************************************************************************************************************************************************/
+print "Forecasting complete! Results are as follows:\n";
+print "The observed participation rates are:\n";
+print "Alt_out -- "$+ntos(sumc(dtamat[.,f[1]].>0)./rows(dtamat)*100)$+"%";
+print "Escorting -- "$+ntos(sumc(dtamat[.,f[2]].>0)./rows(dtamat)*100)$+"%";
+print "Household maintenance -- "$+ntos(sumc(dtamat[.,f[3]].>0)./rows(dtamat)*100)$+"%";
+print "Social -- "$+ntos(sumc(dtamat[.,f[4]].>0)./rows(dtamat)*100)$+"%";
+print "Active recreation -- "$+ntos(sumc(dtamat[.,f[5]].>0)./rows(dtamat)*100)$+"%";
+print "Eat out -- "$+ntos(sumc(dtamat[.,f[6]].>0)./rows(dtamat)*100)$+"%\n";
+
+Print "The forecasted average participation rates are:";
+print "Alt_out -- "$+ntos(sumc(Forecasts[.,3].>0)./rows(Forecasts)*100)$+"%";
+print "Escorting -- "$+ntos(sumc(Forecasts[.,4].>0)./rows(Forecasts)*100)$+"%";
+print "Household maintenance -- "$+ntos(sumc(Forecasts[.,5].>0)./rows(Forecasts)*100)$+"%";
+print "Social -- "$+ntos(sumc(Forecasts[.,6].>0)./rows(Forecasts)*100)$+"%";
+print "Active recreation -- "$+ntos(sumc(Forecasts[.,7].>0)./rows(Forecasts)*100)$+"%";
+print "Eat out -- "$+ntos(sumc(Forecasts[.,8].>0)./rows(Forecasts)*100)$+"%";
+
+print "The observed average time allocations (across those who decided to spend in a given activity purpose) are:\n";
+print "Alt_out -- "$+ntos(sumc(dtamat[.,f[1]])./sumc(dtamat[.,f[1]].>0))$+" minutes";
+print "Escorting -- "$+ntos(sumc(dtamat[.,f[2]])./sumc(dtamat[.,f[2]].>0))$+" minutes";
+print "Household maintenance -- "$+ntos(sumc(dtamat[.,f[3]])./sumc(dtamat[.,f[3]].>0))$+" minutes";
+print "Social -- "$+ntos(sumc(dtamat[.,f[4]])./sumc(dtamat[.,f[4]].>0))$+" minutes";
+print "Active recreation -- "$+ntos(sumc(dtamat[.,f[5]])./sumc(dtamat[.,f[5]].>0))$+" minutes";
+print "Eat out -- "$+ntos(sumc(dtamat[.,f[6]])./sumc(dtamat[.,f[6]].>0))$+" minutes\n";
+
+print "The forecasted average time allocations are:";
+print "Alt_out -- "$+ntos(sumc(forecasts[.,3])./sumc(Forecasts[.,3].>0))$+" minutes";
+print "Escorting -- "$+ntos(sumc(forecasts[.,4])./sumc(Forecasts[.,4].>0))$+" minutes";
+print "Household maintenance -- "$+ntos(sumc(forecasts[.,5])./sumc(Forecasts[.,5].>0))$+" minutes";
+print "Social -- "$+ntos(sumc(forecasts[.,6])./sumc(Forecasts[.,6].>0))$+" minutes";
+print "Active recreation -- "$+ntos(sumc(forecasts[.,7])./sumc(Forecasts[.,7].>0))$+" minutes";
+print "Eat out -- "$+ntos(sumc(forecasts[.,8])./sumc(Forecasts[.,8].>0))$+" minutes";
+
+/****************************************************************************************************************************************************
+                                                      procedure for forecasting
+****************************************************************************************************************************************************/
+
+proc forec(x,dta);
+    local e1,popass,xgam,v2,u2,j,v,u,m,z,D,sd,k,xsigm,N,f1,as,prices,vqr,alts,fc,lambda;
+    e1 = rows(dta);
+    popass = dta[.,_po];
+    xgam = eqmatgam'*x[nvarm+1:nvarm+rows(eqmatgam)];
+    xsigm = (x[nvarm+rows(eqmatgam)+1]);
+    v2 = (ones(nc,1) .*. x[1:nvarm])*~(dta[.,ivm])';
+    u2 = (ones(nc,1) .*. xgam)*~(dta[.,ivg])';
+    
+    j=1;
+    v = {};    
+    u = {};
+    alts = zeros(1,nc);
+    do until j == nc+1;
+        v = v~(sumc(v2[(j-1)*nvarm+1:(j*nvarm),.]));
+        u = u~(sumc(u2[(j-1)*nvargam+1:(j*nvargam),.]));
+        alts[1,j] = j;
+        j = j+1;
+    endo;
+    u[.,1] = -1000*ones(e1,1);
+    clear v2;
+    v= exp(v);
+    
+    if (_gumbel==1);
+        {as,sd} = rndu(e1,nc,seed1);
+        as = -ln(-ln(as)).*xsigm;
+        
+    else;
+        as = zeros(e1,nc);
+    endif;
+    v = v.*exp(as);
+    v = v./(dta[.,flagprcm]);
+    
+    prices = dta[.,flagprcm];
+    f1 = exp(u); 
+    
+    for i(1,nobs,1);
+        fc = zeros(1,nc);
+        vqr = {};
+        vqr = alts|v[i,.]|prices[i,.]|f1[i,.];
+        vqr = vqr[.,1]~(rev(sortr(vqr[.,2:nc],2)')');
+        m = 1;
+        k = -1;
+        N = sumc((prices[i,1:numout].*((vqr[2,1:numout])))');
+        D = sumc((dta[i,flagchm])');
+        D = sumc((dta[i,budindx])');
+        lambda = (N/D);
+        if (vqr[2,numout+1]<lambda);
+            fc[1,1:numout] = ((vqr[2,1:numout]./lambda));
+            fc[1,numout+1:nc] = zeros(1,nc-numout);
+        else;
+            do until k==m;
+                m = m+1;
+                if (m==nc);
+                    N = N + (vqr[4,m]*vqr[3,m]*(vqr[2,m])); 
+                    D = D + (vqr[4,m]*vqr[3,m]); 
+                    lambda = (N/D);
+                    fc[1,1:numout] = ((vqr[2,1:numout]./lambda));
+                    fc[1,numout+1:nc] = (((vqr[2,numout+1:nc]./lambda))-ones(1,nc-numout)).*(vqr[4,numout+1:nc]);
+                    k=m;
+                elseif (m < nc);
+                    N = N + (vqr[4,m]*vqr[3,m]*(vqr[2,m])); //change_SS
+                    D = D + (vqr[4,m]*vqr[3,m]);
+                    lambda = (N/D);
+                    if (vqr[2,m+1]<lambda);
+                        fc[1,1:numout] = ((vqr[2,1:numout]./lambda));
+                        fc[1,numout+1:m] = (((vqr[2,numout+1:m]./lambda))-ones(1,m-numout)).*(vqr[4,numout+1:m]);
+                        fc[1,m+1:nc] = zeros(1,nc-m);
+                        k = m;
+                    endif;
+                endif;
+            endo;
+        endif;
+        vqr[2,1:nc] = fc;
+        vqr = sortr(vqr,1);
+        v[i,1:nc] = vqr[2,.];
+    endfor;
+    z = (popass)~(ones(rows(popass),1))~v;
+    retp(z);
+endp;
+

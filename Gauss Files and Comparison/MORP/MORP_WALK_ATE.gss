@@ -1,0 +1,470 @@
+/*********************************************************************************************************************************************
+                                                 ** Written by C. Bhat, March 2021
+                                                   ** (C) Copyright 2021 by Bhat
+                                                       ** All Rights Reserved.
+**********************************************************************************************************************************************/
+/* This is cross-sectional MULTIVARIATE ORDERED MODEL model using a variety of different analytic approximation methods for the 
+   multivariate cumulative normal; The code uses analytic gradients, all written by Bhat. 
+**********************************************************************************************************************************************
+** The File Header must accompany all files using any portion, in whole or in part, of this source code, and the many gradient 
+   library procedures and other procedures written by Bhat and used by this code; 
+**********************************************************************************************************************************************
+** Please cite the paper by Bhat, 2018 Bhat, C.R. (2018), "New Matrix-Based Methods for the Analytic Evaluation of the Multivariate 
+   Cumulative Normal Distribution Function," Transportation Research Part B, Vol. 109, pp. 238-256 if you use this code in any way.
+********************************************************************************************************************************************
+
+Available analytic methods:
+
+_method =
+"SSJ"                     - Switzer, Solow, and Joe Method
+"TG"                      - Trinh and Genz's univariate conditioning approximation procedure
+"ME"                      - The traditional ME approach, implemented in a new matrix-based and LDLT-based manner
+"OVUS"                    - One-variate univariate screening approach
+"OVBS"                    - One-variate bivariate screening approach
+"TGBME"                   - Trinh and Genz's bivariate conditioning approximation procedure
+"BME"                     - Bivariate ME approach
+"TVBS"                    - Two-variate bivariate screening approach   */
+
+library maxlik;
+    maxset;
+Gausset;
+clearg all;
+
+/*******************************************************************************************************************************************
+                                          Global Variable Definition and Settings
+********************************************************************************************************************************************/
+_method = "OVUS";
+
+/* How do you want to parameterize the Cholesky of the Correlation Matrix */
+
+_Spher = 0;        /* Put _Spher =1 if you want spherical coordinate parameterization and 0 if you want radial coordinate parameterization */
+
+/* Want to estimate all-independent model? */
+
+_indep=0;
+
+/* Want to estimate independent model first before estimating joint model? Value is irrelevant if _indep=1;  */
+
+_indepfirst=0;
+
+/* Number of observations in data set */
+
+nobs = 1583; /* VERY IMPORTANT; This should correspond to the number of total observations in the data set */ 
+
+/* Number of ordinal variables */
+
+nord = 4;
+
+/**********************************************************************************************************************************************
+                                           Main modification area for different runs
+***********************************************************************************************************************************************/
+
+
+/* Specify path to the csv file corresponding to the dataset*/
+fname= "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MORP\\Example_Walk.csv";  
+
+dataset_name = csvReadM(fname);
+tempdata = csvreadM(fname,2);
+headers = getheaders(fname);
+
+/* Specify path where the .dat file corresponding to the dataset gets saved*/
+dat_file = "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MORP\\Example_Walk.dat"; 
+ret = saved(tempdata,dat_file, headers);
+dataset = dat_file;
+
+/* Specify name and path of output file to save the ATE predictions*/
+savedout = "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MORP\\ate1.csv"; 
+
+/* position of pointer to observation number in data set */
+{ obsid,ivobsid } = indices(dataset,"ID");
+
+/* The dataset should have a column of one (named UNO) and a column of zero (named SERO) */ 
+{ _ddv,_uno  } = indices(dataset,"UNO"); /* pointer to uno variable */
+{ _ddv,_sero } = indices(dataset,"SERO"); /* pointer to sero variable */
+
+/* specify dependent outcomes in ordered-response model component below; the dependent outcomes should STRICTLY take a value of 1,2,3,4...;
+if an ordered-response outcome takes the values 0,1,2,3...., add one to this dependent variable ;
+if an ordered-response outcome does not exist then put the SPECIFIC value of 0 for the individual in the ordered-response 
+dependent outcome column in the data set, AND then provide availability in davordname variable below; dvordname and davordname are 
+1 x nord vectors  */
+
+dvordname = { Happy Meaning Stress Tired };
+
+/* If an ordered variable is not available for specific individuals create an appropriate variable 
+in data set that takes a value of zero for those individuals and a value of one for other individuals; put the name of the variable below
+for each ordered response variable; Number of columns below should be the same as the number of columns in dvordname */
+
+davordname = { uno uno uno uno };
+
+/* definition of independent variables in ordered-response equation; names of iv variables in a matrix of size 
+   nord x (total # of coefficients to be estimated across all ordered-response models*/
+
+let ivord =        {   female age20 util   sero   sero   sero     sero    sero   sero   sero  sero ,
+                        sero   sero  sero   female age65  sero     sero    sero   sero   sero  sero ,
+                        sero   sero  sero   sero   sero   age65    morning util   sero   sero  sero	,
+                        sero   sero  sero   sero   sero   sero     sero    sero    age65  morning util };
+
+var_ordnames  =      { Hfemale Hage20 Hutil	Mfemale Mage65  Sage65  Smorning Sutil  Tage65  Tmorning Tutil	};
+
+
+est = { -1.3401
+-0.2849
+-0.7068
+0.3956
+0.3463
+1.3346
+-0.3659
+0.681
+0.1504
+-0.0857
+-0.1951
+0.2772
+0.3367
+-0.208
+0.1409
+0.2064
+-0.1085
+-0.1305
+0.1121
+0.4365
+-0.4274
+-0.2452
+-0.1818
+-0.1608
+0.4777
+};
+
+/* enter variable name below for which you would want to test treatment effects; Works for binary, multinomial and count variables;
+Supports multiple entries such as changevar = {  age45, age4560, age60 }; */
+
+changevar = { female };// make sure these names match with that in the dataset
+
+/* enter variable value below associated with base or treatment effects*/
+changeval = { 1 }; //should match dimension of changevar
+
+/* Check the following variables:
+For share predictions, see "pred_share"
+For individual level probablities, see "ind_prob"
+*/
+
+
+/**********************************************************************************************************************************************
+                                          Actual program area begins; NO NEED TO TOUCH ANYTHING BELOW
+**********************************************************************************************************************************************/
+
+open fin = ^dataset;
+do until eof(fin);
+  dta = readr(fin,nobs);
+endo;
+fin = close(fin);
+
+for kk(1, rows(changevar)*cols(changevar), 1);
+    { junk, ind } = indices(dataset, changevar[kk]);
+     dta[., ind] = changeval[kk]*ones(rows(dta),1);
+endfor;
+headers = getheaders(dataset);
+ret = saved(dta, "tempate.dat", headers);
+dataset = "tempate.dat";
+
+/* declare global variables */
+declare _OMEGACORR ?= 0;
+declare _XOMEGAXT ?=0;
+declare _x1symmetric ?= 0;
+declare _x2symmetric ?= 0;
+declare _x1diagonal ?= 0;
+declare _x2diagonal ?= 0;
+declare _x2correlation ?= 0;
+declare _xinvsymmetric ?= 0;
+declare _xinvcorrelation ?= 0;
+declare _xinvdiagonal ?= 0;
+declare _omsymmetric ?= 0;
+declare _omdiagonal ?= 0;
+declare _omegacorr ?= 0;
+declare _condcov ?= 0;
+declare _condspecialcov ?= 0;
+declare _cholesky ?= 0;
+declare _cholcov ?= 0;
+declare _condcovspecial ?= 0;
+declare _condcovmeantrunc ?= 0;
+declare _condcovsigtrunc ?= 0;
+declare _covarr ?= 1;
+declare _optimal ?= 0;
+declare ProdA_symmetric ?=1; 
+declare ProdA_correlation ?=0;
+declare ProdA_diagonal ?=1;
+declare _diagA ?=0;
+declare _diagL ?=1;
+declare _cholcov ?=1;
+declare ProdB_diagonal ?=1;
+declare ProdB_symmetric ?=1;
+declare ProdB_correlation ?=1;
+declare _randper ?= 0;
+declare _lowest ?= 0;
+declare _norepeat ?=0;
+declare _randd ?=0;
+declare _perms ?= 1;
+/**********************************************************************************************************************************************
+                                          correlation restriction specification
+**********************************************************************************************************************************************/
+
+scal = 1;        /* Scale used in parameterizations */
+
+_correst = 0;    /* Put a value of zero if no correlation restriction */
+
+correst = { 1 1 1 1 1 0 1,        /* Upper diagonal matrix with a diagonal of ones; off-diagonal elements of 1 indicate active correlations */
+            0 1 1 0 1 1 0,        /* correst is relevant only if _correst=1 */
+            0 0 1 1 0 0 0,
+            0 0 0 1 1 1 0,
+            0 0 0 0 1 0 1,
+            0 0 0 0 0 1 1,
+            0 0 0 0 0 0 1 };
+
+seed10 = 70000000;   /* In case allowing SSJ method  */
+
+/* Number of rows to be read by likelihood function */
+__row = nobs;
+infin=200;
+minfin=-200;
+_weight = _uno;
+ivnameord = {};
+indxivord = {};
+if nord>0;
+   { vdvord,dvord } = indices(dataset,dvordname');
+   { vdavord,davord } = indices(dataset,davordname');
+   { ivnameord,indxivord } = indices(dataset,(vecr(ivord)));
+   ivnameord = var_ordnames';   
+   ncoeford = cols(ivord); /* Number of coefficients to be estimated across all ordered-response exogenous variables  */
+else;
+   ncoeford=0;
+endif;
+
+ntotcoef=ncoeford;
+
+
+/*****************************************************************************************************************************************/
+/*                           Specification of coefficient types and start values/_max_active settings                                                   */
+/*****************************************************************************************************************************************/
+
+open fin = ^dataset;
+do until eof(fin);
+  dta = readr(fin,nobs);
+  if nord>0;
+    yord = dta[.,dvord];
+    yord = (yord.==0)+yord.*(yord.!=0);
+    yavord = dta[.,davord];
+    yiord = dta[.,indxivord]; 
+  endif;
+
+endo;
+fin = close(fin);
+
+ordlev={};
+for i(1,nord,1);
+    ordlev= ordlev|rows(unique(yord[.,i],1));
+endfor;
+ordlev = ordlev-1;
+ordcum = 0|cumsumc(ordlev);
+
+nordcont = nord;
+nkernnom =  (nordcont*(nordcont-1))/2;      /* Number of correlation parameters due to ordinal variables */
+totdep = nordcont;
+totdim = nordcont;                      /*  MUST be at least 2, based on the fact that there should be at leats two dependent outcomes */
+nker = (totdim-1)*(totdim)/2;               /* Total number of correlation parameters */
+
+b={};
+count=1;
+ordlev1=ordlev+1;
+co = prodc(ordlev1);
+combo= zeros(co,nord);
+combprob = zeros(nobs, co);
+for jj(1, ordlev[1]+1,1);
+ for kk(1, ordlev[2]+1,1);
+  for mm(1,ordlev[3]+1,1);
+    for nn(1,ordlev[4]+1,1);      
+    yord = jj*ones(nobs,1)~kk*ones(nobs,1)~mm*ones(nobs,1)~nn*ones(nobs,1);
+
+if nord>0;
+   thresh = {};
+   threlbl={};
+   numthresh = {};
+   ncord = {};
+   maskdown={};
+   maskup = {};
+   indxdown={};
+   indxup = {};
+   indxdoub = {};
+   for i(1,nord,1);
+     //{ ncordtemp, threshtemp } = init(dataset,yord[.,i]);
+     ncordtemp = ordlev[i]+1;
+     threshtemp = est[ordcum[i]+1:ordcum[i+1]]';
+     masktemp = reshape(seqa(1,1,ncordtemp+1)',1,ncordtemp+1);    /* All mask matrices are number of threshold+2 for each ordinal variable, to include -inf and +inf) */
+     masktempdown = masktemp.==yord[.,i];
+     masktempup = masktemp.==yord[.,i]+1;
+     thresh=thresh|threshtemp;
+     threlbl =  threlbl|(0 $+ "THRESH" $+ ftocv(seqa(1,1,ncordtemp-1),2,0));
+     numthresh=numthresh|rows(threshtemp);
+     ncord=ncord|ncordtemp;
+     maskdown = maskdown~masktempdown;
+     maskup = maskup~masktempup;
+     indxdown = indxdown~(masktempdown[.,1].==1);
+     indxup = indxup~(masktempup[.,ncordtemp+1].==1);
+     indxsing = indxdown+indxup;
+     indxdoub = 1-indxsing;
+     nummask = sumc(ncord+1);
+     nummask1 = cumsumc(0|(ncord+1));
+   endfor;
+else;
+   numthresh=0;
+   numthresh1=0;
+endif;
+
+if nord>0;
+  nthresh = sumc(numthresh);
+  nthresh1=cumsumc(0|numthresh);
+  b = b|thresh|zeros(ncoeford,1);
+  ivvnameord = threlbl|ivnameord;
+  activeord = ones(nthresh+ncoeford,1);
+else;
+  nthresh=0;
+  nthresh1=0;
+  activeord = {};
+endif;
+
+   ll = exp(lpr1(est',dta));
+   
+   combprob[.,count] = exp(lpr1(est',dta));  
+   combo[count,.] = jj~kk~mm~nn;
+   print "combinations executed: " count;
+   count = count+1;
+    
+    
+    endfor;
+  endfor;
+ endfor;
+endfor;
+
+meancombprob = meanc((combprob));
+
+happy3prob = sumc((combo[.,1].==3).*meancombprob);
+mean3prob  = sumc((combo[.,2].==3).*meancombprob);
+stress3prob = sumc((combo[.,3].==3).*meancombprob);
+tired3prob = sumc((combo[.,4].==3).*meancombprob);
+
+print "Average probability of Happy     = yes (level 3) is :" happy3prob;
+print "Average probability of Meanigful = yes (level 3) is :" mean3prob;
+print "Average probability of Stressed  = yes (level 3) is :" stress3prob;
+print "Average probability of Tired     = yes (level 3) is :" tired3prob;
+
+// Write the contents of 'X' to a CSV file
+call csvWriteM(combo~meancombprob, savedout);
+
+
+/* procedure for log likelihood function calculation */
+
+proc lpr1(x,dta);
+local e1,p0,popass,xfinord,yifinord,i,j,xthresh,xker,xscal,omegastar, covker,omegker,xup,seednext,seed20,vsubq,xisubq,Msubq,
+indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w,final,indxcompq,xgg, xfin,zq,maskdownq,maskupq,ytempord,prepsing,prepsingdown,prepsingup,prepdoub;
+local xdownord,xupord,xggord,xdown,xthreshi,threshtmp,selq;
+
+    
+e1 = rows(dta);
+p0 = zeros(e1,1);
+popass = dta[.,ivobsid];
+       
+if nord>0;
+  xfinord = x[nthresh+1:nthresh+ncoeford];
+  yifinord = yiord;
+  xthresh={};
+  threshtmp = x[1:nthresh];
+  for i(1,nord,1);
+    xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+    xthresh=xthresh|xthreshi;   
+  endfor; 
+else;
+  xfinord = {};
+endif;
+
+
+if ntotcoef>0;
+   xfin = xfinord;   
+else;
+   xfin = 0;
+endif;
+
+xker = x[nthresh+ncoeford+1:nthresh+ncoeford+nker];
+xscal=0;
+
+if popass[1]==1;
+   seednext=seed10;
+endif;
+
+omegastar = matndupdiagonefull(xker);
+covker = omegastar;
+omegker=(covker);
+
+
+Pcomp={};
+for i1(1,e1,1);
+   selq={};
+   selq = selq|((yavord[i1,.])');
+
+   selq = selif(eye(nordcont),selq);                  
+   if ntotcoef>0;
+      zq = zeros(totdep,ntotcoef);     
+   else;
+      zq = 0;
+   endif;
+   indxcompq = zeros(nordcont,1);
+  
+   if nord>0;
+      maskdownq = zeros(nord,nummask);                                /* nord x [(total number of thresholds+2) across all ordinal outcome ] */
+      maskupq = zeros(nord,nummask);
+      prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+      prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+      prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+      ytempord = yiord[i1,.];
+      ytempord = reshape(ytempord,nord,ncoeford);
+      zq[1:nord,1:ncoeford]=ytempord;
+   endif;
+
+   for j(1,nord,1);
+       maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+       maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+       xdownord = prepdoub*maskdownq*xthresh;
+       xupord= prepdoub*maskupq*xthresh;
+       xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+   endfor;
+   xgg = xggord;
+   xdown = xdownord;
+   xup = xupord;
+   indxcompq = ((indxup[i1,.])');
+   seed20=seednext;
+   Msubq = eye(nordcont);
+   indxoneq = zeros(nordcont,1);
+   indxeqq = zeros(nordcont,1);
+
+   Vsubq = zq*xfin;    
+   xisubq = (omegker);          
+   indxoneq[1:nord] = (indxsing[i1,.])';
+   xgg = selq*xgg; xdown = selq*xdown;  xup = selq*xup;  indxoneq=selq*indxoneq;  indxcompq = selq*indxcompq;  indxeqq = selq*indxeqq;      
+   
+   Msubq = selq*Msubq;         
+   Bsubq = Msubq*((Vsubq));    
+   newxisubq = Msubq*xisubq*Msubq';  
+
+      { P,sss } = cdorrectmvn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq);
+
+   Pcomp = pcomp|P;
+   seednext=sss;
+endfor;
+
+w=zeros(e1,1);
+if pcomp > w;
+   final=ln(pcomp);
+else;
+   print "yes";
+   final=ln(pcomp-((pcomp.<=w).*(pcomp-0.0001)));
+endif;
+retp(dta[.,_weight].*final);
+endp;

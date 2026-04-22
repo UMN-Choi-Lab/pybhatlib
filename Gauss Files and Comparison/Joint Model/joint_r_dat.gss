@@ -1,0 +1,3724 @@
+/*********************************************************************************************************************************************
+                                                 ** Written by C. Bhat, March 2021
+                                                   ** (C) Copyright 2021 by Bhat
+                                                       ** All Rights Reserved.
+**********************************************************************************************************************************************/
+/* This is cross-sectional joint MNP/Ordered/count/grouped/continuous model using a variety of different analytic approximation methods for the 
+   multivariate cumulative normal; The code uses analytic gradients, all written by Bhat. This code allows continuous endogenous outcomes 
+   to appear as an "exogenous" variable for other nominal, ordinal, count, grouped, and continuous endogenuos outcomes
+******************************************************************************************************************************************
+** The File Header must accompany all files using any portion, in whole or in part, of this source code, and the many gradient 
+   library procedures and other procedures written by Bhat and used by this code; Need to have vecup.src, matgradient.src, 
+   and gradients MVN.src, all also written by Bhat, as well as include these in Gauss.lcg.
+*****************************************************************************************************************************************
+** Please cite the paper by Bhat, 2018 Bhat, C.R. (2018), "New Matrix-Based Methods for the Analytic Evaluation of the Multivariate 
+   Cumulative Normal Distribution Function," Transportation Research Part B, Vol. 109, pp. 238-256 if you use this code in any way.
+*****************************************************************************************************************************************
+
+Available analytic methods:
+
+_method =
+"SSJ"                     - Switzer, Solow, and Joe Method
+"TG"                      - Trinh and Genz's univariate conditioning approximation procedure
+"ME"                      - The traditional ME approach, implemented in a new matrix-based and LDLT-based manner
+"OVUS"                    - One-variate univariate screening approach
+"OVBS"                    - One-variate bivariate screening approach
+"TGBME"                   - Trinh and Genz's bivariate conditioning approximation procedure
+"BME"                     - Bivariate ME approach
+"TVBS"                    - Two-variate bivariate screening approach   */
+
+library maxlik, bhatlib;
+maxset;
+Gausset;
+clearg all;
+
+/*******************************************************************************************************************************************
+                                          Global Variable Definition and Settings
+********************************************************************************************************************************************/
+_method = "OVBS";
+_optimal==0;
+
+/* How do you want to parameterize the Cholesky of the Correlation Matrix */
+
+_Spher = 0;        /* Put _Spher =1 if you want spherical coordinate parameterization and 0 if you want radial coordinate parameterization */
+
+/* Want to estimate all-independent model? */
+
+_indep=0;
+
+/* Want to estimate independent model first before estimating joint model? Value is irrelevant if _indep=1;  */
+
+_indepfirst=0;
+
+/* Number of observations in data set */
+
+nobs = 1000; /* VERY IMPORTANT; This should correspond to the number of total observations in the data set */ 
+
+/* Number of nominal variables (binary choice is considered a nominal variable for this code) */
+
+nnom = 1;
+
+/* Vector containing number of alternatives in universal choice set for each nominal variable (>=2); if nnom=0, nc=0;  */
+
+//nc = 3|2;
+nc = 3;
+
+/* Number of ordinal variables (not count models though) */
+
+nord =  2;
+
+/* Number of count variables */
+
+ncnt = 1;
+
+/* Number of grouped variables */
+
+ngrp = 1;
+
+/* Number of continuous variables */
+
+ncont = 2;      /* Note that nnom+nord+ncnt+ngrp+ncont >=2 for this code  */
+
+/* if you are providing start values, put _user = 1 */
+
+_user = 0;
+
+/**********************************************************************************************************************************************
+                                           Main modification area for different runs
+***********************************************************************************************************************************************/
+
+/* data matrix for analysis */
+
+dataset = "C:/Users/dar4836/Downloads/r_dat_t_1000.dat";
+
+/* position of pointer to observation number in data set */
+
+{ obsid,ivobsid } = indices(dataset,"ID");
+
+/* position of UNO variable in data set; UNO=1 for all observations */
+
+{ dd,_dd } = indices(dataset,"UNO");
+
+/* position of SERO variable in data set; SERO=0 for all observations */
+
+{ ddsero,_ddsero } = indices(dataset,"SERO");
+
+/* position of weight variable in data set; if no weight, put uno as weight variable */
+
+{ weight,_weight } = indices(dataset,"UNO");
+
+
+/*****************************************************************************************************************************************************
+                                               Specification of variables area
+*****************************************************************************************************************************************************/
+
+/*****************************************************************************************************************************************************
+             For nominal variables; if no nominal variables, do not need to touch anything below corresponding to nominal variables
+*****************************************************************************************************************************************************/
+
+/* Definition of dependent variables in unordered-response outcome part in the form of 0/1 dummy variables; should be a matrix of
+   dimension nnom x max(nc) ; put zero fillers at the end for nominal outcomes with number of alternatives < max(nc);
+   for example, if two nominal outcomes with the first having three alternatives and the second two alternatives ...
+   
+dvunordname = { flagone flagshr flagtrn,
+                flagone flagshr sero   };   */
+                
+dvunordname = { TCH_1 TCH_2 TCH_3 };
+
+/* Define alternative availability variables in unordered-response in the form of 0/1 dummy variables; should be a matrix of
+   dimension nnom x max(nc) ; put zero fillers at the end for nominal outcomes with number of alternatives < max(nc); if an 
+   alternative is available to all individuals, put "uno" on right side; for example if two nominal outcomes with the first having 
+   three alternatives and the second having two alternatives...*/
+
+/* davunordname = { uno uno uno,
+                 uno uno sero };   */
+davunordname = { uno uno uno   };
+                 
+/* IMPORTANT: In the above specification, it is the analyst's responsibility to ensure that the chosen alternative for an individual is
+   CORRECTLY marked as being available to that individual */
+
+/* definition of independent variables in unordered-response equation; names of iv variables in a matrix of size 
+   sumc(nc) x max(number of iv variables); if a nominal outcome has fewer iv variables than the one with the maximum 
+   number of ivs, put filler zeros; Always designate the first alternative as the base for alternative-specific constants
+   (but not necessary to do so for alternative-specific paramaters); If two nominal variables 
+
+let ivunord =      { sero sero     oneovdi,     
+                     uno  sero     shrovdi,
+                     sero uno      trnovdi, 
+                     sero onetcost sero,
+                     uno  shrtcost sero   };  */
+
+/* Provide variable names for output of size nnom x max(number of iv variables); each variable name should be less than 7 characters   
+
+var_unordnames   =      { SRCONST TRCONST OVDI,
+                          SRCONST COST    SERO };   */
+                     
+/* Add a vector that gives number of variables per alternative in each nominal outcome; of size nnomx1 vector  
+
+numunord = 3|2;            */
+
+let ivunord =     { SERO SERO Tatt1_1 Tatt2_1 SERO SERO , 
+                    UNO SERO Tatt1_2 Tatt2_2 ind1 SERO ,
+                    SERO UNO Tatt1_3 Tatt2_3 SERO ind1 };
+
+var_unordnames   =      { ASC2 ASC3 Tatt1 Tatt2 ind1_2 ind1_3 };
+
+numunord = 6;
+
+_nomcont = 0;  /* If a continuous endogenous variable appears on the right side of one or more unordered response utilities; should be zero if nnom=0 or
+                  ncont==0 */
+
+/*****************************************************************************************************************************************************
+            For ordinal variables; if no ordinal variables, no need to touch anything below for ordinal variable specification
+*****************************************************************************************************************************************************/
+
+_ordcont = 1;  /* If a continuous endogenous variable appears on the right side of one or more ordered-response propensities; should be zero if nord=0 or ncont=0 */
+
+/* specify dependent outcomes in ordered-response model component below; the dependent outcomes should STRICTLY take a value of 1,2,3,4...;
+if an ordered-response outcome takes the values 0,1,2,3...., add one to this dependent variable ;
+if an ordered-response outcome does not exist (i.e., is unobserved because an individual chose an unordered-response regime
+for which there is no ordered-response outcome, then put the SPECIFIC value of 0 for the individual in the ordered-response 
+dependent outcome column in the data set, AND then provide availability in davordname variable below; dvordname and davordname are 
+1 x nord vectors  */
+
+//dvordname = { nstopfin  newtran  numveh };
+
+dvordname = { NOR_1 NOR_2 };
+
+davordname = { uno uno };
+
+/* If an ordered variable is not available for specific individuals based on choices on other dimension, create an appropriate variable 
+in data set that takes a value of zero for those individuals and a value of one for other individuals; put the name of the variable below
+for each ordered response variable; Number of columns below should be the same as the number of columns in dvordname */
+
+//davordname = { uno uno uno };
+
+/* definition of independent variables in ordered-response equation; names of iv variables in a matrix of size 
+   nord x (total # of coefficients to be estimated across all ordered-response models; can include dummy variables 
+   corresponding to unordered-response or count or grouped 
+   variables as "independent" variables, as well as interactions of these dummy variables with actual exogenous variables  */
+
+//let ivord =        { nwktime   sero ,     
+//                     sero      sero,
+//                     sero      incnew  };
+                   
+
+let ivord =  {	ind1 ind2 	Noratt1 Noratt2 SERO SERO SERO SERO ,
+                SERO SERO SERO SERO ind1 ind2 	Noratt2 Noratt3 };
+
+var_ordnames  =  {	ind1_O1 ind2_O1 Nor1_O1 Nor2_O1 ind1_O2 ind2_O2 Nor2_O2 Nor3_O2	};
+
+/*****************************************************************************************************************************************************
+            For count variables; if no count variables, no need to touch anything below for count variable specification
+*****************************************************************************************************************************************************/
+
+_cntcont = 0;  /* If a continuous endogenous variable appears on the right side of one or more count propensities; should be zero if ncnt=0 or ncont=0 */
+
+_poisson=1;    /* ncnt x 1 vector; for each count variable, if poisson count, put this as one NOTE THAT IF YOU HAVE COUNT VALUES THAT GO 
+                  BEYOND 40 OR SO, BETTER TO USE POISSON=1, BECAUSE WHEN COMPUTING GAMMA FUNCTION IN NEGATIVE BINOMIAL, THE GAMMA FUNCTION
+                  STARTS BLOWING UP WHEN COMPUTING GAMMA(THETA+COUNT VALUE), WHEN THETA+COUNT VALUE>60 OR SO. If you get an error 
+                  "Integration1d failed" Round-off error detected which prevents requested tolerance from being reached", it essentially means 
+                  theta parameter is running away toward infinity; that is, use a Poisson model; so whenever you get this message,
+                  start by putting all poisson=0 values to 1, and then release the '1' values one by one to see if estimation happens; of course, 
+                  it is possible that all counts will collapse to a Poisson Process
+                  NOTE: Putting Poisson as 0 for one or more counts will increase estimation time because there is a need to compute the
+                        gamma function (an integral) as well as its derivative */
+
+/* specify dependent outcomes in count model component below; the dependent outcomes should STRICTLY take a value of 0,1,2,3,4...;
+
+if a count outcome does not exist (i.e., is unobserved because an individual chose an unordered-response regime
+for which there is no count outcome, then put the SPECIFIC value of 0 for the individual in the count
+dependent outcome column in the data set, AND then provide availability in davcntname variable below; 1 x ncnt vector 
+
+dvcntname = { count2 };*/
+
+dvcntname = { Count_1  };
+
+/* If a count variable is not available for specific individuals based on choices on other dimension, create an appropriate variable 
+in data set that takes a value of zero for those individuals and a value of one for other individuals; put the name of the variable below
+for each count variable; Number of columns below should be the same as the number of columns in dvcntname */
+
+davcntname = { uno };
+
+_cntmain = 0;   /* ncntx 1 vector; This is an indicator identifying whether there are any iv variables in the latent equation
+                   of each count model; this can be zero, because
+                   traditional count models will only include iv variables in the thresholds */ 
+
+numcntmain = sumc(_cntmain);     /* Number of count models with iv variables in latent equation */
+                   
+if numcntmain>0;
+   /* definition of independent variables in count latent equation; names of iv variables in a matrix of size 
+      ncnt x (total # of coefficients to be estimated across all count models; can include dummy variables 
+      corresponding to unordered-response or ordered-response or grouped
+      variables as "independent" variables, as well as interactions of these dummy variables with actual exogenous variables
+      no constant in the specification below */
+   
+    let ivcntmain =        { white employed };
+   
+    /* Provide variable names for output of size 1 x cols(ivord); each variable name should be less or than  equal to 7 characters   */
+   
+    var_cntnamesmain   =      { white employed };     
+endif;
+
+/* READ CAREFULLY FOR SPECIFICATION OF COUNT MODELS 
+   specification below for ivs in count threshold (in lambda embedded in thresholds; lambda=exp(gamma'z sub q),
+   ncnt x (total # of coefficients to be estimated across all count models;   
+   first put uno constants in each count model (must include constants in each count), 
+   and then provide other ivs; so, if you have two count equations, first with income only in z sub q, 
+   and another with income and number of vehicles in z sub q,
+
+   ivcntgamma = { uno  sero income sero   sero,
+                   sero uno  sero   income numveh };
+
+   Note that the constants for each count appear FIRST, and then you give specification of other IVs    */
+
+let ivcntgamma = { uno ind1 ind2 noratt1 };
+let var_cntnamesgamma = { CNT_UNT CNT_ind1 CNT_ind2 CNT_nor1 };
+
+/* Provide count thresholds for which an additional alpha term specific to count value will be introduced (this is to account for 
+   spikes or reductions in frequency of count values). If you put indalpha = { 0 }, it means no additional 
+   thresholds at all; if indalpha = { 1 2 4 }, it means an alpha sub 1 term gets added to first (upper) threshold, alpha sub 1 plus 
+   alpha sub 2 gets added to second (upper) threshold, then same alpha sub 1 plus alpha sub 2 gets added 
+   to third threshold (because count #3 does not appear in indalpha), and finally alpha sub 1 plus alpha sub 2 plus alpha sub 4 gets
+   added to fourth and all other subsequent thresholds. Note that indalpha cannot
+   include the minimum count value (whether 0 or otherwise), because alpha sub {min value } is normalized to zero for identification 
+   (given that a constant is included for each count model in the threshold specification for z sub q (see specification of ivcntthresh specification above).
+   
+   This matrix is of dimension ncnt x max(number of additional thresholds across count models)
+   so indalpha = { 1 2 4,
+                   1 0 0 } 
+   means three additional thresholds in first count (for first, second, and fourth upper thresholds),
+   and only one additional threshold (for first threshold) in second count ;
+   NOTE: You cannot have a separate threshold corresponding to the largest count value; so, above in first count, if you had count values of
+         0,1,2,3,4, you cannot have a separate (to-be-estimated) added alpha threshold alpha sub 4; you can have { 1 2 3 } or a subset 
+         in this case, but cannot have { 1 2 4 }, because max(count) is 4; also, as already indicated, you cannot have a separate
+         (to-be-estimated) added alpha threshold for min(count); so, if 0 were not observed as a count value, and 1 was minimum count, 
+         then indalpha cannot include 1 in the row corresponding to that count variable; in the above specification of indalpha, 
+         the assumption is that min(count) is zero for both count variables */
+/* 
+indalpha = { 1 2 3 11 21 , 
+             1 2 3 4 11 , 
+             1 2 3 6  0 };
+*/
+
+
+ indalpha = { 1 2 6 11 }; 
+/*****************************************************************************************************************************************************
+            For grouped variables; if no grouped variables, no need to touch anything below for grouped variable specification
+*****************************************************************************************************************************************************/
+
+_grpcont = 0;  /* If a continuous endogenous variable appears on the right side of one or more grouped propensities; should be zero if ngrp=0 or ncont=0 */
+
+/* specify dependent outcomes in grouped model component below; the dependent outcomes should STRICTLY take a value of 1,2,3,....;
+
+if a grouped outcome does not exist (i.e., is unobserved because an individual chose an unordered-response regime
+for which there is no grouped outcomRe, then put the SPECIFIC value of 0 for the individual in the grouped
+dependent outcome column in the data set, AND then provide availability in davgrpname variable below; 1 x ngrp vector*/
+
+dvgrpname = { Group_1 };
+
+/* If a grouped variable is not available for specific individuals based on choices on other dimension, create an appropriate variable 
+in data set that takes a value of zero for those individuals and a value of one for other individuals; put the name of the variable below
+for each grouped variable; Number of columns below should be the same as the number of columns in dvgrpname */
+
+davgrpname = { uno };
+
+/* definition of independent variables in grouped equation; names of iv variables in a matrix of size 
+   ngrp x (total # of coefficients to be estimated across all grouped models; can include dummy variables 
+   corresponding to unordered-response or ordered-response or count
+   variables as "independent" variables, as well as interactions of these dummy variables with actual exogenous variables;
+   Note that the constants for each grouped variable appear FIRST, and then you give specification of other IVs as you like; so, if you have 
+   two grouped variables, put uno as the first two variables, and then give specification however you like   */
+
+ /*let ivgrp =        { uno    sero  female married age65 sero   sero    ,     
+                        sero   uno  sero  sero    sero  incc10 female };  */
+
+ let ivgrp =        { uno  ind1 ind2 Noratt2 };  
+                     
+/* Provide variable names for output of size 1 x cols(ivgrp); each variable name should be less or than  equal to 7 characters   */
+
+/* var_grpnames   =      { uno uno nwktim1 age }; */
+
+var_grpnames   =      { GRP_uno GRP_ind1 GRP_ind2 GRP_nor2 };   
+
+/* Provide upper threshold values for grouped variable, except for the last category whose upper threshold will be +inf; So, if grouped 
+    categories are 1,2,3, and 4, you will have the actual threshold values as -infinity|a1|a2|a3|+infinity; below you will provide the (finite) 
+    upper threshold values of a1,a2, and a3;
+    grpthresh = { a1,a2,a3 }; grpthresh is ngrp x max(number of grouped categories-1); put zero values as appropriate; so if two grouped 
+    models, with the first being 5 categories and the second three, 
+    grpthresh = { a1 a2 a3 a4,
+                  b1 b2 0   0 }; */
+    
+/* grpthresh = { 2 5,
+               1 3 };  */
+              
+grpthresh = { 2 5 10 };  
+
+/* provide a vector of size ngrp x 1, indicating the number of thresholds in each grouped variables; in the two grouped variable case earlier, 
+   it will be numgrpthresh = 4|2;  */
+
+numgrpthresh = 3;  
+
+/*****************************************************************************************************************************************************
+        For continuous variables; if no continuous variables, no need to touch anything below for continuous variable specification
+*****************************************************************************************************************************************************/
+
+_contcont = 1;  /* If a continuous endogenous variable appears on the right side of one or more continuous variaables; should be zero if ncont=0 or ncont=1 */
+
+/* specify dependent outcomes in continuous model component below; 
+if a continuous outcome does not exist (i.e., is unobserved because an individual chose an unordered-response regime
+for which there is no continuous outcome, then put an arbitrary value of 0 for the individual in the continuous
+dependent outcome column in the data set, but then provide availability in davcontname variable below; */
+dvcontname = { cont_1 cont_2 };
+
+/* If a continuous variable is not available for specific individuals based on choices on other dimension, create an appropriate variable 
+in data set that a value of zero for those individuals and a value of one for other individuals; put the name of the variable below
+for each continuous variable; Number of columns below should be the same as the number of columns in dvcontname */
+
+davcontname = { uno uno };
+
+/* definition of independent variables in continuous equation; names of iv variables in a matrix of size 
+   ncont x total # of coefficients to be estimated across al continuous outcomes; can include dummy variables corresponding to 
+   unordered-response/ordered-response variable as "independent" variables, as well as interactions of these dummy variables 
+   with actual exogenous variables; IMPORTANT: specify ivs below such that, if there are multiple continuous variables, 
+   first ncont columns represent constants for each of the ncont variables; beyond that, can specify as you like */
+         
+let ivcont =        { UNO SERO ind3 ind4 noratt1 noratt2  SERO SERO SERO SERO ,
+                      SERO UNO SERO SERO SERO SERO ind3 ind4 noratt2 noratt3 };     
+                      
+
+var_contnames   =      { C1_UNO C2_UNO C1_ind3 C1_ind4 C1_nor1 C1_nor2 C2_ind3 C2_ind4 C2_nor2 C2_nor3 }; 
+/*****************************************************************************************************************************************************
+For interactions of exogenous variables (including constant) with endogenous continuous outcome variables that appear on the right side of
+other endogenous variables; if no continuous variables or endogenous outcomes do not appear on the right side of other equations, 
+no need to touch anything below
+*****************************************************************************************************************************************************/
+
+varinternames = {};
+indxivinter = {};
+if _nomcont==1 or _ordcont==1 or _cntcont==1 or _grpcont==1 or _contcont ==1; 
+/* This is an important specification; interivspec is of dimension [sumc(nc)+nord+ncnt+ngrp+ncont] x number of coeffs. to be estimated as interactions
+   with continuous endogenous variables; In the specification below, across all endogenous variables there are nine coefficients to be 
+   estimated with respect to interactions of coefficients with the first continuous variable, and ten coefficients with respect to 
+   second continuous variables; there are two nominal variables, the first with three alternatives and the second with two alternatives; 
+   there are two ordinal variables, one count variable, one grouped variable, and one continuous variables; 
+   The first column is coefficient of interaction of ovdi with first continuous endogenous variable, second and third columns refer to coeffs. of interaction
+   of the first continuous endogenous variable directly as well as male interaction with first continuous endogenous variable for second alternative of first nominal 
+   variable; fourth and figth columns refer to coeffs. of interaction of the first continuous endogenous variable directly as well as 
+   male interaction with first continuous endogenous variable for third alternative of first nominal variable; AND so on; the first 
+   nine columns are for interactions with first endogenous continuous variable and the last 10 columns are for interactions with second
+   endogenous continuous variable 
+
+   interivspec = { oneovdi   sero   sero   sero  sero   sero   sero   sero  sero  onetcost   sero   sero       sero     sero       sero    sero   sero sero  sero
+                   shrovdi   uno    male   sero  sero   sero   sero   sero  sero  shrtcost   uno    married    sero     sero       sero    sero   sero sero  sero
+                   trnovdi   sero   sero   uno   male   sero   sero   sero  sero  trntcost   sero   sero       uno      married    sero    sero   sero sero  sero
+                   sero      sero   sero   sero  sero   uno    sero   sero  sero    sero     sero   sero       sero     sero       uno     sero   sero sero  sero
+                   sero      sero   sero   sero  sero   sero   sero   sero  sero    sero     sero   sero       sero     sero       sero    sero   sero sero  sero
+                   sero      sero   sero   sero  sero   sero   uno    male  sero    sero     sero   sero       sero     sero       sero    sero   sero sero  sero
+                   sero      sero   sero   sero  sero   sero   sero   sero  sero    sero     sero   sero       sero     sero       sero    uno    sero sero  sero
+                   sero      sero   sero   sero  sero   sero   sero   sero  uno     sero     sero   sero       sero     sero       sero    sero   uno  male  sero
+                   sero      sero   sero   sero  sero   sero   sero   sero  sero    sero     sero   sero       sero     sero       sero    sero   sero sero  sero  
+                   sero      sero   sero   sero  sero   sero   sero   sero  sero    sero     sero   sero       sero     sero       sero    sero   sero sero  uno  };  */
+                   
+   interivspec = { SERO	SERO	SERO	SERO	SERO	,
+SERO	SERO	SERO	SERO	SERO	,
+SERO	SERO	SERO	SERO	SERO	,
+UNO	SERO	SERO	UNO	SERO	,
+SERO	UNO	SERO	SERO	UNO	,
+SERO	SERO	SERO	SERO	SERO	,
+SERO	SERO	SERO	SERO	SERO	,
+SERO	SERO	UNO	SERO	SERO	,
+SERO	SERO	UNO	SERO	SERO	};
+
+
+/* Indicate number of columns above that correspond to interactions with each continuous endogenous outcome variable; if one or more continuous endogenous 
+   outcome do not appear at all on right side of any endogenous variable, put a column of zeros corresponding to those 
+   continuous outcome in the matrix above, and identify the columns in which they appear in zcolumns below as a (# zero columns x 1) vector ; if no such continuous variable, 
+   put zcolumns = {} */
+   
+   nivinter = 3|2;  /* Number of coefficients on interactions with continuous endogenous variables to be estimated  */
+   zcolumns = {};
+
+   ivnameinter1 = { c1_or1 ,	c1_or2 ,	c1_c2 ,	c2_or1 ,	c2_or2 };
+endif;
+
+/* Provide your own start values if _user =1 earlier  */
+
+if _user == 1;
+  load bb;
+  b = bb;
+endif;
+
+/**********************************************************************************************************************************************
+                                          correlation restriction specification
+**********************************************************************************************************************************************/
+scal = 1;        /* Scale used in parameterizations */
+
+_correst = 0;    /* Put a value of zero if no correlation restriction */
+
+correst = { 1 1 1 1 1 0 1,        /* Upper diagonal matrix with a diagonal of ones; off-diagonal elements of 1 indicate active correlations */
+            0 1 1 0 1 1 0,        /* correst is relevant only if _correst=1 */
+            0 0 1 1 0 0 0,
+            0 0 0 1 1 1 0,
+            0 0 0 0 1 0 1,
+            0 0 0 0 0 1 1,
+            0 0 0 0 0 0 1 };
+
+/**********************************************************************************************************************************************
+                                          Actual program area begins; No need to touch anything below
+**********************************************************************************************************************************************/
+
+
+if ncont==0;
+   _nomcont=0;  _ordcont=0; _cntcont=0; _grpcont=0; _contcont=0;
+endif;
+
+if nnom==0;
+   _nomcont=0;
+endif;
+
+if nord==0;
+   _ordcont=0;
+endif;
+
+if ncnt==0;
+   _cntcont=0;
+endif;
+
+if ngrp==0;
+   _grpcont=0;
+endif;
+
+seed10 = 70000000;   /* In case allowing SSJ method  */
+
+/* Number of rows to be read by likelihood function */
+
+__row = nobs;
+
+infin=200;
+minfin=-200;
+
+ivnameunord= {};
+indxivunord = {};
+dvunord = {};
+davunord = {};
+if nnom>0;
+   k=0;
+   for i(1,nnom,1);
+     { vdvunord,dvunordtemp } = indices(dataset,((dvunordname[i,1:nc[i]])'));
+     { vdavunord,davunordtemp } = indices(dataset,((davunordname[i,1:nc[i]])'));
+     dvunord = dvunord|dvunordtemp;
+     davunord = davunord|davunordtemp;
+     { vivunord,indxtemp } = indices(dataset,(vecr(ivunord[k+1:k+nc[i],1:numunord[i]])));
+     indxivunord = indxivunord~indxtemp';
+     ivnameunord = ivnameunord|((var_unordnames[i,1:numunord[i]])');     
+     k = k+nc[i];
+   endfor;    
+   nivunord = nc.*numunord;  /* nnom x 1, each entry provides total (across all alternatives) number of ivs for each nominal variable */
+   ncoefunord = sumc(numunord);  /* total number of coeffs. to be estimated across all nominal variables */
+   numunord1 = cumsumc(0|numunord);
+   nivunord1 = cumsumc(0|nivunord);
+   activeunord = ones(ncoefunord,1);
+else;
+   ncoefunord=0;
+   numunord=0;
+   numunord1=0;
+   nivunord1=0;
+   nc=0;
+   activeunord = {};
+endif;
+
+ivnameord = {};
+indxivord = {};
+if nord>0;
+   { vdvord,dvord } = indices(dataset,dvordname');
+   { vdavord,davord } = indices(dataset,davordname');
+   { ivnameord,indxivord } = indices(dataset,(vecr(ivord)));
+   ivnameord = var_ordnames';   
+   ncoeford = cols(ivord); /* Number of coefficients to be estimated across all ordered-response exogenous variables  */
+else;
+   ncoeford=0;
+endif;
+
+ivnamecntmain = {};
+indxivcntmain = {};
+ivnamecntgamma = {};
+indxivcntgamma = {};
+
+if ncnt>0;
+   { vdvcnt,dvcnt } = indices(dataset,dvcntname');
+   { vdavcnt,davcnt } = indices(dataset,davcntname');
+   { ivnamecntgamma,indxivcntgamma } = indices(dataset,(vecr(ivcntgamma)));
+   ivnamecntgamma = var_cntnamesgamma'; 
+   if numcntmain>0;
+      { ivnamecntmain,indxivcntmain } = indices(dataset,(vecr(ivcntmain)));
+      ivnamecntmain = var_cntnamesmain';    
+      ncoefcntmain=cols(ivcntmain);
+   else;
+      ivnamecntmain = {};
+      ncoefcntmain=0;
+   endif;
+   ivnamecnt = ivnamecntgamma|ivnamecntmain;
+   ncoefcntgamma = cols(ivcntgamma); /* Number of coefficients to be estimated across all exogenous variables in count threshold models  */
+   ncoefcnt = ncoefcntmain+ncoefcntgamma; 
+else;
+   ncoefcnt=0;
+   ncoefcntmain=0;
+endif;
+
+
+ivnamegrp = {};
+indxivgrp = {};
+if ngrp>0;
+   { vdvgrp,dvgrp } = indices(dataset,dvgrpname');
+   { vdavgrp,davgrp } = indices(dataset,davgrpname');
+   { ivnamegrp,indxivgrp } = indices(dataset,(vecr(ivgrp)));
+   ivnamegrp = var_grpnames';   
+   ncoefgrp = cols(ivgrp); /* Number of coefficients to be estimated across all exogenous variables in grouped models  */
+   activegrp = ones(ncoefgrp,1);
+else;
+   ncoefgrp=0;
+   activegrp = {};
+endif;
+
+ivnamecont = {};
+indxivcont = {};
+if ncont>0;
+   { vdvcont,dvcont } = indices(dataset,dvcontname');
+   { vdavcont,davcont } = indices(dataset,davcontname');
+   { ivnamecont,indxivcont } = indices(dataset,(vecr(ivcont)));
+   ivnamecont = var_contnames';
+   ncoefcont = cols(ivcont); 
+   activecont = ones(ncoefcont,1);
+else;
+   ncoefcont=0;
+   activecont = {};
+endif;
+
+ntotcoef=ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont;
+
+if _nomcont==1 or _ordcont==1 or _cntcont==1 or _grpcont==1 or _contcont ==1; 
+   sumnivinter = sumc(nivinter); 
+   cumnivinter = cumsumc(0|nivinter);
+   onetemp = zeros(sumc(nivinter),ncont);
+   for i(1,ncont,1);
+       onetemp[cumnivinter[i]+1:cumnivinter[i+1],i]=ones(nivinter[i],1);
+   endfor; 
+   _max_actinter = ones(sumnivinter,1);
+   if rows(zcolumns) > 0;
+      _max_actinter[zcolumns] = zeros(rows(zcolumns),1);
+   endif;
+   { ivnameinter,indxivinter } = indices(dataset,vecr(interivspec));
+   ivnameinter = ivnameinter1;
+endif;
+
+/*****************************************************************************************************************************************/
+/*                           Specification of coefficient types and start values/_max_active settings                                                   */
+/*****************************************************************************************************************************************/
+
+open fin = ^dataset;
+do until eof(fin);
+  dta = readr(fin,nobs);
+    
+  if nnom>0;
+    yunord = dta[.,dvunord];
+    yavunord = dta[.,davunord];
+    yiunord = dta[.,indxivunord];
+  endif;
+  
+  if nord>0;
+    yord = dta[.,dvord];
+    yord = (yord.==0)+yord.*(yord.!=0);
+    yavord = dta[.,davord];
+    yiord = dta[.,indxivord]; 
+  endif;
+  
+  if ncnt>0;
+    ycnt = dta[.,dvcnt];
+/*    ycnt = (yord.==0)+yord.*(yord.!=0);   */
+    yavcnt = dta[.,davcnt];
+    if numcntmain>0;
+       yicntmain = dta[.,indxivcntmain]; 
+    endif;
+    yicntgamma = dta[.,indxivcntgamma];
+  endif;
+  
+  if ngrp>0;
+    ygrp = dta[.,dvgrp];
+    ygrp = (ygrp.==0)+ygrp.*(ygrp.!=0);
+    yavgrp = dta[.,davgrp];
+    yigrp = dta[.,indxivgrp]; 
+  endif;
+  
+  if ncont>0;
+    yicont = dta[.,indxivcont];
+    yavcont = dta[.,davcont];
+    ycont = dta[.,dvcont]; 
+  endif;
+  
+  if _nomcont==1 or _ordcont==1 or _cntcont==1 or _grpcont==1 or _contcont ==1; 
+     yintercont = dta[.,indxivinter]; 
+  endif;
+endo;
+fin = close(fin);
+
+if nord>0 or ncnt>0 or ngrp>0 or ncont>0;
+  nordcont = nord+ncnt+ngrp+ncont;
+  nkernnom =  (nordcont*(nordcont-1))/2;      /* Number of correlation parameters due to non-nominal variables */
+else;
+  nordcont=0;
+  nkernnom=0;
+endif;
+
+if nnom>0;
+  convdutou = Ddutou(nnom,nc,0,0,nordcont);
+  nc1 = nc-1;
+  nc2 = cumsumc(0|nc);
+  nc3 = sumc(nc1);
+  nc4 = sumc(nc);
+  nkerunord = (nc1.*(nc1-1))/2;               /* Vector providing the number of correlation parameters associated with each nominal variable  */
+else;
+  nc1=0;
+  nc2=0;
+  nc3=0;
+  nc4 = 0;
+  nkerunord=0;
+  convdutou = eye(nordcont);
+endif;
+
+totdep = nc4+nordcont;
+totdim = nc3+nordcont;                      /*  MUST be at least 2, based on the fact that there should be at leats two dependent outcomes */
+nker = (totdim-1)*(totdim)/2;               /* Total number of correlation parameters */
+
+if nnom==1 or nnom==0;
+  ncc = 0;
+  mm=0;
+elseif nnom>1;
+  { numb,combindx,comb } = allcombs(seqa(1,1,nnom));
+  combindx = selif(combindx,numb.==2);
+  mm = combindx[.,1:2];
+  ncc = nc1[mm[.,1]].*nc1[mm[.,2]];           /* Vector providing pairwise number of correlation parameters across nominal variables */
+endif;
+
+/* Arrange starting values so that coefficients of all independent variables in unordered response first, then all thresholds in ordered-response, 
+then coeffs. of all independent variables in ordered-response, then additional alpha threshold shifter terms in all count models, next 
+dispersion parameter in count models (parameterized as exp(thetha)), 
+next coeffs. of independent variables in thresholds in count models (with constants in thresholds for all count models positioned first),
+next coeffs. of independent variables in main count models, followed by coefficients of all independent variables in grouped and continuous models, 
+cholesky of kernel correlation elements, then scale terms, and finally coefficients of interactions with endogenous 
+continuous variables; if you do not have starting values, and want the program to do everything, to begin, best to use equivalent of 
+IID kernel correlation terms (though in differenced form), then use these as starting values to release kernel matrices */
+
+b={};
+if nnom>0;
+  for i(1,nnom,1);
+    { bconst } = init1(dataset,yunord[.,nc2[i]+1:nc2[i+1]]);
+    b = b|(bconst|(zeros(numunord[i]-(nc[i]-1),1)));
+  endfor;
+endif;
+
+if nord>0;
+   thresh = {};
+   threlbl={};
+   numthresh = {};
+   ncord = {};
+   maskdown={};
+   maskup = {};
+   indxdown={};
+   indxup = {};
+   indxdoub = {};
+   for i(1,nord,1);
+     { ncordtemp, threshtemp } = init(dataset,yord[.,i]);
+     masktemp = reshape(seqa(1,1,ncordtemp+1)',1,ncordtemp+1);    /* All mask matrices are number of threshold+2 for each ordinal variable, to include -inf and +inf) */
+     masktempdown = masktemp.==yord[.,i];
+     masktempup = masktemp.==yord[.,i]+1;
+     thresh=thresh|threshtemp;
+     threlbl =  threlbl|(0 $+ "THRESH" $+ ftocv(seqa(1,1,ncordtemp-1),2,0));
+     numthresh=numthresh|rows(threshtemp);
+     ncord=ncord|ncordtemp;
+     maskdown = maskdown~masktempdown;
+     maskup = maskup~masktempup;
+     indxdown = indxdown~(masktempdown[.,1].==1);
+     indxup = indxup~(masktempup[.,ncordtemp+1].==1);
+     indxsing = indxdown+indxup;
+     indxdoub = 1-indxsing;
+     nummask = sumc(ncord+1);
+     nummask1 = cumsumc(0|(ncord+1));
+   endfor;
+else;
+   numthresh=0;
+   numthresh1=0;
+endif;
+
+if nord>0;
+  nthresh = sumc(numthresh);
+  nthresh1=cumsumc(0|numthresh);
+  b = b|thresh|zeros(ncoeford,1);
+  ivvnameord = threlbl|ivnameord;
+  activeord = ones(nthresh+ncoeford,1);
+else;
+  nthresh=0;
+  nthresh1=0;
+  activeord = {};
+endif;
+
+if ncnt>0;
+   gammacnt = {};
+   thetacnt = zeros(ncnt,1);
+   activethetacnt =zeros(ncnt,1);
+   threshcnt = {};
+   threlblcnt={};
+   numcntthresh = {};
+   nccnt = {};
+   nccntmax={};
+   nccntmin={};
+   maskdowncnt={};
+   maskupcnt = {};
+   indxdowncnt={};
+   indxupcnt = {};
+   indxdoubcnt = {};
+   for i(1,ncnt,1);
+     { nccntmintemp,nccntmaxtemp,nccnttemp,gammatempcnt } = initcnt(dataset,ycnt[.,i]);    /* initial value of constant in gamma vector (lambda=exp(gamma'z sub q)  */
+     gammacnt =  gammacnt|gammatempcnt; 
+     nccnt = nccnt|nccnttemp;                          /* number of count values in each count model; ncnt x 1 vector */
+     masktempcnt = reshape(seqa(0,1,nccntmaxtemp+2)',1,nccntmaxtemp+2);    /* All mask matrices are values from 0 to max(count)+1 (including 0 and last threshold) for each count variable, to include -inf at lower end) */
+     masktempdowncnt = masktempcnt.==ycnt[.,i];           /* Have to do this differently from nord because ncnt can start from 0 */
+     masktempupcnt = masktempcnt.==ycnt[.,i]+1; 
+     nccntmax = nccntmax|nccntmaxtemp;
+     nccntmin = nccntmin|nccntmintemp;
+     threshtemp  = sumc(((indalpha[i,.])').!=0);                  /* Number of additional threshold parameters for count i */
+     numcntthresh = numcntthresh|threshtemp;                      /* Number of additional threshold parameters alpha */
+     maskdowncnt = maskdowncnt~masktempdowncnt;
+     maskupcnt = maskupcnt~masktempupcnt;
+     indxdowncnt = indxdowncnt~(masktempdowncnt[.,1].==1);
+     indxupcnt = indxupcnt~(zeros(nobs,1));
+     indxsingcnt = indxdowncnt+indxupcnt;
+     indxdoubcnt = 1-indxsingcnt;
+     nummaskcnt = sumc((nccntmax+2));
+     nummaskcnt1 = cumsumc((0|(nccntmax+2)));
+     nummaskcntadd1 = sumc((nccntmax+1));
+     nummaskcntadd11 = cumsumc((0|(nccntmax+1)));
+     if _poisson[i]==1;
+        thetacnt[i]=__INFP;                                         /* Arbitrary value. Does not matter */        
+     elseif _poisson[i]==0;
+        thetacnt[i]=10;
+        activethetacnt[i]=1;
+     endif;
+     if threshtemp>0;
+        threshcnt = threshcnt|seqa(1,1,threshtemp);             /* For labeling of additional thresholds in each count */
+        threlblcnt =  threlblcnt|(0 $+ "THRESHCNT" $+ ftocv(seqa(1,1,threshtemp),2,0));
+     else;
+        threlblcnt = {};
+     endif;    
+   endfor;
+else;
+   numcntthresh=0;
+   numcntthresh1=0;
+endif;
+
+if ncnt>0;
+  ncntthresh = sumc(numcntthresh);                   /* Total number of additional alpha parameters in thresholds across all count models */
+  ncntthresh1=cumsumc(0|numcntthresh);     
+  ncntthresh2 = 0|numcntthresh;
+  thetalbl =  (0 $+ "THETA" $+ ftocv(seqa(1,1,ncnt),2,0));
+  if ncntthresh>0 and numcntmain>0;
+      b = b|0.01*ones(ncntthresh,1)|thetacnt|(gammacnt)|zeros(ncoefcntgamma-ncnt,1)|zeros(ncoefcntmain,1);
+  elseif ncntthresh>0 and numcntmain==0;
+      b = b|0.01*ones(ncntthresh,1)|thetacnt|(gammacnt)|zeros(ncoefcntgamma-ncnt,1);
+  elseif ncntthresh==0 and numcntmain>0;
+      b = b|thetacnt|(gammacnt)|zeros(ncoefcntgamma-ncnt,1)|zeros(ncoefcntmain,1);
+  elseif ncntthresh==0 and numcntmain==0;
+      b = b|thetacnt|gammacnt|zeros(ncoefcntgamma-ncnt,1);
+  endif;
+  ivvnamecnt = threlblcnt|thetalbl|ivnamecnt;
+  if ncntthresh > 0;
+     activecnt = ones(ncntthresh,1)|activethetacnt|ones(ncoefcnt,1);
+  else;
+     activecnt =  activethetacnt|ones(ncoefcnt,1);
+  endif;
+  nparmcnt = rows(activecnt);
+else;
+  activecnt = {};
+  ncntthresh=0;
+  ncntthresh1=0;
+  ncntthresh2=0;
+  nparmcnt=0;
+endif;
+
+if ngrp>0;
+   ncgrp = {};
+   constgrp = {};
+   stdgrp = {};
+   maskdowngrp={};
+   maskupgrp = {};
+   indxdowngrp={};
+   indxupgrp = {};
+   indxdoubgrp = {};
+   xthreshgrp = {};
+   for i(1,ngrp,1); 
+     grptemp = (grpthresh[i,1:numgrpthresh[i]])';
+     xthreshgrp = xthreshgrp|(minfin|grptemp|infin);
+     { ncgrptemp, consttemp,stdtemp } = initgrp(dataset,ygrp[.,i],grptemp);
+     ncgrp = ncgrp|ncgrptemp;
+     constgrp = constgrp|consttemp;
+     stdgrp = stdgrp|stdtemp;
+     masktempgrp = reshape(seqa(1,1,ncgrptemp+1)',1,ncgrptemp+1);    /* All mask matrices are number of threshold+2 for each grouped variable, to include -inf and +inf) */
+     masktempdowngrp = masktempgrp.==ygrp[.,i];
+     masktempupgrp = masktempgrp.==ygrp[.,i]+1;
+     maskdowngrp = maskdowngrp~masktempdowngrp;
+     maskupgrp = maskupgrp~masktempupgrp;
+     indxdowngrp = indxdowngrp~(masktempdowngrp[.,1].==1);
+     indxupgrp = indxupgrp~(masktempupgrp[.,ncgrptemp+1].==1);
+     indxsinggrp = indxdowngrp+indxupgrp;
+     indxdoubgrp = 1-indxsinggrp;
+     nummaskgrp = sumc(ncgrp+1);
+     nummaskgrp1 = cumsumc(0|(ncgrp+1));
+   endfor;
+else;
+   numgrpthresh=0;
+   numgrpthresh1=0;
+endif;
+
+
+if ngrp>0;
+  if ncoefgrp>ngrp;
+    b = b|constgrp|zeros(ncoefgrp-ngrp,1);
+  else;
+    b = b|constgrp;
+  endif;
+  ivvnamegrp = ivnamegrp;
+endif;
+
+if ncont>0;
+  sddd = {};
+  if ncoefcont>ncont;
+     b = b|meanc(ycont)|zeros(ncoefcont-ncont,1);
+  else;
+     b = b|meanc(ycont);
+  endif;
+  sddd = stdc(ycont);
+endif;
+
+_max_active = activeunord|activeord|activecnt|activegrp|activecont;
+
+startker = eye(totdim);
+j=0;
+for i(1,nnom,1);
+  startker[j+1:j+nc1[i],j+1:j+nc1[i]]=0.5*eye(nc1[i])+0.5*ones(nc1[i],nc1[i]);
+  j = j+nc1[i];
+endfor;
+
+startker = chol(startker);
+if _spher;
+   startker = revcholspherparmunconst(startker);
+else;
+   startker = revnewcholparm(startker);
+endif;
+    
+nscale=0;  /* Getting number of scale parameters to be estimated */
+if nnom>0;
+  for i(1,nnom,1);
+    if nc[i]>2;
+       nscale = nscale+nc1[i]-1;
+       nscalenom = nscale;
+    endif;
+  endfor;
+  if ngrp>0;
+     nscale=nscale+ngrp;
+  endif;
+  if ncont>0;
+     nscale=nscale+ncont;
+  endif;
+elseif nnom==0;
+  nscalenom = nscale;
+  if ngrp>0;
+     nscale=ngrp;
+  endif;
+  if ncont>0;
+     nscale=nscale+ncont;
+  endif;
+endif;
+
+if nscale>0;
+   scalker = ones(nscale,1);
+   if ngrp>0;
+      if ncont>0;
+         if nscalenom>0;
+            scalker = ones(nscale-ncont-ngrp,1)|stdgrp|sddd;
+         else;
+            scalker = stdgrp|sddd;
+         endif;
+      else;
+         if nscalenom>0;
+            scalker = ones(nscale-ngrp,1)|stdgrp;
+         else;
+            scalker = stdgrp;
+         endif;
+      endif;
+   elseif ngrp==0;
+      if ncont>0;
+         if nscalenom>0;
+            scalker = ones(nscale-ncont,1)|sddd;
+         else;
+            scalker = sddd;
+         endif;
+      endif;
+   endif;
+   
+   b = b|startker|scalker;
+else;
+   b = b|startker;
+endif;
+
+designorig = seqa(1,1,((nc4+nordcont)^2));
+designorig = reshape(designorig,nc4+nordcont,nc4+nordcont);
+
+if _ordcont or _cntcont or _grpcont or _nomcont;
+  design1 = designorig[1:nc4+nord+ncnt+ngrp,nc4+nord+ncnt+ngrp+1:nc4+nordcont];    /* (sumc(nc)+nord+ngrp+ncnt)*(ncont)  */
+  design1 = vecr(design1);
+endif;
+
+if _contcont or ncont==1;
+  designcont = designorig[nc4+nord+ncnt+ngrp+1:nc4+nordcont,nc4+nord+ncnt+ngrp+1:nc4+nordcont];
+  designcont = vecr(designcont);
+endif;
+
+/* associating columns with variable names for output */
+
+kername =  0 $+ "ker" $+ ftocv(seqa(1,1,nker),2,0);
+if nscale>0;
+  scalname = 0 $+ "scale" $+ ftocv(seqa(1,1,nscale),2,0);
+else;
+  scalname = {};
+endif;
+
+if nnom>0;
+  if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+    _max_ParNames1= ivnameunord|ivvnameord|ivvnamecnt|ivvnamegrp|ivnamecont;
+  elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+    _max_ParNames1= ivnameunord|ivvnameord|ivvnamecnt|ivvnamegrp;
+  elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+    _max_ParNames1= ivnameunord|ivvnameord|ivvnamecnt|ivnamecont;
+  elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+    _max_ParNames1= ivnameunord|ivvnameord|ivvnamecnt;
+  elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+    _max_ParNames1= ivnameunord|ivvnameord|ivvnamegrp|ivnamecont;
+  elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+    _max_ParNames1= ivnameunord|ivvnameord|ivvnamegrp;
+  elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+    _max_ParNames1= ivnameunord|ivvnameord|ivnamecont;
+  elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+    _max_ParNames1= ivnameunord|ivvnameord;
+  elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+    _max_ParNames1= ivnameunord|ivvnamecnt|ivvnamegrp|ivnamecont;
+  elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+    _max_ParNames1= ivnameunord|ivvnamecnt|ivvnamegrp;
+  elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+    _max_ParNames1= ivnameunord|ivvnamecnt|ivnamecont;
+  elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+    _max_ParNames1= ivnameunord|ivvnamecnt;
+  elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+    _max_ParNames1= ivnameunord|ivvnamegrp|ivnamecont;
+  elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+    _max_ParNames1= ivnameunord|ivvnamegrp;
+  elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+    _max_ParNames1= ivnameunord|ivnamecont;
+  elseif nord==0 and ncnt==0 and ngrp==0 and ncont==0;
+    _max_ParNames1= ivnameunord;
+  endif;
+elseif nnom==0;  
+  if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+    _max_ParNames1= ivvnameord|ivvnamecnt|ivvnamegrp|ivnamecont;
+  elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+    _max_ParNames1= ivvnameord|ivvnamecnt|ivvnamegrp;
+  elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+    _max_ParNames1= ivvnameord|ivvnamecnt|ivnamecont;
+  elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+    _max_ParNames1= ivvnameord|ivvnamecnt;
+  elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+    _max_ParNames1= ivvnameord|ivvnamegrp|ivnamecont;
+  elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+    _max_ParNames1= ivvnameord|ivvnamegrp;
+  elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+    _max_ParNames1= ivvnameord|ivnamecont;
+  elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+    _max_ParNames1= ivvnameord;
+  elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+    _max_ParNames1= ivvnamecnt|ivvnamegrp|ivnamecont;
+  elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+    _max_ParNames1= ivvnamecnt|ivvnamegrp;
+  elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+    _max_ParNames1= ivvnamecnt|ivnamecont;
+  elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+    _max_ParNames1= ivvnamecnt;
+  elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+    _max_ParNames1= ivvnamegrp|ivnamecont;
+  elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+    _max_ParNames1= ivvnamegrp;
+  elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+    _max_ParNames1= ivnamecont;
+  endif;
+endif;
+
+if nscale>0;
+   _max_parnames = _max_parnames1|kername|scalname;
+else;
+   _max_parnames = _max_parnames1|kername;
+endif;
+
+_max_active = activeunord|activeord|activecnt|activegrp|activecont;
+_max_GradProc=&lgd;     
+_max_CovPar = 2;
+_max_Options = { bfgs stepbt };
+_max_maxiters = 500;
+_max_gradTol = 5e-4; // used to be 1e-3
+
+print "analytic approximation method used is "; _method;
+
+rrmaxactive = rows(b);
+
+if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+   b2 = zeros(sumnivinter,1);
+   b = b|b2;
+   _max_ParNames = _max_Parnames|ivnameinter;
+endif;
+
+if _indep==1 or (_indep==0 and _indepfirst==1);
+   _correst=0;
+   if nscale>ncont+ngrp and nscale>0 and (ngrp>0 or ncont>0);
+     _max_active = activeunord|activeord|activecnt|activegrp|activecont|zeros(nker,1)|zeros(nscale-ncont-ngrp,1)|ones(ncont+ngrp,1);
+   elseif nscale>0 and ngrp==0 and ncont==0;
+     _max_active = activeunord|activeord|activecnt|activegrp|activecont|zeros(nker,1)|zeros(nscale,1);
+   elseif (nscale==(ncont+ngrp)) and nscale>0;
+     _max_active = activeunord|activeord|activecnt|activegrp|activecont|zeros(nker,1)|ones(ncont+ngrp,1);
+   elseif nscale==0;
+     _max_active = activeunord|activeord|activecnt|activegrp|activecont|zeros(nker,1);
+   endif;
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+     _max_active = _max_active|_max_actinter;
+   endif;
+
+   { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b));
+   b=x;    
+endif;
+
+if _indep==0;
+   startker = 0.05*ones(totdim,totdim);   /* DO NOT CHANGE THIS; NEED SOME PERTURBATION FROM ZERO TO KICK-START ITERATIONS */
+   startker = diagrv(startker,ones(totdim,1));
+   j=0;
+   for i(1,nnom,1);
+      startker[j+1:j+nc1[i],j+1:j+nc1[i]]=0.5*eye(nc1[i])+0.5*ones(nc1[i],nc1[i]);
+      j = j+nc1[i];
+   endfor;
+   startker = chol(startker);
+   if _spher;
+      startker = revcholspherparmunconst(startker);
+   else;
+      startker = revnewcholparm(startker);
+   endif;   
+   if _correst;
+      { numact,actindx,inactindx } = restcorindx(correst);
+      startker = startker[actindx];
+      nker = numact;
+      kername =  0 $+ "ker" $+ ftocv(seqa(1,1,nker),2,0);
+      if nscale>0;
+         _max_parnames = _max_parnames1|kername|scalname;
+      else;
+         _max_parnames = _max_parnames1|kername;
+      endif;
+  
+      if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+         _max_ParNames = _max_Parnames|ivnameinter;
+      endif;
+      nkertot = rows(actindx)+rows(inactindx);
+   else;
+      nkertot=nker;
+   endif;
+
+   if nscale>0;
+      if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+         b = b[1:rrmaxactive-nkertot-nscale]|startker|b[rrmaxactive-nscale+1:rrmaxactive]|b[rrmaxactive+1:rows(b)];
+         _max_active = activeunord|activeord|activecnt|activegrp|activecont|ones(nker+nscale,1)|_max_actinter;
+      else;
+         b = b[1:rrmaxactive-nkertot-nscale]|startker|b[rrmaxactive-nscale+1:rrmaxactive];
+         _max_active = activeunord|activeord|activecnt|activegrp|activecont|ones(nker+nscale,1);
+      endif;
+   else;
+      if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+         b = b[1:rrmaxactive-nkertot]|startker|b[rrmaxactive+1:rows(b)];
+         _max_active = activeunord|activeord|activecnt|activegrp|activecont|ones(nker,1)|_max_actinter;
+      else;
+         b = b[1:rrmaxactive-nkertot]|startker;
+         _max_active = activeunord|activeord|activecnt|activegrp|activecont|ones(nker,1);
+      endif;
+   endif;
+
+{ x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b));  
+
+endif;  
+
+/*****************************************************************************************************************************************/
+/*                                     obtaining covariance matrix in a last iteration                                                   */
+/*****************************************************************************************************************************************/
+
+if _indep==0;
+  b=x;
+  bker = b[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker];
+
+  if _spher;
+     if _correst==1;
+        { bker,capomegaindx } = restcholspherunconstscaled(bker,correst,scal);
+     endif;
+     bker = cholspherparmunconstscaled(bker,scal);       
+  else;
+     if _correst==1;
+        { bker,capomegaindx } = restcholunconstscaled(bker,correst,scal);
+     endif;
+     bker = newcholparmscaled(bker,scal);
+  endif;
+
+  bker = vecndup(bker'*bker);
+  if _correst;
+     nker1 = rows(bker);
+     kername =  0 $+ "ker" $+ ftocv(seqa(1,1,nker1),2,0);
+     _max_ker = vecndup(correst);
+  else;
+     _max_ker = ones(rows(bker),1);
+  endif;
+
+  if nscale>0;
+     _max_parnames = _max_parnames1|kername|scalname;
+  else;
+     _max_parnames = _max_parnames1|kername;
+  endif;    
+   
+  if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      _max_ParNames = _max_Parnames|ivnameinter;
+  endif;
+  
+  if nscale>0;
+      if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+         _max_active = activeunord|activeord|activecnt|activegrp|activecont|_max_ker|ones(nscale,1)|_max_actinter;
+      else;
+         _max_active = activeunord|activeord|activecnt|activegrp|activecont|_max_ker|ones(nscale,1);
+      endif;
+   else;
+      if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+         _max_active = activeunord|activeord|activecnt|activegrp|activecont|_max_ker|_max_actinter;
+      else;
+         _max_active = activeunord|activeord|activecnt|activegrp|activecont|_max_ker;
+      endif;
+   endif;  
+
+  if nscale>0 or (_nomcont or _ordcont or _cntcont or _grpcont or _contcont);
+     b = b[1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont]|bker|b[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+1:rows(b)];
+  else;
+     b = b[1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont]|bker;
+  endif;  
+  
+  _max_GradProc=&lgd1;
+  _max_CovPar = 2;
+  _max_Options = { bfgs stepbt };
+  _max_maxiters = 0;
+  { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr1,b));
+endif;   
+
+/* procedure for log likelihood function calculation */
+
+proc lpr(x,dta);
+local e1,p0,popass,vunordfin,altchosen,xfinunord,yifinunord,xfinord,yifinord,yifincont,i,xunord,v2unord,j,j1,vunord,xthresh,xord,xcont,xker,xscal,
+indxrearrang,indxW,W1,C,cholker,omegastar, covker,omegker,tufin,tlfin,vordfin,xordi,xthreshi,xconti,tu,tl,yiordi,vord,
+vcontfin,yiconti,vcont,v,xlow,xup,seednext,seed20,vsubq,xisubq,Msubq,indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w,final,
+indxcomptemp,indxonetemp,indxlotemp,indxuptemp,indxdoubtemp,indxcompq,xgg,xggtemp;
+local xfin,zq,maskdownq,maskupq,ytempunord,ytempord,ytempcont,prepsing,prepsingdown,prepsingup,prepdoub;
+local xdownord,xupord,capomegaindx,xggord,xdown;
+local aar1,aar2,aar3,aar4,aar5,aar6,aar7,aar8,aarn1,aarn2,aarn3,aarn4,aarn5,aarn6,aarn7,aarn8,tempinter;
+local xxj,l,xfinn,xnom,ma,xxj1,xx1,k,xfinal,ynominter,ynominterfin,yinterfin,yordcontinter,yordcontinterfin,vinterfin,newcov,zqforlater;
+local xordcont,threshtmp,selq,newMsubq,ytempcntmain,prepdoubcnt,prepdoubgrp;
+local xthreshaddcnt,xthreshtmpaddcnt,xfincntgamma,xfincntmain,xfincnttheta,yifincntgamma,yifincntmain,xthreshcntall,ytempcnt1,ytempcnt;
+local cntgamma,cntlambda,xthreshcnt,tempmatrix,alphavector,countvector,xthreshcnti,maskdowncntq,maskupcntq,prepsingcnt,prepsingdowncnt;
+local prepsingupcnt,xdowncnt,xupcnt,xggcnt,yifingrp,xgrp,ytempgrp,maskdowngrpq,maskupgrpq,prepsinggrp,prepsingdowngrp,prepsingupgrp,xdowngrp,xupgrp,xgggrp;
+local alphavector1,alphavector5,alphavectortemp;
+    
+e1 = rows(dta);
+p0 = zeros(e1,1);
+popass = dta[.,ivobsid];
+       
+if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+   xxj = x[rows(x)-sumnivinter+1:rows(x)];
+   xxj = xxj.*onetemp;   /* sumnivinter x ncont matrix  */
+endif;
+
+/* Obtaining index of chosen alternative in nominal variable */
+
+altchosen = {};
+xfinunord = {};
+yifinunord={};
+for i(1,nnom,1);
+    xfinunord = xfinunord|x[numunord1[i]+1:numunord1[i+1]];
+    yifinunord = yifinunord~((yiunord[.,nivunord1[i]+1:nivunord1[i+1]]));
+    altchosen = altchosen~maxindc(((yunord[.,nc2[i]+1:nc2[i+1]])'));
+endfor;
+
+if nord>0;
+  xfinord = x[ncoefunord+nthresh+1:ncoefunord+nthresh+ncoeford];
+  yifinord = yiord;
+  xthresh={};
+  threshtmp = x[ncoefunord+1:ncoefunord+nthresh];
+  for i(1,nord,1);
+    xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+    xthresh=xthresh|xthreshi;   
+  endfor; 
+else;
+  xfinord = {};
+endif;
+
+if ncnt>0;
+  xthreshaddcnt={};     /* These are additional threshold values for spikes at specific count values */
+  if ncntthresh>0;
+     xthreshtmpaddcnt = x[ncoefunord+nthresh+ncoeford+1:ncoefunord+nthresh+ncoeford+ncntthresh];   /* additional threshold values */
+  endif;
+  xfincnttheta = x[ncoefunord+nthresh+ncoeford+ncntthresh+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt];  /* theta parameters */
+  xfincntgamma = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcntgamma]; /* gamma parameters in threshold */
+  alphavector1 = {};
+  for j(1,ncnt,1);
+     if numcntthresh[j]>0;
+        tempmatrix = zeros(nccntmax[j]+1,numcntthresh[j]);   /* if 0,1,2,3,4 are counts, computing alphaadd1,alphaadd2,alphaadd3, alphaadd4, and later will add alphaadd0=0 */
+        tempmatrix[((indalpha[j,1:numcntthresh[j]])'),.]=eye(numcntthresh[j]);
+        alphavectortemp = tempmatrix*xthreshtmpaddcnt[ncntthresh1[j]+1:ncntthresh1[j+1]];     /* (nccntmax[j]+1)x 1 vector  */
+        alphavector5 = cumsumc(alphavectortemp);
+        alphavector1 = alphavector1|alphavector5;
+     else;
+        alphavector1 = alphavector1|seqa(0,0,nccntmax[j]+1);
+     endif;
+  endfor;
+  if numcntmain>0;
+     xfincntmain = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcntgamma+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt];  /* parameters in main latent count equation */
+     yifincntmain = yicntmain;
+  else;
+     xfincntmain={};
+     yifincntmain = {};
+  endif;
+  yifincntgamma = yicntgamma;
+  xthreshcntall = {};
+  for i(1,e1,1);
+     ytempcnt = yifincntgamma[i,.];
+     ytempcnt1 = reshape(ytempcnt,ncnt,ncoefcntgamma);
+     cntgamma = ytempcnt1*xfincntgamma;               /* ncnt x 1 vector */
+     cntlambda = exp(cntgamma);
+     xthreshcnt={};
+     for j(1,ncnt,1);
+        alphavector = alphavector1[nummaskcntadd11[j]+1:nummaskcntadd11[j+1]];      /* alpha sub -1|alpha sub 0|alpha sub 1|.....|alpha sub (maxcount); (maxcount+2)x1 vector  */
+        countvector = seqa(0,1,nccntmax[j]+1);          /* (maxcount+1) x 1 (including zero count) vector */ 
+        xthreshcnti = counthresh(cntlambda[j],xfincnttheta[j],countvector,alphavector,_poisson[j]); 
+        xthreshcnt = xthreshcnt|(minfin|xthreshcnti);      /* [sum over all i (maxcount for each i+2)]x1 vector */        
+     endfor;
+     xthreshcntall = xthreshcntall~xthreshcnt;       /* [sum over all i (maxcount for each i+2)] x e1 matrix, each column being set of thresholds (across all counts) for a specific individual */
+  endfor;
+else;
+  xfincntmain = {};
+  xfincnttheta = {};
+  xfincntgamma = {};
+endif;
+
+if ngrp>0;
+   yifingrp = yigrp;
+   xgrp = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp]; 
+else;
+   xgrp = {};
+endif;
+
+if ncont>0;
+   yifincont = yicont;
+   xcont = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont];
+else;
+   xcont = {};
+endif;
+
+if ntotcoef>0;
+   xfin = xfinunord|xfinord|xfincntmain|xgrp|xcont;   /*  (ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont)x1 vector */ 
+else;
+   xfin = 0;
+endif;
+
+xker = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker];
+
+if nscale>0;
+   xscal = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+nscale];
+else;
+   xscal=0;
+endif;
+
+if _spher;
+  if _correst==1;
+     { xker,capomegaindx } = restcholspherunconstscaled(xker,correst,scal);
+  endif;
+  cholker = cholspherparmunconstscaled(xker,scal);  
+else;
+  if _correst==1;
+     { xker,capomegaindx } = restcholunconstscaled(xker,correst,scal);
+  endif;
+  cholker = newcholparmscaled(xker,scal);
+endif;
+
+{ indxrearrang,indxW, W1,C } = poscor(xker,xscal,nnom,nc,0,0,nord+ncnt,ncont+ngrp);  /* unfortunately, at start values, C has some baggage imaginary parts, is innocuous and is only to help estimation; see com/jointcsmodels/testing; so removing */
+
+omegastar = cholker'*cholker;
+covker = W1*omegastar*W1;
+omegker=convdutou*(covker)*convdutou';   /* [sumc(nc)+nordcont] x [sumc(nc)+nordcont]  */
+
+if popass[1]==1;
+   seednext=seed10;
+endif;
+
+Pcomp={};
+
+//y_star_angela = zeros(e1,5);
+for i1(1,e1,1);
+   selq={};
+   if nnom>0;
+      selq = selq|delif(((yavunord[i1,.])'),((yunord[i1,.])'));   /* Helpful later to use only available alternatives in each nominal variable for each individual  */
+   endif;
+   if nord>0 and ncnt>0 and ngrp>0 and ncont>0;       
+      selq = selq|((yavord[i1,.])')|((yavcnt[i1,.])')|((yavgrp[i1,.])')|((yavcont[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;       
+      selq = selq|((yavord[i1,.])')|((yavcnt[i1,.])')|((yavgrp[i1,.])');
+   elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;       
+      selq = selq|((yavord[i1,.])')|((yavcnt[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;       
+      selq = selq|((yavord[i1,.])')|((yavcnt[i1,.])');
+   elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;       
+      selq = selq|((yavord[i1,.])')|((yavgrp[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;       
+      selq = selq|((yavord[i1,.])')|((yavgrp[i1,.])');
+   elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;       
+      selq = selq|((yavord[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;       
+      selq = selq|((yavord[i1,.])');
+   elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;       
+      selq = selq|((yavcnt[i1,.])')|((yavgrp[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;       
+      selq = selq|((yavcnt[i1,.])')|((yavgrp[i1,.])');
+   elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;       
+      selq = selq|((yavcnt[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;       
+      selq = selq|((yavcnt[i1,.])');
+   elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;       
+      selq = selq|((yavgrp[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;       
+      selq = selq|((yavgrp[i1,.])');
+   elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;       
+      selq = selq|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   endif;
+
+   selq = selif(eye(nc3+nordcont),selq);                   /* (h=# of available alternatives in unordered-1+# of available non-nominal variables) x (nc3+nordcont)  */
+   if ntotcoef>0;
+      zq = zeros(totdep,ntotcoef);      /* (sumc(nc)+nordcont) x (ncoefunord+ncoeford+ncoefcntmain+ncoefcont)   */
+   else;
+      zq = 0;
+   endif;
+   
+   indxcompq = zeros(nc3+nordcont,1);
+
+   for j(1,nnom,1);
+      ytempunord = ((yiunord[i1,nivunord1[j]+1:nivunord1[j+1]]));
+      ytempunord = reshape(ytempunord,nc[j],numunord[j]);
+      zq[nc2[j]+1:nc2[j+1],numunord1[j]+1:numunord1[j+1]]=ytempunord;
+   endfor;
+   
+   if nord>0;
+      maskdownq = zeros(nord,nummask);                                /* nord x [(total number of thresholds+2) across all ordinal outcome ] */
+      maskupq = zeros(nord,nummask);
+      prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+      prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+      prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+      ytempord = yiord[i1,.];
+      ytempord = reshape(ytempord,nord,ncoeford);
+      zq[sumc(nc)+1:sumc(nc)+nord,ncoefunord+1:ncoefunord+ncoeford]=ytempord;
+   endif;
+
+   for j(1,nord,1);
+       maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+       maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+       xdownord = prepdoub*maskdownq*xthresh;
+       xupord= prepdoub*maskupq*xthresh;
+       xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+   endfor;
+
+   if ncnt>0;
+      maskdowncntq = zeros(ncnt,nummaskcnt);                                /* ncnt x [(total number of count values+1) across all count outcomes ] */
+      maskupcntq = zeros(ncnt,nummaskcnt);
+      prepsingcnt=(diagrv(zeros(ncnt,ncnt),((indxsingcnt[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdowncnt = (diagrv(zeros(ncnt,ncnt),((indxdowncnt[i1,.])')));
+      prepsingupcnt = (diagrv(zeros(ncnt,ncnt),((indxupcnt[i1,.])')));
+      prepdoubcnt =(diagrv(zeros(ncnt,ncnt),((indxdoubcnt[i1,.])')));
+      if numcntmain>0;
+         ytempcntmain = yicntmain[i1,.];
+         ytempcntmain = reshape(ytempcntmain,ncnt,ncoefcntmain);
+         zq[sumc(nc)+nord+1:sumc(nc)+nord+ncnt,ncoefunord+ncoeford+1:ncoefunord+ncoeford+ncoefcntmain]=ytempcntmain;
+      endif;
+   endif;
+
+   for j(1,ncnt,1);
+       maskdowncntq[j,nummaskcnt1[j]+1:nummaskcnt1[j+1]]=maskdowncnt[i1,nummaskcnt1[j]+1:nummaskcnt1[j+1]];
+       maskupcntq[j,nummaskcnt1[j]+1:nummaskcnt1[j+1]]=maskupcnt[i1,nummaskcnt1[j]+1:nummaskcnt1[j+1]];
+       xdowncnt = prepdoubcnt*maskdowncntq*xthreshcntall[.,i1];
+       xupcnt= prepdoubcnt*maskupcntq*xthreshcntall[.,i1];
+       xggcnt = (prepsingdowncnt*maskupcntq+prepsingupcnt*maskdowncntq)*xthreshcntall[.,i1];
+   endfor;
+
+   if ngrp>0;
+       ytempgrp = yigrp[i1,.];
+       ytempgrp = reshape(ytempgrp,ngrp,ncoefgrp);
+       zq[nc4+nord+ncnt+1:nc4+nord+ncnt+ngrp,ncoefunord+ncoeford+ncoefcntmain+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp]=ytempgrp;
+       maskdowngrpq = zeros(ngrp,nummaskgrp);                            /* ngrp x [(total number of thresholds+2) across all grouped outcomes ] */
+       maskupgrpq = zeros(ngrp,nummaskgrp);
+       prepsinggrp=(diagrv(zeros(ngrp,ngrp),((indxsinggrp[i1,.])')));          /* All four prep matrices are ngrp by ngrp matrices */
+       prepsingdowngrp = (diagrv(zeros(ngrp,ngrp),((indxdowngrp[i1,.])')));
+       prepsingupgrp = (diagrv(zeros(ngrp,ngrp),((indxupgrp[i1,.])')));
+       prepdoubgrp =(diagrv(zeros(ngrp,ngrp),((indxdoubgrp[i1,.])')));
+   endif;
+
+   for j(1,ngrp,1);
+       maskdowngrpq[j,nummaskgrp1[j]+1:nummaskgrp1[j+1]]=maskdowngrp[i1,nummaskgrp1[j]+1:nummaskgrp1[j+1]];
+       maskupgrpq[j,nummaskgrp1[j]+1:nummaskgrp1[j+1]]=maskupgrp[i1,nummaskgrp1[j]+1:nummaskgrp1[j+1]];
+       xdowngrp = prepdoubgrp*maskdowngrpq*xthreshgrp;
+       xupgrp= prepdoubgrp*maskupgrpq*xthreshgrp;
+       xgggrp = (prepsingdowngrp*maskupgrpq+prepsingupgrp*maskdowngrpq)*xthreshgrp;
+   endfor;   
+   
+   if ncont>0;
+       ytempcont = yicont[i1,.];
+       zqforlater = reshape(ytempcont,ncont,ncoefcont);
+       zq[nc4+nord+ncnt+ngrp+1:totdep,ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont]=zqforlater;     /* ncont x ncoefcont */    
+   endif;
+
+   if nnom>0;
+       if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|xgggrp;
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|xdowngrp;
+           xup = zeros(nc3,1)|xupord|xupcnt|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupcnt|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xggcnt;
+           xdown = zeros(nc3,1)|xdownord|xdowncnt;
+           xup = zeros(nc3,1)|xupord|xupcnt;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xgggrp;
+           xdown = zeros(nc3,1)|xdownord|xdowngrp;
+           xup = zeros(nc3,1)|xupord|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord;
+           xdown = zeros(nc3,1)|xdownord;
+           xup = zeros(nc3,1)|xupord;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggcnt|xgggrp;
+           xdown = zeros(nc3,1)|xdowncnt|xdowngrp;
+           xup = zeros(nc3,1)|xupcnt|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggcnt|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowncnt|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupcnt|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggcnt;
+           xdown = zeros(nc3,1)|xdowncnt;
+           xup = zeros(nc3,1)|xupcnt;
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xgggrp;
+           xdown = zeros(nc3,1)|xdowngrp;
+           xup = zeros(nc3,1)|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|zeros(ncont,1);
+           xup = zeros(nc3,1)|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1);
+           xdown = zeros(nc3,1);
+           xup = zeros(nc3,1);
+           indxcompq = zeros(nc3,1);   
+       endif;
+   elseif nnom==0;
+       if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = xggord|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = xdownord|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = xupord|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = xggord|xggcnt|xgggrp;
+           xdown = xdownord|xdowncnt|xdowngrp;
+           xup = xupord|xupcnt|xupgrp;
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = xggord|xggcnt|((ycont[i1,.])');
+           xdown = xdownord|xdowncnt|zeros(ncont,1);
+           xup = xupord|xupcnt|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = xggord|xggcnt;
+           xdown = xdownord|xdowncnt;
+           xup = xupord|xupcnt;
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = xggord|xgggrp|((ycont[i1,.])');
+           xdown = xdownord|xdowngrp|zeros(ncont,1);
+           xup = xupord|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = xggord|xgggrp;
+           xdown = xdownord|xdowngrp;
+           xup = xupord|xupgrp;
+           indxcompq = ((indxup[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = xggord|((ycont[i1,.])');
+           xdown = xdownord|zeros(ncont,1);
+           xup = xupord|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = xggord;
+           xdown = xdownord;
+           xup = xupord;
+           indxcompq = ((indxup[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = xggcnt|xgggrp;
+           xdown = xdowncnt|xdowngrp;
+           xup = xupcnt|xupgrp;
+           indxcompq = ((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = xggcnt|((ycont[i1,.])');
+           xdown = xdowncnt|zeros(ncont,1);
+           xup = xupcnt|zeros(ncont,1);
+           indxcompq = ((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = xggcnt;
+           xdown = xdowncnt;
+           xup = xupcnt;
+           indxcompq = ((indxupcnt[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = xgggrp|((ycont[i1,.])');
+           xdown = xdowngrp|zeros(ncont,1);
+           xup = xupgrp|zeros(ncont,1);
+           indxcompq = ((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = xgggrp;
+           xdown = xdowngrp;
+           xup = xupgrp;
+           indxcompq = ((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = ((ycont[i1,.])');
+           xdown = zeros(ncont,1);
+           xup = zeros(ncont,1);
+           indxcompq = zeros(ncont,1);   
+       endif;
+   endif;
+
+   seed20=seednext;
+   
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      yinterfin = yintercont[i1,.];
+      yinterfin = reshape(yinterfin,totdep,sumnivinter);
+      vinterfin = yinterfin*xxj*(zqforlater*xcont);      /*                yinterfin is (totdep x sumnivinter); xxj is sumnivinterx ncont;
+                                                                           zqforlater is ncontxncoefcont; xcont is ncoefcontx1; 
+                                                                           (zqforlater*xcont) is ncontx1; 
+                                                                           [yinterfin*(zqforlater*xcont)] is (hnom+hordcont)x1 vector; 
+                                                                           vinterfin is [(sumc(nc)+nordcont)x1] = (wierd theta'.*xfinn')*xtilde   *(w         *alpha)   */ 
+      newcov = eye(totdep);  
+      newcov[.,sumc(nc)+nord+ncnt+ngrp+1:cols(newcov)]=newcov[.,sumc(nc)+nord+ncnt+ngrp+1:cols(newcov)]+yinterfin*xxj;
+   endif;
+   
+   if nnom>0;
+       { Msubq,indxoneq,indxeqq } = Mutodu(nnom,nc,((altchosen[i1,.])'),0,0,0,nord+ncnt+ngrp,ncont);  /* M sub q is b x a matrix ; b = nc3+nordcont ; a = sumc(nc)+nordcont  */
+   else;
+       Msubq = eye(nordcont);
+       indxoneq = zeros(nordcont,1);
+       indxeqq = zeros(nordcont,1);
+       if ncont>0;
+          if nordcont>ncont;
+             indxeqq = zeros(nordcont-ncont,1)|ones(ncont,1);
+          else;
+             indxeqq = ones(ncont,1);
+          endif;       
+       endif;
+   endif;
+
+   Vsubq = zq*xfin;    /* (sumc(nc)+nordcont)x1  */
+   xisubq = (omegker);           /* xisubq is axa matrix, a = sumc(nc)+nordcont */
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      Vsubq = Vsubq+vinterfin; 
+      xisubq = newcov*omegker*newcov';
+   endif;
+
+   if nord>0;
+       indxoneq[nc3+1:nc3+nord] = (indxsing[i1,.])';
+   endif;
+   if ncnt>0;
+       indxoneq[nc3+nord+1:nc3+nord+ncnt] = (indxsingcnt[i1,.])';
+   endif;
+   if ngrp>0;
+       indxoneq[nc3+nord+ncnt+1:nc3+nord+ncnt+ngrp] = (indxsinggrp[i1,.])';
+   endif;   
+
+
+   xgg = selq*xgg; xdown = selq*xdown;  xup = selq*xup;  indxoneq=selq*indxoneq;  indxcompq = selq*indxcompq;  indxeqq = selq*indxeqq;      
+   
+   Msubq = selq*Msubq;         /* For each individual, selecting only available dimensions; M sub q is (h=# of available dimensions-1) x a matrix; a = sumc(nc)+nordcont   */
+   Bsubq = Msubq*((Vsubq));    /* B sub q is # of available dimensions (h=# of available alternatives across all nominal variables-1+# of available non-nominal variables) x 1  */
+   //y_star_angela [i1,1:5] = Vsubq' ;
+   newxisubq = Msubq*xisubq*Msubq';  /* newxisubq is hxh matrix   */
+
+   if ntotcoef==0;
+      Bsubq = zeros(rows(newxisubq),1);
+   endif;
+
+   { P,sss } = pdfrectn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq,indxeqq);
+   Pcomp = pcomp|P;
+   seednext=sss;
+   
+   
+endfor;
+
+w=zeros(e1,1);
+if pcomp > w;
+   final=ln(pcomp);
+else;
+   print "yes";
+   final=ln(pcomp-((pcomp.<=w).*(pcomp-0.0001)));
+endif;
+retp(dta[.,_weight].*final);
+
+endp;
+
+
+proc lgd(x,dta);
+local e1,p0,popass,vunordfin,altchosen,xfinunord,yifinunord,xfinord,yifinord,yifincont,i,xunord,v2unord,j,j1,vunord,xthresh,xord,xcont,xker,xscal,
+indxrearrang,indxW,W1,C,cholker,omegastar, covker,omegker,tufin,tlfin,vordfin,xordi,xthreshi,xconti,tu,tl,yiordi,vord,
+vcontfin,yiconti,vcont,v,xlow,xup,seednext,seed20,vsubq,xisubq,Msubq,indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w,final,
+indxcomptemp,indxonetemp,indxlotemp,indxuptemp,indxdoubtemp,indxcompq,xgg,xggtemp;
+local xfin,zq,maskdownq,maskupq,ytempunord,ytempord,ytempcont,prepsing,prepsingdown,prepsingup,prepdoub;
+local xdownord,xupord,capomegaindx,xggord,xdown;
+local aar1,aar2,aar3,aar4,aar5,aar6,aar7,aar8,aarn1,aarn2,aarn3,aarn4,aarn5,aarn6,aarn7,aarn8,tempinter;
+local xxj,l,xfinn,xnom,ma,xxj1,xx1,k,xfinal,ynominter,ynominterfin,yinterfin,yordinter,yordcontinter,yordcontinterfin,yordinterfin,vinterfin,newcov;
+local xordcont,threshtmp,contval,selq,gordthreshfin,selunordq,selordq,selcontq,selordqq,newMsubq,hunordq,hordq,hcontq,ytempcntmain,prepdoubcnt,prepdoubgrp;
+local xthreshaddcnt,xthreshtmpaddcnt,xfincntgamma,xfincntmain,xfincnttheta,yifincntgamma,yifincntmain,xthreshcntall,ytempcnt1,ytempcnt;
+local cntgamma,cntlambda,xthreshcnt,tempmatrix,alphavector,countvector,xthreshcnti,maskdowncntq,maskupcntq,prepsingcnt,prepsingdowncnt;
+local prepsingupcnt,xdowncnt,xupcnt,xggcnt,yifingrp,xgrp,ytempgrp,maskdowngrpq,maskupgrpq,prepsinggrp,prepsingdowngrp,prepsingupgrp,xdowngrp,xupgrp,xgggrp;
+local gW1,gomegastar,gcholcor,gker,gtempstar,gfinal,
+gBsubq,gnewxisubq,gxg,gxdown,gxup,gVsubq,gxmu,gxmufinal,gxthreshord,gxggord,gxdownord,gxupord,gxthreshfin,
+gxisubq,gfinW1,gfinstar,gordfin,gthreshfini,gxordi,g,g1,glambda,gtheta,xthreshcntfulli,gxggcnt;
+local gxxj,gwtilde,gwtilde1,gxxjfinal,ginteractxcont,gxfinal,ggnewcov,ggomegker,ggnewcovtemp,gcovker,gxmuintercont,gwierdtilde,gwierdtilde1,zqforlater;
+local newsdoubstar,numact,actindx,inactindx,alphavector1,alphavector5,alphavectortemp,gxthreshfincnt1,gcontfin,gscal;
+local selcntq,selgrpq,hcntq,hgrpq,selcntqq,selgrpqq,selcontqq,galphavector1,galphavector5,glambdafull,gthetafull,glambdafullj,gthetafullj;
+local gxthreshc, gxupo,gxdowno, gxdownc,gxupc,gxdowncnt,gxupcnt,gxthreshfincnt,gxthetafincnt,gxlambdafincnt,gxalphafincnt,gxlambdafinfincnt,gcntfin,ggrpfin;
+   
+e1 = rows(dta);
+p0 = zeros(e1,1);
+popass = dta[.,ivobsid];
+       
+if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+   xxj = x[rows(x)-sumnivinter+1:rows(x)];
+   xxj = xxj.*onetemp;   /* sumnivinter x ncont matrix  */
+endif;
+
+/* Obtaining index of chosen alternative in nominal variable */
+
+altchosen = {};
+xfinunord = {};
+yifinunord={};
+for i(1,nnom,1);
+    xfinunord = xfinunord|x[numunord1[i]+1:numunord1[i+1]];
+    yifinunord = yifinunord~((yiunord[.,nivunord1[i]+1:nivunord1[i+1]]));
+    altchosen = altchosen~maxindc(((yunord[.,nc2[i]+1:nc2[i+1]])'));
+endfor;
+
+if nord>0;
+  xfinord = x[ncoefunord+nthresh+1:ncoefunord+nthresh+ncoeford];
+  yifinord = yiord;
+  xthresh={};
+  threshtmp = x[ncoefunord+1:ncoefunord+nthresh];
+  for i(1,nord,1);
+    xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+    xthresh=xthresh|xthreshi;   
+  endfor; 
+else;
+  xfinord = {};
+endif;
+
+if ncnt>0;
+  xthreshaddcnt={};     /* These are additional threshold values for spikes at specific count values */
+  if ncntthresh>0;
+     xthreshtmpaddcnt = x[ncoefunord+nthresh+ncoeford+1:ncoefunord+nthresh+ncoeford+ncntthresh];   /* additional threshold values */
+  endif;
+  xfincnttheta = x[ncoefunord+nthresh+ncoeford+ncntthresh+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt];  /* theta parameters */
+  xfincntgamma = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcntgamma]; /* gamma parameters in threshold */
+  if numcntmain>0;
+     xfincntmain = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcntgamma+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt];  /* parameters in main latent count equation */
+     yifincntmain = yicntmain;
+  else;
+     xfincntmain={};
+     yifincntmain = {};
+  endif;
+  alphavector1 = {};
+  if ncntthresh>0;
+    galphavector1 = zeros(ncntthresh,nummaskcntadd1);    /* total number of alpha parameters across count variables x sumc(nccntmax+1) */
+  endif;
+  for j(1,ncnt,1);
+     if numcntthresh[j]>0;
+        tempmatrix = zeros(nccntmax[j]+1,numcntthresh[j]);   /* if 0,1,2,3,4 are counts, computing alphaadd1,alphaadd2,alphaadd3, alphaadd4, and later will add alphaadd0=0 */
+        tempmatrix[((indalpha[j,1:numcntthresh[j]])'),.]=eye(numcntthresh[j]);
+        alphavectortemp = tempmatrix*xthreshtmpaddcnt[ncntthresh1[j]+1:ncntthresh1[j+1]];     /* (nccntmax[j]+1)x 1 vector  */
+        alphavector5 = cumsumc(alphavectortemp);
+        galphavector5 = gcumsumc(alphavectortemp);
+        galphavector1[ncntthresh1[j]+1:ncntthresh1[j+1],nummaskcntadd11[j]+1:nummaskcntadd11[j+1]]=galphavector5;
+                   /* ncntthresh x sumc((maxcount[j]+1) = ncntthresh x nummaskcntadd1 */
+        alphavector1 = alphavector1|alphavector5;
+     else;
+        alphavector1 = alphavector1|seqa(0,0,nccntmax[j]+1);    
+     endif;
+  endfor;
+  yifincntgamma = yicntgamma;
+  xthreshcntall = {};
+ 
+  glambdafull = {};
+  gthetafull = {};
+  for i(1,e1,1);
+     ytempcnt = yifincntgamma[i,.];
+     ytempcnt1 = reshape(ytempcnt,ncnt,ncoefcntgamma);
+     cntgamma = ytempcnt1*xfincntgamma;               /* ncnt x 1 vector */
+     cntlambda = exp(cntgamma);
+     xthreshcnt={};
+     glambdafullj={};  gthetafullj={};  
+     for j(1,ncnt,1);
+        alphavector = alphavector1[nummaskcntadd11[j]+1:nummaskcntadd11[j+1]];      /* alpha sub -1|alpha sub 0|alpha sub 1|.....|alpha sub (maxcount); (maxcount+2)x1 vector  */
+        countvector = seqa(0,1,nccntmax[j]+1);          /* (maxcount+1) x 1 (including zero count) vector */ 
+        { xthreshcnti,glambda,gtheta } = gcounthresh(cntlambda[j],xfincnttheta[j],countvector,alphavector,_poisson[j]);
+        if _poisson[j]==1;
+            gtheta = zeros(1,rows(countvector));
+        endif;
+        glambdafullj = glambdafullj~(glambda*cntlambda[j]);     /* 1 x [sumc(nccntmax[j]+1)]=1 x nummaskcntadd1 vector */
+        xthreshcntfulli = minfin|xthreshcnti;
+        xthreshcnt = xthreshcnt|(xthreshcntfulli);      /* [sum over all i (maxcount for each i+2)]x1 vector =[sumc(nccntmax[j]+2]x 1 = nummaskcnt1 x 1 vector */        
+        gthetafullj = gthetafullj~gtheta;         /* 1 x [sumc(nccntmax[j]+1)]=1 x nummaskcntadd1 vector */            
+     endfor;
+     glambdafull = glambdafull|glambdafullj;     /* glambdafull and gthetafull are e1 x nummasckcntadd1 matrices */
+     gthetafull = gthetafull|gthetafullj;       
+     xthreshcntall = xthreshcntall~xthreshcnt;       /* [sum over all i (maxcount for each i+2)] x e1 matrix, each column being set of thresholds (across all counts) for a specific individual */
+  endfor;
+else;
+  xfincntmain = {};
+  xfincnttheta = {};
+  xfincntgamma = {};
+endif;
+
+if ngrp>0;
+   yifingrp = yigrp;
+   xgrp = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp]; 
+else;
+   xgrp = {};
+endif;
+
+if ncont>0;
+   yifincont = yicont;
+   xcont = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont];
+else;
+   xcont = {};
+endif;
+
+if ntotcoef>0;
+   xfin = xfinunord|xfinord|xfincntmain|xgrp|xcont;   /*  (ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont)x1 vector */ 
+else;
+   xfin = 0;
+endif;
+
+xker = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker];
+
+if nscale>0;
+   xscal = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+nscale];
+else;
+   xscal=0;
+endif;
+
+if _spher;
+  if _correst==1;
+     { xker,capomegaindx } = restcholspherunconstscaled(xker,correst,scal);
+  endif;
+  cholker = cholspherparmunconstscaled(xker,scal);  
+else;
+  if _correst==1;
+     { xker,capomegaindx } = restcholunconstscaled(xker,correst,scal);
+  endif;
+  cholker = newcholparmscaled(xker,scal);
+endif;
+
+{ indxrearrang,indxW, W1,C } = poscor(xker,xscal,nnom,nc,0,0,nord+ncnt,ncont+ngrp);  /* unfortunately, at start values, C has some baggage imaginary parts, is innocuous and is only to help estimation; see com/jointcsmodels/testing; so removing */
+
+omegastar = cholker'*cholker;
+covker = W1*omegastar*W1;
+omegker=convdutou*(covker)*convdutou';   /* [sumc(nc)+nordcont] x [sumc(nc)+nordcont]  */
+
+_OMEGACORR=0; _XOMEGAXT=0;
+{ gW1,gomegastar } = gradcovcor(Covker);                           /* gW1 is [b] X [a*(a+1)/2]; gomegastar is [b*(b+1)/2] X [a*(a+1)/2]; a=[sumc(nc)+nordcont],  b=(nc3+nordcont) */
+/* { gcholcor } = gcholeskycor(omegastar);                            /* gcholcor is [(b*(b+1)/2] x [(b*(b+1)/2] matrix */  */
+
+if _spher;
+  if _correst==0;
+     { gker,gscal } = gcholspherunconstcorscaled(omegastar,scal);        /* gker is [(totdim*(totdim-1)/2] x [(totdim*(totdim-1)/2] matrix */
+  elseif _correst==1;
+     { newsdoubstar,gker,capomegaindx,numact,actindx,inactindx  } = grestcholspherunconstcorscaled(omegastar,correst,scal);
+  endif;         
+else;
+  if _correst==0;
+     { gker,gscal } = gnewcholparmcorscaled(omegastar,scal);
+  elseif _correst==1;
+     { newsdoubstar,gker,capomegaindx,numact,actindx,inactindx  } = grestcholunconstcorscaled(omegastar,correst,scal);
+  endif;
+endif;
+
+gtempstar = gker*gomegastar;                                        /* [totdim*(totdim-1)/2] x [totdep*(totdep+1)/2]  */
+
+if popass[1]==1;
+   seednext=seed10;
+endif;
+
+Pcomp={};
+gfinal = {};
+for i1(1,e1,1);
+   selq={};
+   if nnom>0;
+      selunordq = delif(((yavunord[i1,.])'),((yunord[i1,.])'));   /* Helpful later to use only available alternatives in each nominal variable for each individual  */
+      selq = selq|selunordq;
+      hunordq = sumc(selunordq);
+   elseif nnom==0;
+      hunordq = 0;
+   endif;
+   if nord>0 and ncnt>0 and ngrp>0 and ncont>0;       
+      selordq=((yavord[i1,.])');   selcntq=((yavcnt[i1,.])');  selgrpq = ((yavgrp[i1,.])'); selcontq=((yavcont[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selcntq|selgrpq|selcontq;
+      hordq = sumc(selordq);  hcntq = sumc(selcntq);   hgrpq = sumc(selgrpq);   hcontq = sumc(selcontq);
+   elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;       
+      selordq=((yavord[i1,.])');   selcntq=((yavcnt[i1,.])');  selgrpq = ((yavgrp[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selcntq|selgrpq;
+      hordq = sumc(selordq);  hcntq = sumc(selcntq);  hgrpq = sumc(selgrpq);    hcontq=0;
+   elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;       
+      selordq=((yavord[i1,.])'); selcntq=((yavcnt[i1,.])'); selcontq = ((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selcntq|selcontq;
+      hordq = sumc(selordq);  hcntq = sumc(selcntq);   hcontq = sumc(selcontq);    hgrpq=0;
+   elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;       
+      selordq=((yavord[i1,.])'); selcntq=((yavcnt[i1,.])');
+      selq = selq|selordq|selcntq;
+      hordq = sumc(selordq);  hcntq = sumc(selcntq);   hgrpq=0;  hcontq=0;
+   elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;       
+      selordq=((yavord[i1,.])'); selgrpq=((yavgrp[i1,.])'); selcontq=((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selgrpq|selcontq;
+      hordq = sumc(selordq);  hgrpq = sumc(selgrpq);   hcontq = sumc(selcontq);   hcntq=0;      
+   elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;       
+      selordq=((yavord[i1,.])'); selgrpq=((yavgrp[i1,.])');
+      selq = selq|selordq|selgrpq;
+      hordq = sumc(selordq); hgrpq = sumc(selgrpq);   hcntq=0;  hcontq=0;
+   elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;       
+      selordq=((yavord[i1,.])'); selcontq=((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selcontq;
+      hordq = sumc(selordq); hcontq = sumc(selcontq);   hcntq=0; hgrpq=0;
+   elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;       
+      selordq = ((yavord[i1,.])');
+      selq = selq|selordq;
+      hordq = sumc(selordq);   hcntq=0; hgrpq=0;  hcontq=0;
+   elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;       
+      selcntq=((yavcnt[i1,.])');  selgrpq = ((yavgrp[i1,.])'); selcontq=((yavcont[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selcntq|selgrpq|selcontq;   
+      hcntq = sumc(selcntq);   hgrpq = sumc(selgrpq);   hcontq = sumc(selcontq);   hordq=0;
+   elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;       
+      selcntq=((yavcnt[i1,.])');  selgrpq = ((yavgrp[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selcntq|selgrpq;
+      hcntq = sumc(selcntq);   hgrpq=sumc(selgrpq);   hordq=0;   hcontq=0;
+   elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;       
+      selcntq=((yavcnt[i1,.])'); selcontq = ((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selcntq|selcontq;
+      hcntq = sumc(selcntq);   hcontq = sumc(selcontq);  hordq=0;   hgrpq=0;
+   elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;       
+      selcntq=((yavcnt[i1,.])');
+      selq = selq|selcntq;
+      hcntq = sumc(selcntq);   hordq=0; hgrpq=0; hcontq=0;
+   elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;       
+      selgrpq=((yavgrp[i1,.])'); selcontq=((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selgrpq|selcontq;
+      hgrpq = sumc(selgrpq);   hcontq = sumc(selcontq);    hordq=0; hcntq=0;   
+   elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;       
+      selgrpq=((yavgrp[i1,.])');
+      selq = selq|selgrpq;
+      hgrpq = sumc(selgrpq);  hordq=0; hcntq=0; hcontq=0;
+   elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;       
+      selcontq=((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selcontq;
+      hcontq = sumc(selcontq);  hordq=0; hcntq=0; hgrpq=0;
+   endif;
+     
+   selq = selif(eye(nc3+nordcont),selq);                   /* (h=# of available alternatives in unordered-1+# of available non-nominal variables) x (nc3+nordcont)  */    
+   if ntotcoef>0;
+      zq = zeros(totdep,ntotcoef);      /* (sumc(nc)+nordcont) x (ncoefunord+ncoeford+ncoefcntmain+ncoefcont)   */
+   else;
+      zq = 0;
+   endif;
+   indxcompq = zeros(nc3+nordcont,1);
+
+   for j(1,nnom,1);
+      ytempunord = ((yiunord[i1,nivunord1[j]+1:nivunord1[j+1]]));
+      ytempunord = reshape(ytempunord,nc[j],numunord[j]);
+      zq[nc2[j]+1:nc2[j+1],numunord1[j]+1:numunord1[j+1]]=ytempunord;
+   endfor;
+   
+   if nord>0;
+      selordqq = ((selq[hunordq+1:hunordq+hordq,nc3+1:nc3+nord])');   /* nord x hordq matrix  */
+      maskdownq = zeros(nord,nummask);                                /* nord x [(total number of thresholds+2) across all ordinal outcome ] */
+      maskupq = zeros(nord,nummask);
+      prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+      prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+      prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+      ytempord = yiord[i1,.];
+      ytempord = reshape(ytempord,nord,ncoeford);
+      zq[sumc(nc)+1:sumc(nc)+nord,ncoefunord+1:ncoefunord+ncoeford]=ytempord;
+   endif;
+
+   for j(1,nord,1);
+      maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+      maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+      xdownord = prepdoub*maskdownq*xthresh;
+      xupord= prepdoub*maskupq*xthresh;
+      xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+   endfor;
+
+   if ncnt>0;
+      selcntqq = ((selq[hunordq+hordq+1:hunordq+hordq+hcntq,nc3+nord+1:nc3+nord+ncnt])');   /* ncnt x hcntq matrix  */
+      maskdowncntq = zeros(ncnt,nummaskcnt);                                /* ncnt x [(total number of count values+1) across all count outcomes ] */
+      maskupcntq = zeros(ncnt,nummaskcnt);
+      prepsingcnt=(diagrv(zeros(ncnt,ncnt),((indxsingcnt[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdowncnt = (diagrv(zeros(ncnt,ncnt),((indxdowncnt[i1,.])')));
+      prepsingupcnt = (diagrv(zeros(ncnt,ncnt),((indxupcnt[i1,.])')));
+      prepdoubcnt =(diagrv(zeros(ncnt,ncnt),((indxdoubcnt[i1,.])')));
+      if numcntmain>0;
+         ytempcntmain = yicntmain[i1,.];
+         ytempcntmain = reshape(ytempcntmain,ncnt,ncoefcntmain);
+         zq[sumc(nc)+nord+1:sumc(nc)+nord+ncnt,ncoefunord+ncoeford+1:ncoefunord+ncoeford+ncoefcntmain]=ytempcntmain;
+      endif;
+   endif;
+
+   for j(1,ncnt,1);
+       maskdowncntq[j,nummaskcnt1[j]+1:nummaskcnt1[j+1]]=maskdowncnt[i1,nummaskcnt1[j]+1:nummaskcnt1[j+1]];
+       maskupcntq[j,nummaskcnt1[j]+1:nummaskcnt1[j+1]]=maskupcnt[i1,nummaskcnt1[j]+1:nummaskcnt1[j+1]];
+       xdowncnt = prepdoubcnt*maskdowncntq*xthreshcntall[.,i1];
+       xupcnt= prepdoubcnt*maskupcntq*xthreshcntall[.,i1];
+       xggcnt = (prepsingdowncnt*maskupcntq+prepsingupcnt*maskdowncntq)*xthreshcntall[.,i1];
+   endfor;
+
+   if ngrp>0;
+       selgrpqq = ((selq[hunordq+hordq+hcntq+1:hunordq+hordq+hcntq+hgrpq,nc3+nord+ncnt+1:nc3+nord+ncnt+ngrp])');   /* ngrp x hgrpq matrix  */
+       ytempgrp = yigrp[i1,.];
+       ytempgrp = reshape(ytempgrp,ngrp,ncoefgrp);
+       zq[nc4+nord+ncnt+1:nc4+nord+ncnt+ngrp,ncoefunord+ncoeford+ncoefcntmain+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp]=ytempgrp;
+       maskdowngrpq = zeros(ngrp,nummaskgrp);                            /* ngrp x [(total number of thresholds+2) across all grouped outcomes ] */
+       maskupgrpq = zeros(ngrp,nummaskgrp);
+       prepsinggrp=(diagrv(zeros(ngrp,ngrp),((indxsinggrp[i1,.])')));          /* All four prep matrices are ngrp by ngrp matrices */
+       prepsingdowngrp = (diagrv(zeros(ngrp,ngrp),((indxdowngrp[i1,.])')));
+       prepsingupgrp = (diagrv(zeros(ngrp,ngrp),((indxupgrp[i1,.])')));
+       prepdoubgrp =(diagrv(zeros(ngrp,ngrp),((indxdoubgrp[i1,.])')));
+   endif;
+
+   for j(1,ngrp,1);
+       maskdowngrpq[j,nummaskgrp1[j]+1:nummaskgrp1[j+1]]=maskdowngrp[i1,nummaskgrp1[j]+1:nummaskgrp1[j+1]];
+       maskupgrpq[j,nummaskgrp1[j]+1:nummaskgrp1[j+1]]=maskupgrp[i1,nummaskgrp1[j]+1:nummaskgrp1[j+1]];
+       xdowngrp = prepdoubgrp*maskdowngrpq*xthreshgrp;
+       xupgrp= prepdoubgrp*maskupgrpq*xthreshgrp;
+       xgggrp = (prepsingdowngrp*maskupgrpq+prepsingupgrp*maskdowngrpq)*xthreshgrp;
+   endfor;   
+   
+   if ncont>0;
+       selcontqq = ((selq[hunordq+hordq+hcntq+hgrpq+1:hunordq+hordq+hcntq+hgrpq+hcontq,nc3+nord+ncnt+ngrp+1:nc3+nord+ncnt+ngrp+ncont])');   /* ncont x hcontq matrix  */
+       ytempcont = yicont[i1,.];
+       zqforlater = reshape(ytempcont,ncont,ncoefcont);
+       zq[nc4+nord+ncnt+ngrp+1:totdep,ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont]=zqforlater;     /* ncont x ncoefcont */    
+   endif;
+
+   if nnom>0;
+       if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|xgggrp;
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|xdowngrp;
+           xup = zeros(nc3,1)|xupord|xupcnt|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupcnt|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xggcnt;
+           xdown = zeros(nc3,1)|xdownord|xdowncnt;
+           xup = zeros(nc3,1)|xupord|xupcnt;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xgggrp;
+           xdown = zeros(nc3,1)|xdownord|xdowngrp;
+           xup = zeros(nc3,1)|xupord|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord;
+           xdown = zeros(nc3,1)|xdownord;
+           xup = zeros(nc3,1)|xupord;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggcnt|xgggrp;
+           xdown = zeros(nc3,1)|xdowncnt|xdowngrp;
+           xup = zeros(nc3,1)|xupcnt|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggcnt|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowncnt|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupcnt|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggcnt;
+           xdown = zeros(nc3,1)|xdowncnt;
+           xup = zeros(nc3,1)|xupcnt;
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xgggrp;
+           xdown = zeros(nc3,1)|xdowngrp;
+           xup = zeros(nc3,1)|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|zeros(ncont,1);
+           xup = zeros(nc3,1)|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1);
+           xdown = zeros(nc3,1);
+           xup = zeros(nc3,1);
+           indxcompq = zeros(nc3,1);   
+       endif;
+   elseif nnom==0;
+       if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = xggord|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = xdownord|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = xupord|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = xggord|xggcnt|xgggrp;
+           xdown = xdownord|xdowncnt|xdowngrp;
+           xup = xupord|xupcnt|xupgrp;
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = xggord|xggcnt|((ycont[i1,.])');
+           xdown = xdownord|xdowncnt|zeros(ncont,1);
+           xup = xupord|xupcnt|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = xggord|xggcnt;
+           xdown = xdownord|xdowncnt;
+           xup = xupord|xupcnt;
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = xggord|xgggrp|((ycont[i1,.])');
+           xdown = xdownord|xdowngrp|zeros(ncont,1);
+           xup = xupord|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = xggord|xgggrp;
+           xdown = xdownord|xdowngrp;
+           xup = xupord|xupgrp;
+           indxcompq = ((indxup[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = xggord|((ycont[i1,.])');
+           xdown = xdownord|zeros(ncont,1);
+           xup = xupord|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = xggord;
+           xdown = xdownord;
+           xup = xupord;
+           indxcompq = ((indxup[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = xggcnt|xgggrp;
+           xdown = xdowncnt|xdowngrp;
+           xup = xupcnt|xupgrp;
+           indxcompq = ((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = xggcnt|((ycont[i1,.])');
+           xdown = xdowncnt|zeros(ncont,1);
+           xup = xupcnt|zeros(ncont,1);
+           indxcompq = ((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = xggcnt;
+           xdown = xdowncnt;
+           xup = xupcnt;
+           indxcompq = ((indxupcnt[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = xgggrp|((ycont[i1,.])');
+           xdown = xdowngrp|zeros(ncont,1);
+           xup = xupgrp|zeros(ncont,1);
+           indxcompq = ((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = xgggrp;
+           xdown = xdowngrp;
+           xup = xupgrp;
+           indxcompq = ((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = ((ycont[i1,.])');
+           xdown = zeros(ncont,1);
+           xup = zeros(ncont,1);
+           indxcompq = zeros(ncont,1);   
+       endif;
+   endif;
+
+   seed20=seednext;
+
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      xxj = x[rows(x)-sumnivinter+1:rows(x)];
+      xxj = xxj.*onetemp;   /* sumnivinter x ncont matrix  */
+      { gxxj } = gradelproduct(xxj,onetemp);     /* gxxj is sumnivinter x (sumnivinter x ncont) matrix  */
+      contval = zqforlater*xcont; 
+      yinterfin = yintercont[i1,.];
+      yinterfin = reshape(yinterfin,totdep,sumnivinter);
+      vinterfin = yinterfin*xxj*contval;      /*                yinterfin is (totdep x sumnivinter); xxj is sumnivinterx ncont;
+                                                                           zqforlater is ncontxncoefcont; xcont is ncoefcontx1; 
+                                                                           contval = (zqforlater*xcont) is ncontx1; 
+                                                                           [yinterfin*(zqforlater*xcont)] is (hnom+hordcont)x1 vector; 
+                                                                           vinterfin is [(sumc(nc)+nordcont)x1] = (wierd theta'.*xfinn')*xtilde   *(w         *alpha)   */ 
+       newcov = eye(totdep);  
+       newcov[.,sumc(nc)+nord+ncnt+ngrp+1:cols(newcov)]=newcov[.,sumc(nc)+nord+ncnt+ngrp+1:cols(newcov)]+yinterfin*xxj;
+       _omsymmetric=0; _omdiagonal=0;
+       gwtilde = yinterfin' .*. eye(cols(xxj));    /* (sumnivinter*ncont) x (totdep*ncont)  */
+       gwtilde1 = gxxj*gwtilde;                     /* sumnivinter x (totdep*ncont) */
+       gxfinal = gAomegaB(yinterfin,contval);      /* (sumnivinter*ncont) x (totdep*1) */ 
+       gxxjfinal = gxxj*gxfinal;                    /* sumnivinter x totdep   */
+       tempinter = yinterfin*xxj*zqforlater;        /* totdep x ncoefcont  */
+       ginteractxcont = zeros(ncoefunord+ncoeford + ncoefgrp,(sumc(nc)+nordcont))|((tempinter)');  /* (ncoefunord+ncoeford+ncoefcont) x (totdep) matrix */ 
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   endif;
+   
+   if nnom>0;
+       { Msubq,indxoneq,indxeqq } = Mutodu(nnom,nc,((altchosen[i1,.])'),0,0,0,nord+ncnt+ngrp,ncont);  /* M sub q is b x a matrix ; b = nc3+nordcont ; a = sumc(nc)+nordcont  */
+   else;
+       Msubq = eye(nordcont);
+       indxoneq = zeros(nordcont,1);
+       indxeqq = zeros(nordcont,1);
+       if ncont>0;
+          if nordcont>ncont;
+             indxeqq = zeros(nordcont-ncont,1)|ones(ncont,1);
+          else;
+             indxeqq = ones(ncont,1);
+          endif;       
+       endif;
+   endif;
+
+   Msubq = selq*Msubq;         /* For each individual, selecting only available dimensions; (M sub q is # of available dimensions-1) x a matrix; a = sumc(nc)+nordcont   */
+   Vsubq = zq*xfin;    /* (sumc(nc)+nordcont)x1  */
+   xisubq = (omegker);           /* xisubq is axa matrix, a = sumc(nc)+nordcont */
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      Vsubq = Vsubq+vinterfin; 
+      xisubq = newcov*omegker*newcov';
+      _x2symmetric=1; _x1diagonal=0;_x1symmetric=0;_x2diagonal=0;_x2correlation=0; 
+      { ggnewcov,ggomegker } = gbothxomegax(newcov,omegker);
+      ggnewcov = ggnewcov[design1,.]|ggnewcov[designcont,.];      /* [totdep*(ncont)] x (a*(a+1)/2); a = totdep */  
+      _OMEGACORR=0; _XOMEGAXT=0;
+      gcovker = gomegxomegax(Msubq*newcov*convdutou);  /* convdutou is a x b matrix; gcovker is [b*(b+1)/2]x[h*(h+1)/2]; a=(sumc(nc)+nordcont), b=(nc3+nordcont) */
+      gxisubq = gomegxomegax(Msubq);                   /* [a*(a+1)/2]X[h*(h+1)/2]; a=totdep, b=(nc3+nordcont) */
+      ggnewcovtemp = ggnewcov*gxisubq;                  /* [totdep*ncont] x [h*(h+1)/2] matrix */
+   else;
+      gcovker = gomegxomegax(Msubq*convdutou);         /* [b*(b+1)/2]X[h*(h+1)/2]; a=(totdep), b=(nc3+nordcont) */
+   endif;
+
+   if nord>0;
+       indxoneq[nc3+1:nc3+nord] = (indxsing[i1,.])';
+   endif;
+   if ncnt>0;
+       indxoneq[nc3+nord+1:nc3+nord+ncnt] = (indxsingcnt[i1,.])';
+   endif;
+   if ngrp>0;
+       indxoneq[nc3+nord+ncnt+1:nc3+nord+ncnt+ngrp] = (indxsinggrp[i1,.])';
+   endif;     
+   
+   xgg = selq*xgg; xdown = selq*xdown;  xup = selq*xup;  indxoneq=selq*indxoneq;  indxcompq = selq*indxcompq;  indxeqq = selq*indxeqq;         
+   Bsubq = Msubq*((Vsubq));    /* B sub q is (b)x1 ; M sub q is h x a matrix (h=b only when all alternatives are available in nominal and all non-nominal outcomes are available); b = nc3+nordcont ; a = sumc(nc)+nordcont  */
+   newxisubq = Msubq*xisubq*Msubq';
+   _covarr = 1;
+   if ntotcoef==0;
+      Bsubq = zeros(rows(newxisubq),1);
+   endif;
+   { P,gBsubq,gnewxisubq,gxg,gxdown,gxup,sss } = gradpdfrectn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq,indxeqq);
+   /* gBsubq - (h=# of available alternatives in nominal plus # of available non-nominal variables) x 1 vector */
+   /* gnewxisubq - [(h)*(h+1)/2] x 1 vector  vector */
+   gVsubq = Msubq';                                                      /* (totdep))x (h) matrix; i.e. a x h matrix */
+   gxmu = zq';                                                           /* (ncoefunord+ncoeford+nceofcnt+ncoefgrp+ncoefcont) x (totdep)   */
+   gxmufinal = gxmu*gVsubq*gBsubq;                                       /* (ncoefunord+ncoeford+ncoefcnt+ncoefgrp+ncoefcont) x 1 vector */
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+       gxmuintercont = gxxjfinal*gVsubq*gBsubq;                          /* [(sumnivinter)x 1 vector */
+       gxmufinal = gxmufinal+ginteractxcont*gvsubq*gBsubq;               /* (ncoefunord+ncoeford+ncoefcnt+ncoefgrp+ncoefcont) x 1 vector */
+       gwierdtilde = ggnewcovtemp*gnewxisubq;    /*   [totdep*ncont] x 1 vector */
+       gwierdtilde1 = gwtilde1*gwierdtilde;   /* [sumnivinter] x 1 vector  */ 
+       gxmuintercont = gxmuintercont+gwierdtilde1;  /* [(sumnivinter)x 1 vector */   
+   endif;
+
+   if nord>0;
+       gxthreshord = selordqq*gxg[hunordq+1:hunordq+hordq];                                    /* All three below are nord X 1 vectors; hordq=nord if all ordered outcomes are available for individual */
+       gxdowno = selordqq*gxdown[hunordq+1:hunordq+hordq];
+       gxupo = selordqq*gxup[hunordq+1:hunordq+hordq];
+       gxggord=((prepsingdown*maskupq+prepsingup*maskdownq)')*gxthreshord;
+       gxdownord = ((prepdoub*maskdownq)')*gxdowno;
+       gxupord = ((prepdoub*maskupq)')*gxupo;
+       gxthreshfin = gxggord+gxdownord+gxupord;  /* Accumulate across all observations and remove first and last elements (-inf and +inf) */
+   endif;
+
+   gordthreshfin={};
+   for j(1,nord,1);
+       gthreshfini = gxthreshfin[nummask1[j]+1:nummask1[j+1]];
+       gthreshfini = gthreshfini[2:ncord[j]];
+       gordthreshfin = gordthreshfin|gthreshfini;
+   endfor;
+   if nord>0;
+      gordfin = gordthreshfin|gxmufinal[ncoefunord+1:ncoefunord+ncoeford];
+   else;
+      gordfin = {};
+   endif;
+   
+   if ncnt>0;
+       gxthreshc = selcntqq*gxg[hunordq+hordq+1:hunordq+hordq+hcntq];                                    /* All three below are nord X 1 vectors; hordq=nord if all ordered outcomes are available for individual */
+       gxdownc = selcntqq*gxdown[hunordq+hordq+1:hunordq+hordq+hcntq];
+       gxupc = selcntqq*gxup[hunordq+hordq+1:hunordq+hordq+hcntq];
+       gxggcnt=((prepsingdowncnt*maskupcntq+prepsingupcnt*maskdowncntq)')*gxthreshc;                   /* nummaskcnt x ncnt matrix */
+       gxdowncnt = ((prepdoubcnt*maskdowncntq)')*gxdownc;                                               /* nummaskcnt x ncnt matrix */
+       gxupcnt = ((prepdoubcnt*maskupcntq)')*gxupc;                                                     /* nummaskcnt x ncnt matrix */
+       gxthreshfincnt1 = gxggcnt+gxdowncnt+gxupcnt;  /* nummaskcnt (sumc(ncntmax[j]+2) x 1 gradients with respect to all count thresholds (psi sub k thresholds)*/
+       ytempcnt = yifincntgamma[i1,.];
+       ytempcnt1 = reshape(ytempcnt,ncnt,ncoefcntgamma);
+   endif;
+
+   gxthetafincnt = {};
+   gxlambdafincnt = {};
+   gxalphafincnt = {};
+   for j(1,ncnt,1);
+       gxthreshfincnt = (gxthreshfincnt1[nummaskcnt1[j]+1:nummaskcnt1[j+1]]);   /* (ncntmax[j]+2) x 1 vector  */
+       gxthreshfincnt = gxthreshfincnt[2:rows(gxthreshfincnt)];                  /* (ncntmax[j]+1) x 1 vector */
+       if numcntthresh[j]>0;
+          gxalphafincnt = gxalphafincnt|((galphavector1[ncntthresh1[j]+1:ncntthresh1[j+1],nummaskcntadd11[j]+1:nummaskcntadd11[j+1]])*gxthreshfincnt);
+       else;
+          gxalphafincnt = {}; 
+       endif;
+       gxthetafincnt = gxthetafincnt|((gthetafull[i1,nummaskcntadd11[j]+1:nummaskcntadd11[j+1]])*gxthreshfincnt);
+       gxlambdafincnt = gxlambdafincnt|((glambdafull[i1,nummaskcntadd11[j]+1:nummaskcntadd11[j+1]])*gxthreshfincnt);      
+   endfor;
+ 
+   if ncnt>0;
+      gxlambdafinfincnt = ytempcnt1'*gxlambdafincnt;
+      if numcntmain>0;
+         gcntfin = gxalphafincnt|gxthetafincnt|gxlambdafinfincnt|gxmufinal[ncoefunord+ncoeford+1:ncoefunord+ncoeford+ncoefcntmain];
+      else;
+         gcntfin = gxalphafincnt|gxthetafincnt|gxlambdafinfincnt;
+      endif;
+   else;
+      gcntfin = {};
+   endif;
+   
+   if ngrp>0;
+       ggrpfin = gxmufinal[ncoefunord+ncoeford+ncoefcntmain+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp];
+   else;
+       ggrpfin = {};
+   endif;
+ 
+   if ncont>0;
+       gcontfin = gxmufinal[ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont];
+   else;
+       gcontfin = {};
+   endif;
+   
+   gfinW1 = gW1*gcovker*gnewxisubq;                                   /* b x 1 vector  */
+   if nscale>0;
+       gfinW1 = gfinW1[indxW];                                           /* number of distinct scale parameters x 1 vector */
+   else;
+       gfinw1 = {};
+   endif;
+   gfinstar = gtempstar*gcovker*gnewxisubq;                          /* [b x (b+1)/2] x 1 vector */
+   
+   Pcomp = pcomp|P;
+   if nnom>0;
+       g = ((gxmufinal[1:ncoefunord])')~(gordfin')~(gcntfin')~(ggrpfin')~(gcontfin')~(gfinstar')~(gfinW1');
+   elseif nnom==0;
+       g = (gordfin')~(gcntfin')~(ggrpfin')~(gcontfin')~(gfinstar')~(gfinW1');
+   endif;
+
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+       g = g~gxmuintercont';
+   endif;
+   
+   gfinal = gfinal|g;
+   seednext=sss;
+endfor;
+
+w=zeros(e1,1);
+if pcomp <= w;
+   pcomp=pcomp-((pcomp.<=w).*(pcomp-0.0001));
+endif;
+g1 = gfinal./pcomp;
+retp(dta[.,_weight].*g1);
+endp;
+
+
+proc lpr1(x,dta);
+local e1,p0,popass,vunordfin,altchosen,xfinunord,yifinunord,xfinord,yifinord,yifincont,i,xunord,v2unord,j,j1,vunord,xthresh,xord,xcont,xker,xscal,
+indxrearrang,indxW,W1,C,cholker,omegastar, covker,omegker,tufin,tlfin,vordfin,xordi,xthreshi,xconti,tu,tl,yiordi,vord,
+vcontfin,yiconti,vcont,v,xlow,xup,seednext,seed20,vsubq,xisubq,Msubq,indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w,final,
+indxcomptemp,indxonetemp,indxlotemp,indxuptemp,indxdoubtemp,indxcompq,xgg,xggtemp;
+local xfin,zq,maskdownq,maskupq,ytempunord,ytempord,ytempcont,prepsing,prepsingdown,prepsingup,prepdoub;
+local xdownord,xupord,capomegaindx,xggord,xdown;
+local aar1,aar2,aar3,aar4,aar5,aar6,aar7,aar8,aarn1,aarn2,aarn3,aarn4,aarn5,aarn6,aarn7,aarn8,tempinter;
+local xxj,l,xfinn,xnom,ma,xxj1,xx1,k,xfinal,ynominter,ynominterfin,yinterfin,yordcontinter,yordcontinterfin,vinterfin,newcov,zqforlater;
+local xordcont,threshtmp,selq,newMsubq,ytempcntmain,prepdoubcnt,prepdoubgrp;
+local xthreshaddcnt,xthreshtmpaddcnt,xfincntgamma,xfincntmain,xfincnttheta,yifincntgamma,yifincntmain,xthreshcntall,ytempcnt1,ytempcnt;
+local cntgamma,cntlambda,xthreshcnt,tempmatrix,alphavector,countvector,xthreshcnti,maskdowncntq,maskupcntq,prepsingcnt,prepsingdowncnt;
+local prepsingupcnt,xdowncnt,xupcnt,xggcnt,yifingrp,xgrp,ytempgrp,maskdowngrpq,maskupgrpq,prepsinggrp,prepsingdowngrp,prepsingupgrp,xdowngrp,xupgrp,xgggrp;
+local alphavector1,alphavector5,alphavectortemp;
+    
+e1 = rows(dta);
+p0 = zeros(e1,1);
+popass = dta[.,ivobsid];
+       
+if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+   xxj = x[rows(x)-sumnivinter+1:rows(x)];
+   xxj = xxj.*onetemp;   /* sumnivinter x ncont matrix  */
+endif;
+
+/* Obtaining index of chosen alternative in nominal variable */
+
+altchosen = {};
+xfinunord = {};
+yifinunord={};
+for i(1,nnom,1);
+    xfinunord = xfinunord|x[numunord1[i]+1:numunord1[i+1]];
+    yifinunord = yifinunord~((yiunord[.,nivunord1[i]+1:nivunord1[i+1]]));
+    altchosen = altchosen~maxindc(((yunord[.,nc2[i]+1:nc2[i+1]])'));
+endfor;
+
+if nord>0;
+  xfinord = x[ncoefunord+nthresh+1:ncoefunord+nthresh+ncoeford];
+  yifinord = yiord;
+  xthresh={};
+  threshtmp = x[ncoefunord+1:ncoefunord+nthresh];
+  for i(1,nord,1);
+    xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+    xthresh=xthresh|xthreshi;   
+  endfor; 
+else;
+  xfinord = {};
+endif;
+
+if ncnt>0;
+  xthreshaddcnt={};     /* These are additional threshold values for spikes at specific count values */
+  if ncntthresh>0;
+     xthreshtmpaddcnt = x[ncoefunord+nthresh+ncoeford+1:ncoefunord+nthresh+ncoeford+ncntthresh];   /* additional threshold values */
+  endif;
+  xfincnttheta = x[ncoefunord+nthresh+ncoeford+ncntthresh+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt];  /* theta parameters */
+  xfincntgamma = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcntgamma]; /* gamma parameters in threshold */
+  if numcntmain>0;
+     xfincntmain = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcntgamma+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt];  /* parameters in main latent count equation */
+     yifincntmain = yicntmain;      
+  else;
+     xfincntmain={};
+     yifincntmain = {};
+  endif;
+  
+  alphavector1 = {};
+  for j(1,ncnt,1);
+     if numcntthresh[j]>0;
+        tempmatrix = zeros(nccntmax[j]+1,numcntthresh[j]);   /* if 0,1,2,3,4 are counts, computing alphaadd1,alphaadd2,alphaadd3, alphaadd4, and later will add alphaadd0=0 */
+        tempmatrix[((indalpha[j,1:numcntthresh[j]])'),.]=eye(numcntthresh[j]);
+        alphavectortemp = tempmatrix*xthreshtmpaddcnt[ncntthresh1[j]+1:ncntthresh1[j+1]];     /* (nccntmax[j]+1)x 1 vector  */
+        alphavector5 = cumsumc(alphavectortemp);
+        alphavector1 = alphavector1|alphavector5;
+     else;
+        alphavector1 = alphavector1|seqa(0,0,nccntmax[j]+1);
+     endif;
+  endfor;
+  
+  yifincntgamma = yicntgamma;
+  xthreshcntall = {};
+  for i(1,e1,1);
+     ytempcnt = yifincntgamma[i,.];
+     ytempcnt1 = reshape(ytempcnt,ncnt,ncoefcntgamma);
+     cntgamma = ytempcnt1*xfincntgamma;               /* ncnt x 1 vector */
+     cntlambda = exp(cntgamma);
+     xthreshcnt={};
+      
+     for j(1,ncnt,1);
+        alphavector = alphavector1[nummaskcntadd11[j]+1:nummaskcntadd11[j+1]];      /* alpha sub -1|alpha sub 0|alpha sub 1|.....|alpha sub (maxcount); (maxcount+2)x1 vector  */
+        countvector = seqa(0,1,nccntmax[j]+1);          /* (maxcount+1) x 1 (including zero count) vector */ 
+        xthreshcnti = counthresh(cntlambda[j],xfincnttheta[j],countvector,alphavector,_poisson[j]); 
+        xthreshcnt = xthreshcnt|(minfin|xthreshcnti);      /* [sum over all i (maxcount for each i+2)]x1 vector */        
+     endfor;
+     xthreshcntall = xthreshcntall~xthreshcnt;       /* [sum over all i (maxcount for each i+2)] x e1 matrix, each column being set of thresholds (across all counts) for a specific individual */
+  endfor;
+else;
+  xfincntmain = {};
+  xfincnttheta = {};
+  xfincntgamma = {};
+endif;
+
+if ngrp>0;
+   yifingrp = yigrp;
+   xgrp = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp]; 
+else;
+   xgrp = {};
+endif;
+
+if ncont>0;
+   yifincont = yicont;
+   xcont = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont];
+else;
+   xcont = {};
+endif;
+
+if ntotcoef>0;
+   xfin = xfinunord|xfinord|xfincntmain|xgrp|xcont;   /*  (ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont)x1 vector */ 
+else;
+   xfin = 0;
+endif;
+
+xker = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker];
+
+if nscale>0;
+   xscal = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+nscale];
+else;
+   xscal=0;
+endif;
+
+{ indxrearrang,indxW, W1,C } = poscor(xker,xscal,nnom,nc,0,0,nord+ncnt,ncont+ngrp);  /* unfortunately, at start values, C has some baggage imaginary parts, is innocuous and is only to help estimation; see com/jointcsmodels/testing; so removing */
+
+if popass[1]==1;
+   seednext=seed10;
+endif;
+
+omegastar = matndupdiagonefull(xker);
+covker = W1*omegastar*W1;
+omegker=convdutou*(covker)*convdutou';
+
+
+Pcomp={};
+for i1(1,e1,1);
+   selq={};
+   if nnom>0;
+      selq = selq|delif(((yavunord[i1,.])'),((yunord[i1,.])'));   /* Helpful later to use only available alternatives in each nominal variable for each individual  */
+   endif;
+   if nord>0 and ncnt>0 and ngrp>0 and ncont>0;       
+      selq = selq|((yavord[i1,.])')|((yavcnt[i1,.])')|((yavgrp[i1,.])')|((yavcont[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;       
+      selq = selq|((yavord[i1,.])')|((yavcnt[i1,.])')|((yavgrp[i1,.])');
+   elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;       
+      selq = selq|((yavord[i1,.])')|((yavcnt[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;       
+      selq = selq|((yavord[i1,.])')|((yavcnt[i1,.])');
+   elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;       
+      selq = selq|((yavord[i1,.])')|((yavgrp[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;       
+      selq = selq|((yavord[i1,.])')|((yavgrp[i1,.])');
+   elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;       
+      selq = selq|((yavord[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;       
+      selq = selq|((yavord[i1,.])');
+   elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;       
+      selq = selq|((yavcnt[i1,.])')|((yavgrp[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;       
+      selq = selq|((yavcnt[i1,.])')|((yavgrp[i1,.])');
+   elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;       
+      selq = selq|((yavcnt[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;       
+      selq = selq|((yavcnt[i1,.])');
+   elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;       
+      selq = selq|((yavgrp[i1,.])')|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;       
+      selq = selq|((yavgrp[i1,.])');
+   elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;       
+      selq = selq|((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+   endif;
+
+   selq = selif(eye(nc3+nordcont),selq);                   /* (h=# of available alternatives in unordered-1+# of available non-nominal variables) x (nc3+nordcont)  */
+   if ntotcoef>0;
+      zq = zeros(totdep,ntotcoef);      /* (sumc(nc)+nordcont) x (ncoefunord+ncoeford+ncoefcntmain+ncoefcont)   */
+   else;
+      zq = 0;
+   endif;
+   indxcompq = zeros(nc3+nordcont,1);
+
+   for j(1,nnom,1);
+      ytempunord = ((yiunord[i1,nivunord1[j]+1:nivunord1[j+1]]));
+      ytempunord = reshape(ytempunord,nc[j],numunord[j]);
+      zq[nc2[j]+1:nc2[j+1],numunord1[j]+1:numunord1[j+1]]=ytempunord;
+   endfor;
+   
+   if nord>0;
+      maskdownq = zeros(nord,nummask);                                /* nord x [(total number of thresholds+2) across all ordinal outcome ] */
+      maskupq = zeros(nord,nummask);
+      prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+      prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+      prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+      ytempord = yiord[i1,.];
+      ytempord = reshape(ytempord,nord,ncoeford);
+      zq[sumc(nc)+1:sumc(nc)+nord,ncoefunord+1:ncoefunord+ncoeford]=ytempord;
+   endif;
+
+   for j(1,nord,1);
+       maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+       maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+       xdownord = prepdoub*maskdownq*xthresh;
+       xupord= prepdoub*maskupq*xthresh;
+       xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+   endfor;
+
+   if ncnt>0;
+      maskdowncntq = zeros(ncnt,nummaskcnt);                                /* ncnt x [(total number of count values+1) across all count outcomes ] */
+      maskupcntq = zeros(ncnt,nummaskcnt);
+      prepsingcnt=(diagrv(zeros(ncnt,ncnt),((indxsingcnt[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdowncnt = (diagrv(zeros(ncnt,ncnt),((indxdowncnt[i1,.])')));
+      prepsingupcnt = (diagrv(zeros(ncnt,ncnt),((indxupcnt[i1,.])')));
+      prepdoubcnt =(diagrv(zeros(ncnt,ncnt),((indxdoubcnt[i1,.])')));
+      if numcntmain>0;
+         ytempcntmain = yicntmain[i1,.];
+         ytempcntmain = reshape(ytempcntmain,ncnt,ncoefcntmain);
+         zq[sumc(nc)+nord+1:sumc(nc)+nord+ncnt,ncoefunord+ncoeford+1:ncoefunord+ncoeford+ncoefcntmain]=ytempcntmain;
+      endif;
+   endif;
+
+   for j(1,ncnt,1);
+       maskdowncntq[j,nummaskcnt1[j]+1:nummaskcnt1[j+1]]=maskdowncnt[i1,nummaskcnt1[j]+1:nummaskcnt1[j+1]];
+       maskupcntq[j,nummaskcnt1[j]+1:nummaskcnt1[j+1]]=maskupcnt[i1,nummaskcnt1[j]+1:nummaskcnt1[j+1]];
+       xdowncnt = prepdoubcnt*maskdowncntq*xthreshcntall[.,i1];
+       xupcnt= prepdoubcnt*maskupcntq*xthreshcntall[.,i1];
+       xggcnt = (prepsingdowncnt*maskupcntq+prepsingupcnt*maskdowncntq)*xthreshcntall[.,i1];
+   endfor;
+
+   if ngrp>0;
+       ytempgrp = yigrp[i1,.];
+       ytempgrp = reshape(ytempgrp,ngrp,ncoefgrp);
+       zq[nc4+nord+ncnt+1:nc4+nord+ncnt+ngrp,ncoefunord+ncoeford+ncoefcntmain+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp]=ytempgrp;
+       maskdowngrpq = zeros(ngrp,nummaskgrp);                            /* ngrp x [(total number of thresholds+2) across all grouped outcomes ] */
+       maskupgrpq = zeros(ngrp,nummaskgrp);
+       prepsinggrp=(diagrv(zeros(ngrp,ngrp),((indxsinggrp[i1,.])')));          /* All four prep matrices are ngrp by ngrp matrices */
+       prepsingdowngrp = (diagrv(zeros(ngrp,ngrp),((indxdowngrp[i1,.])')));
+       prepsingupgrp = (diagrv(zeros(ngrp,ngrp),((indxupgrp[i1,.])')));
+       prepdoubgrp =(diagrv(zeros(ngrp,ngrp),((indxdoubgrp[i1,.])')));
+   endif;
+
+   for j(1,ngrp,1);
+       maskdowngrpq[j,nummaskgrp1[j]+1:nummaskgrp1[j+1]]=maskdowngrp[i1,nummaskgrp1[j]+1:nummaskgrp1[j+1]];
+       maskupgrpq[j,nummaskgrp1[j]+1:nummaskgrp1[j+1]]=maskupgrp[i1,nummaskgrp1[j]+1:nummaskgrp1[j+1]];
+       xdowngrp = prepdoubgrp*maskdowngrpq*xthreshgrp;
+       xupgrp= prepdoubgrp*maskupgrpq*xthreshgrp;
+       xgggrp = (prepsingdowngrp*maskupgrpq+prepsingupgrp*maskdowngrpq)*xthreshgrp;
+   endfor;   
+   
+   if ncont>0;
+       ytempcont = yicont[i1,.];
+       zqforlater = reshape(ytempcont,ncont,ncoefcont);
+       zq[nc4+nord+ncnt+ngrp+1:totdep,ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont]=zqforlater;     /* ncont x ncoefcont */    
+   endif;
+
+   if nnom>0;
+       if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|xgggrp;
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|xdowngrp;
+           xup = zeros(nc3,1)|xupord|xupcnt|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupcnt|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xggcnt;
+           xdown = zeros(nc3,1)|xdownord|xdowncnt;
+           xup = zeros(nc3,1)|xupord|xupcnt;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xgggrp;
+           xdown = zeros(nc3,1)|xdownord|xdowngrp;
+           xup = zeros(nc3,1)|xupord|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord;
+           xdown = zeros(nc3,1)|xdownord;
+           xup = zeros(nc3,1)|xupord;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggcnt|xgggrp;
+           xdown = zeros(nc3,1)|xdowncnt|xdowngrp;
+           xup = zeros(nc3,1)|xupcnt|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggcnt|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowncnt|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupcnt|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggcnt;
+           xdown = zeros(nc3,1)|xdowncnt;
+           xup = zeros(nc3,1)|xupcnt;
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xgggrp;
+           xdown = zeros(nc3,1)|xdowngrp;
+           xup = zeros(nc3,1)|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|zeros(ncont,1);
+           xup = zeros(nc3,1)|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1);
+           xdown = zeros(nc3,1);
+           xup = zeros(nc3,1);
+           indxcompq = zeros(nc3,1);   
+       endif;
+   elseif nnom==0;
+       if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = xggord|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = xdownord|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = xupord|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = xggord|xggcnt|xgggrp;
+           xdown = xdownord|xdowncnt|xdowngrp;
+           xup = xupord|xupcnt|xupgrp;
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = xggord|xggcnt|((ycont[i1,.])');
+           xdown = xdownord|xdowncnt|zeros(ncont,1);
+           xup = xupord|xupcnt|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = xggord|xggcnt;
+           xdown = xdownord|xdowncnt;
+           xup = xupord|xupcnt;
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = xggord|xgggrp|((ycont[i1,.])');
+           xdown = xdownord|xdowngrp|zeros(ncont,1);
+           xup = xupord|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = xggord|xgggrp;
+           xdown = xdownord|xdowngrp;
+           xup = xupord|xupgrp;
+           indxcompq = ((indxup[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = xggord|((ycont[i1,.])');
+           xdown = xdownord|zeros(ncont,1);
+           xup = xupord|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = xggord;
+           xdown = xdownord;
+           xup = xupord;
+           indxcompq = ((indxup[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = xggcnt|xgggrp;
+           xdown = xdowncnt|xdowngrp;
+           xup = xupcnt|xupgrp;
+           indxcompq = ((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = xggcnt|((ycont[i1,.])');
+           xdown = xdowncnt|zeros(ncont,1);
+           xup = xupcnt|zeros(ncont,1);
+           indxcompq = ((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = xggcnt;
+           xdown = xdowncnt;
+           xup = xupcnt;
+           indxcompq = ((indxupcnt[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = xgggrp|((ycont[i1,.])');
+           xdown = xdowngrp|zeros(ncont,1);
+           xup = xupgrp|zeros(ncont,1);
+           indxcompq = ((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = xgggrp;
+           xdown = xdowngrp;
+           xup = xupgrp;
+           indxcompq = ((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = ((ycont[i1,.])');
+           xdown = zeros(ncont,1);
+           xup = zeros(ncont,1);
+           indxcompq = zeros(ncont,1);   
+       endif;
+   endif;
+
+   seed20=seednext;
+   
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      yinterfin = yintercont[i1,.];
+      yinterfin = reshape(yinterfin,totdep,sumnivinter);
+      vinterfin = yinterfin*xxj*(zqforlater*xcont);      /*                yinterfin is (totdep x sumnivinter); xxj is sumnivinterx ncont;
+                                                                           zqforlater is ncontxncoefcont; xcont is ncoefcontx1; 
+                                                                           (zqforlater*xcont) is ncontx1; 
+                                                                           [yinterfin*(zqforlater*xcont)] is (hnom+hordcont)x1 vector; 
+                                                                           vinterfin is [(sumc(nc)+nordcont)x1] = (wierd theta'.*xfinn')*xtilde   *(w         *alpha)   */ 
+      newcov = eye(totdep);  
+      newcov[.,sumc(nc)+nord+ncnt+ngrp+1:cols(newcov)]=newcov[.,sumc(nc)+nord+ncnt+ngrp+1:cols(newcov)]+yinterfin*xxj;
+   endif;
+   
+   if nnom>0;
+       { Msubq,indxoneq,indxeqq } = Mutodu(nnom,nc,((altchosen[i1,.])'),0,0,0,nord+ncnt+ngrp,ncont);  /* M sub q is b x a matrix ; b = nc3+nordcont ; a = sumc(nc)+nordcont  */
+   else;
+       Msubq = eye(nordcont);
+       indxoneq = zeros(nordcont,1);
+       indxeqq = zeros(nordcont,1);
+       if ncont>0;
+          if nordcont>ncont;
+             indxeqq = zeros(nordcont-ncont,1)|ones(ncont,1);
+          else;
+             indxeqq = ones(ncont,1);
+          endif;       
+       endif;      
+   endif;
+
+   Vsubq = zq*xfin;    /* (sumc(nc)+nordcont)x1  */
+   xisubq = (omegker);           /* xisubq is axa matrix, a = sumc(nc)+nordcont */
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      Vsubq = Vsubq+vinterfin; 
+      xisubq = newcov*omegker*newcov';
+   endif;
+
+   if nord>0;
+       indxoneq[nc3+1:nc3+nord] = (indxsing[i1,.])';
+   endif;
+   if ncnt>0;
+       indxoneq[nc3+nord+1:nc3+nord+ncnt] = (indxsingcnt[i1,.])';
+   endif;
+   if ngrp>0;
+       indxoneq[nc3+nord+ncnt+1:nc3+nord+ncnt+ngrp] = (indxsinggrp[i1,.])';
+   endif;   
+
+
+   xgg = selq*xgg; xdown = selq*xdown;  xup = selq*xup;  indxoneq=selq*indxoneq;  indxcompq = selq*indxcompq;  indxeqq = selq*indxeqq;      
+   
+   Msubq = selq*Msubq;         /* For each individual, selecting only available dimensions; M sub q is (h=# of available dimensions-1) x a matrix; a = sumc(nc)+nordcont   */
+   Bsubq = Msubq*((Vsubq));    /* B sub q is # of available dimensions (h=# of available alternatives across all nominal variables-1+# of available non-nominal variables) x 1  */
+   newxisubq = Msubq*xisubq*Msubq';  /* newxisubq is hxh matrix   */
+   if ntotcoef==0;
+      Bsubq = zeros(rows(newxisubq),1);
+   endif;
+   { P,sss } = pdfrectn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq,indxeqq);
+   Pcomp = pcomp|P;
+   seednext=sss;
+endfor;
+
+w=zeros(e1,1);
+if pcomp > w;
+   final=ln(pcomp);
+else;
+   print "yes";
+   final=ln(pcomp-((pcomp.<=w).*(pcomp-0.0001)));
+endif;
+retp(dta[.,_weight].*final);
+endp;
+
+
+
+proc lgd1(x,dta);
+local e1,p0,popass,vunordfin,altchosen,xfinunord,yifinunord,xfinord,yifinord,yifincont,i,xunord,v2unord,j,j1,vunord,xthresh,xord,xcont,xker,xscal,
+indxrearrang,indxW,W1,C,cholker,omegastar, covker,omegker,tufin,tlfin,vordfin,xordi,xthreshi,xconti,tu,tl,yiordi,vord,
+vcontfin,yiconti,vcont,v,xlow,xup,seednext,seed20,vsubq,xisubq,Msubq,indxoneq,indxeqq,bsubq,newxisubq,P,Pcomp,sss,w,final,
+indxcomptemp,indxonetemp,indxlotemp,indxuptemp,indxdoubtemp,indxcompq,xgg,xggtemp;
+local xfin,zq,maskdownq,maskupq,ytempunord,ytempord,ytempcont,prepsing,prepsingdown,prepsingup,prepdoub;
+local xdownord,xupord,capomegaindx,xggord,xdown;
+local aar1,aar2,aar3,aar4,aar5,aar6,aar7,aar8,aarn1,aarn2,aarn3,aarn4,aarn5,aarn6,aarn7,aarn8,tempinter;
+local xxj,l,xfinn,xnom,ma,xxj1,xx1,k,xfinal,ynominter,ynominterfin,yinterfin,yordinter,yordcontinter,yordcontinterfin,yordinterfin,vinterfin,newcov;
+local xordcont,threshtmp,contval,selq,gordthreshfin,selunordq,selordq,selcontq,selordqq,newMsubq,hunordq,hordq,hcontq,ytempcntmain,prepdoubcnt,prepdoubgrp;
+local xthreshaddcnt,xthreshtmpaddcnt,xfincntgamma,xfincntmain,xfincnttheta,yifincntgamma,yifincntmain,xthreshcntall,ytempcnt1,ytempcnt;
+local cntgamma,cntlambda,xthreshcnt,tempmatrix,alphavector,countvector,xthreshcnti,maskdowncntq,maskupcntq,prepsingcnt,prepsingdowncnt;
+local prepsingupcnt,xdowncnt,xupcnt,xggcnt,yifingrp,xgrp,ytempgrp,maskdowngrpq,maskupgrpq,prepsinggrp,prepsingdowngrp,prepsingupgrp,xdowngrp,xupgrp,xgggrp;
+local gW1,gomegastar,gcholcor,gker,gtempstar,gfinal,
+gBsubq,gnewxisubq,gxg,gxdown,gxup,gVsubq,gxmu,gxmufinal,gxthreshord,gxggord,gxdownord,gxupord,gxthreshfin,
+gxisubq,gfinW1,gfinstar,gordfin,gthreshfini,gxordi,g,g1,glambda,gtheta,xthreshcntfulli,gxggcnt;
+local gxxj,gwtilde,gwtilde1,gxxjfinal,ginteractxcont,gxfinal,ggnewcov,ggomegker,ggnewcovtemp,gcovker,gxmuintercont,gwierdtilde,gwierdtilde1,zqforlater;
+local newsdoubstar,numact,actindx,inactindx,alphavector1,alphavector5,alphavectortemp,gxthreshfincnt1,gcontfin,gscal;
+local selcntq,selgrpq,hcntq,hgrpq,selcntqq,selgrpqq,selcontqq,galphavector1,galphavector5,glambdafull,gthetafull,glambdafullj,gthetafullj;
+local gxthreshc,gxdowno, gxupo, gxdownc,gxupc,gxdowncnt,gxupcnt,gxthreshfincnt,gxthetafincnt,gxlambdafincnt,gxalphafincnt,gxlambdafinfincnt,gcntfin,ggrpfin;
+    
+e1 = rows(dta);
+p0 = zeros(e1,1);
+popass = dta[.,ivobsid];
+       
+if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+   xxj = x[rows(x)-sumnivinter+1:rows(x)];
+   xxj = xxj.*onetemp;   /* sumnivinter x ncont matrix  */
+endif;
+
+/* Obtaining index of chosen alternative in nominal variable */
+
+altchosen = {};
+xfinunord = {};
+yifinunord={};
+for i(1,nnom,1);
+    xfinunord = xfinunord|x[numunord1[i]+1:numunord1[i+1]];
+    yifinunord = yifinunord~((yiunord[.,nivunord1[i]+1:nivunord1[i+1]]));
+    altchosen = altchosen~maxindc(((yunord[.,nc2[i]+1:nc2[i+1]])'));
+endfor;
+
+if nord>0;
+  xfinord = x[ncoefunord+nthresh+1:ncoefunord+nthresh+ncoeford];
+  yifinord = yiord;
+  xthresh={};
+  threshtmp = x[ncoefunord+1:ncoefunord+nthresh];
+  for i(1,nord,1);
+    xthreshi = minfin|threshtmp[nthresh1[i]+1:nthresh1[i+1]]|infin;
+    xthresh=xthresh|xthreshi;   
+  endfor; 
+else;
+  xfinord = {};
+endif;
+
+if ncnt>0;
+  xthreshaddcnt={};     /* These are additional threshold values for spikes at specific count values */
+  if ncntthresh>0;
+     xthreshtmpaddcnt = x[ncoefunord+nthresh+ncoeford+1:ncoefunord+nthresh+ncoeford+ncntthresh];   /* additional threshold values */
+  endif;
+  xfincnttheta = x[ncoefunord+nthresh+ncoeford+ncntthresh+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt];  /* theta parameters */
+  xfincntgamma = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcntgamma]; /* gamma parameters in threshold */
+  if numcntmain>0;
+     xfincntmain = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcntgamma+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt];  /* parameters in main latent count equation */
+     yifincntmain = yicntmain;
+  else;
+     xfincntmain={};
+     yifincntmain = {};
+  endif;
+  alphavector1 = {};
+  if ncntthresh>0;
+    galphavector1 = zeros(ncntthresh,nummaskcntadd1);    /* total number of alpha parameters across count variables x sumc(nccntmax+1) */
+  endif;  
+  for j(1,ncnt,1);
+     if numcntthresh[j]>0;
+        tempmatrix = zeros(nccntmax[j]+1,numcntthresh[j]);   /* if 0,1,2,3,4 are counts, computing alphaadd1,alphaadd2,alphaadd3, alphaadd4, and later will add alphaadd0=0 */
+        tempmatrix[((indalpha[j,1:numcntthresh[j]])'),.]=eye(numcntthresh[j]);
+        alphavectortemp = tempmatrix*xthreshtmpaddcnt[ncntthresh1[j]+1:ncntthresh1[j+1]];     /* (nccntmax[j]+1)x 1 vector  */
+        alphavector5 = cumsumc(alphavectortemp);
+        galphavector5 = gcumsumc(alphavectortemp);
+        galphavector1[ncntthresh1[j]+1:ncntthresh1[j+1],nummaskcntadd11[j]+1:nummaskcntadd11[j+1]]=galphavector5;
+                   /* ncntthresh x sumc((maxcount[j]+1) = ncntthresh x nummaskcntadd1 */
+        alphavector1 = alphavector1|alphavector5;
+     else;
+        alphavector1 = alphavector1|seqa(0,0,nccntmax[j]+1);    
+     endif;
+  endfor;
+  yifincntgamma = yicntgamma;
+  xthreshcntall = {};
+ 
+  glambdafull = {};
+  gthetafull = {};
+  for i(1,e1,1);
+     ytempcnt = yifincntgamma[i,.];
+     ytempcnt1 = reshape(ytempcnt,ncnt,ncoefcntgamma);
+     cntgamma = ytempcnt1*xfincntgamma;               /* ncnt x 1 vector */
+     cntlambda = exp(cntgamma);
+     xthreshcnt={};
+     glambdafullj={};  gthetafullj={};  
+     for j(1,ncnt,1);
+        alphavector = alphavector1[nummaskcntadd11[j]+1:nummaskcntadd11[j+1]];      /* alpha sub -1|alpha sub 0|alpha sub 1|.....|alpha sub (maxcount); (maxcount+2)x1 vector  */
+        countvector = seqa(0,1,nccntmax[j]+1);          /* (maxcount+1) x 1 (including zero count) vector */ 
+        { xthreshcnti,glambda,gtheta } = gcounthresh(cntlambda[j],xfincnttheta[j],countvector,alphavector,_poisson[j]);
+        if _poisson[j]==1;
+            gtheta = zeros(1,rows(countvector));
+        endif;
+        glambdafullj = glambdafullj~(glambda*cntlambda[j]);     /* 1 x [sumc(nccntmax[j]+1)]=1 x nummaskcntadd1 vector */
+        xthreshcntfulli = minfin|xthreshcnti;
+        xthreshcnt = xthreshcnt|(xthreshcntfulli);      /* [sum over all i (maxcount for each i+2)]x1 vector =[sumc(nccntmax[j]+2]x 1 = nummaskcnt1 x 1 vector */        
+        gthetafullj = gthetafullj~gtheta;         /* 1 x [sumc(nccntmax[j]+1)]=1 x nummaskcntadd1 vector */            
+     endfor;
+     glambdafull = glambdafull|glambdafullj;     /* glambdafull and gthetafull are e1 x nummasckcntadd1 matrices */
+     gthetafull = gthetafull|gthetafullj;       
+     xthreshcntall = xthreshcntall~xthreshcnt;       /* [sum over all i (maxcount for each i+2)] x e1 matrix, each column being set of thresholds (across all counts) for a specific individual */
+  endfor;
+else;
+  xfincntmain = {};
+  xfincnttheta = {};
+  xfincntgamma = {};
+endif;
+
+if ngrp>0;
+   yifingrp = yigrp;
+   xgrp = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp]; 
+else;
+   xgrp = {};
+endif;
+
+if ncont>0;
+   yifincont = yicont;
+   xcont = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont];
+else;
+   xcont = {};
+endif;
+
+if ntotcoef>0;
+   xfin = xfinunord|xfinord|xfincntmain|xgrp|xcont;   /*  (ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont)x1 vector */ 
+else;
+   xfin = 0;
+endif;
+
+xker = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker];
+
+if nscale>0;
+   xscal = x[ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+1:ncoefunord+nthresh+ncoeford+ncntthresh+ncnt+ncoefcnt+ncoefgrp+ncoefcont+nker+nscale];
+else;
+   xscal=0;
+endif;
+
+{ indxrearrang,indxW, W1,C } = poscor(xker,xscal,nnom,nc,0,0,nord+ncnt,ncont+ngrp);  /* unfortunately, at start values, C has some baggage imaginary parts, is innocuous and is only to help estimation; see com/jointcsmodels/testing; so removing */
+
+omegastar = matndupdiagonefull(xker);
+covker = W1*omegastar*W1;
+omegker=convdutou*(covker)*convdutou';   /* [sumc(nc)+nordcont] x [sumc(nc)+nordcont]  */
+
+_OMEGACORR=0; _XOMEGAXT=0;
+{ gW1,gomegastar } = gradcovcor(Covker);                           /* gW1 is [b] X [a*(a+1)/2]; gomegastar is [b*(b+1)/2] X [a*(a+1)/2]; a=[sumc(nc)+nordcont],  b=(nc3+nordcont) */
+
+/*
+if _spher;
+  if _correst==0;
+     { gker,gscal } = gcholspherunconstcorscaled(omegastar,scal);        //gker is [(totdim*(totdim-1)/2] x [(totdim*(totdim-1)/2] matrix 
+  elseif _correst==1;
+     { newsdoubstar,gker,capomegaindx,numact,actindx,inactindx  } = grestcholspherunconstcorscaled(omegastar,correst,scal);
+  endif;         
+else;
+  if _correst==0;
+     { gker,gscal } = gnewcholparmcorscaled(omegastar,scal);
+  elseif _correst==1;
+     { newsdoubstar,gker,capomegaindx,numact,actindx,inactindx  } = grestcholunconstcorscaled(omegastar,correst,scal);
+  endif;
+endif;
+*/ 
+
+gtempstar = gomegastar;
+
+if popass[1]==1;
+   seednext=seed10;
+endif;
+
+Pcomp={};
+gfinal = {};
+for i1(1,e1,1);
+   selq={};
+   if nnom>0;
+      selunordq = delif(((yavunord[i1,.])'),((yunord[i1,.])'));   /* Helpful later to use only available alternatives in each nominal variable for each individual  */
+      selq = selq|selunordq;
+      hunordq = sumc(selunordq);
+   elseif nnom==0;
+      hunordq = 0;
+   endif;
+   if nord>0 and ncnt>0 and ngrp>0 and ncont>0;       
+      selordq=((yavord[i1,.])');   selcntq=((yavcnt[i1,.])');  selgrpq = ((yavgrp[i1,.])'); selcontq=((yavcont[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selcntq|selgrpq|selcontq;
+      hordq = sumc(selordq);  hcntq = sumc(selcntq);   hgrpq = sumc(selgrpq);   hcontq = sumc(selcontq);
+   elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;       
+      selordq=((yavord[i1,.])');   selcntq=((yavcnt[i1,.])');  selgrpq = ((yavgrp[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selcntq|selgrpq;
+      hordq = sumc(selordq);  hcntq = sumc(selcntq);  hgrpq = sumc(selgrpq);    hcontq=0;
+   elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;       
+      selordq=((yavord[i1,.])'); selcntq=((yavcnt[i1,.])'); selcontq = ((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selcntq|selcontq;
+      hordq = sumc(selordq);  hcntq = sumc(selcntq);   hcontq = sumc(selcontq);    hgrpq=0;
+   elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;       
+      selordq=((yavord[i1,.])'); selcntq=((yavcnt[i1,.])');
+      selq = selq|selordq|selcntq;
+      hordq = sumc(selordq);  hcntq = sumc(selcntq);   hgrpq=0;  hcontq=0;
+   elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;       
+      selordq=((yavord[i1,.])'); selgrpq=((yavgrp[i1,.])'); selcontq=((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selgrpq|selcontq;
+      hordq = sumc(selordq);  hgrpq = sumc(selgrpq);   hcontq = sumc(selcontq);   hcntq=0;      
+   elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;       
+      selordq=((yavord[i1,.])'); selgrpq=((yavgrp[i1,.])');
+      selq = selq|selordq|selgrpq;
+      hordq = sumc(selordq); hgrpq = sumc(selgrpq);   hcntq=0;  hcontq=0;
+   elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;       
+      selordq=((yavord[i1,.])'); selcontq=((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selordq|selcontq;
+      hordq = sumc(selordq); hcontq = sumc(selcontq);   hcntq=0; hgrpq=0;
+   elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;       
+      selordq = ((yavord[i1,.])');
+      selq = selq|selordq;
+      hordq = sumc(selordq);   hcntq=0; hgrpq=0;  hcontq=0;
+   elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;       
+      selcntq=((yavcnt[i1,.])');  selgrpq = ((yavgrp[i1,.])'); selcontq=((yavcont[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selcntq|selgrpq|selcontq;   
+      hcntq = sumc(selcntq);   hgrpq = sumc(selgrpq);   hcontq = sumc(selcontq);   hordq=0;
+   elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;       
+      selcntq=((yavcnt[i1,.])');  selgrpq = ((yavgrp[i1,.])');         /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selcntq|selgrpq;
+      hcntq = sumc(selcntq);   hgrpq=sumc(selgrpq);   hordq=0;   hcontq=0;
+   elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;       
+      selcntq=((yavcnt[i1,.])'); selcontq = ((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selcntq|selcontq;
+      hcntq = sumc(selcntq);   hcontq = sumc(selcontq);  hordq=0;   hgrpq=0;
+   elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;       
+      selcntq=((yavcnt[i1,.])');
+      selq = selq|selcntq;
+      hcntq = sumc(selcntq);   hordq=0; hgrpq=0; hcontq=0;
+   elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;       
+      selgrpq=((yavgrp[i1,.])'); selcontq=((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selgrpq|selcontq;
+      hgrpq = sumc(selgrpq);   hcontq = sumc(selcontq);    hordq=0; hcntq=0;   
+   elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;       
+      selgrpq=((yavgrp[i1,.])');
+      selq = selq|selgrpq;
+      hgrpq = sumc(selgrpq);  hordq=0; hcntq=0; hcontq=0;
+   elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;       
+      selcontq=((yavcont[i1,.])');                            /* (nc3+nordcont) x 1 ; nc3 = sumc(nc-1) */
+      selq = selq|selcontq;
+      hcontq = sumc(selcontq);  hordq=0; hcntq=0; hgrpq=0;
+   endif;
+     
+   selq = selif(eye(nc3+nordcont),selq);                   /* (h=# of available alternatives in unordered-1+# of available non-nominal variables) x (nc3+nordcont)  */    
+   if ntotcoef>0;
+      zq = zeros(totdep,ntotcoef);      /* (sumc(nc)+nordcont) x (ncoefunord+ncoeford+ncoefcntmain+ncoefcont)   */
+   else;
+      zq = 0;
+   endif;
+   indxcompq = zeros(nc3+nordcont,1);
+
+   for j(1,nnom,1);
+      ytempunord = ((yiunord[i1,nivunord1[j]+1:nivunord1[j+1]]));
+      ytempunord = reshape(ytempunord,nc[j],numunord[j]);
+      zq[nc2[j]+1:nc2[j+1],numunord1[j]+1:numunord1[j+1]]=ytempunord;
+   endfor;
+   
+   if nord>0;
+      selordqq = ((selq[hunordq+1:hunordq+hordq,nc3+1:nc3+nord])');   /* nord x hordq matrix  */
+      maskdownq = zeros(nord,nummask);                                /* nord x [(total number of thresholds+2) across all ordinal outcome ] */
+      maskupq = zeros(nord,nummask);
+      prepsing=(diagrv(zeros(nord,nord),((indxsing[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdown = (diagrv(zeros(nord,nord),((indxdown[i1,.])')));
+      prepsingup = (diagrv(zeros(nord,nord),((indxup[i1,.])')));
+      prepdoub =(diagrv(zeros(nord,nord),((indxdoub[i1,.])')));
+      ytempord = yiord[i1,.];
+      ytempord = reshape(ytempord,nord,ncoeford);
+      zq[sumc(nc)+1:sumc(nc)+nord,ncoefunord+1:ncoefunord+ncoeford]=ytempord;
+   endif;
+
+   for j(1,nord,1);
+      maskdownq[j,nummask1[j]+1:nummask1[j+1]]=maskdown[i1,nummask1[j]+1:nummask1[j+1]];
+      maskupq[j,nummask1[j]+1:nummask1[j+1]]=maskup[i1,nummask1[j]+1:nummask1[j+1]];
+      xdownord = prepdoub*maskdownq*xthresh;
+      xupord= prepdoub*maskupq*xthresh;
+      xggord = (prepsingdown*maskupq+prepsingup*maskdownq)*xthresh;
+   endfor;
+
+   if ncnt>0;
+      selcntqq = ((selq[hunordq+hordq+1:hunordq+hordq+hcntq,nc3+nord+1:nc3+nord+ncnt])');   /* ncnt x hcntq matrix  */
+      maskdowncntq = zeros(ncnt,nummaskcnt);                                /* ncnt x [(total number of count values+1) across all count outcomes ] */
+      maskupcntq = zeros(ncnt,nummaskcnt);
+      prepsingcnt=(diagrv(zeros(ncnt,ncnt),((indxsingcnt[i1,.])')));          /* All four prep matrices are nord by nord matrices */
+      prepsingdowncnt = (diagrv(zeros(ncnt,ncnt),((indxdowncnt[i1,.])')));
+      prepsingupcnt = (diagrv(zeros(ncnt,ncnt),((indxupcnt[i1,.])')));
+      prepdoubcnt =(diagrv(zeros(ncnt,ncnt),((indxdoubcnt[i1,.])')));
+      if numcntmain>0;
+         ytempcntmain = yicntmain[i1,.];
+         ytempcntmain = reshape(ytempcntmain,ncnt,ncoefcntmain);
+         zq[sumc(nc)+nord+1:sumc(nc)+nord+ncnt,ncoefunord+ncoeford+1:ncoefunord+ncoeford+ncoefcntmain]=ytempcntmain;
+      endif;
+   endif;
+
+   for j(1,ncnt,1);
+       maskdowncntq[j,nummaskcnt1[j]+1:nummaskcnt1[j+1]]=maskdowncnt[i1,nummaskcnt1[j]+1:nummaskcnt1[j+1]];
+       maskupcntq[j,nummaskcnt1[j]+1:nummaskcnt1[j+1]]=maskupcnt[i1,nummaskcnt1[j]+1:nummaskcnt1[j+1]];
+       xdowncnt = prepdoubcnt*maskdowncntq*xthreshcntall[.,i1];
+       xupcnt= prepdoubcnt*maskupcntq*xthreshcntall[.,i1];
+       xggcnt = (prepsingdowncnt*maskupcntq+prepsingupcnt*maskdowncntq)*xthreshcntall[.,i1];
+   endfor;
+
+   if ngrp>0;
+       selgrpqq = ((selq[hunordq+hordq+hcntq+1:hunordq+hordq+hcntq+hgrpq,nc3+nord+ncnt+1:nc3+nord+ncnt+ngrp])');   /* ngrp x hgrpq matrix  */
+       ytempgrp = yigrp[i1,.];
+       ytempgrp = reshape(ytempgrp,ngrp,ncoefgrp);
+       zq[nc4+nord+ncnt+1:nc4+nord+ncnt+ngrp,ncoefunord+ncoeford+ncoefcntmain+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp]=ytempgrp;
+       maskdowngrpq = zeros(ngrp,nummaskgrp);                            /* ngrp x [(total number of thresholds+2) across all grouped outcomes ] */
+       maskupgrpq = zeros(ngrp,nummaskgrp);
+       prepsinggrp=(diagrv(zeros(ngrp,ngrp),((indxsinggrp[i1,.])')));          /* All four prep matrices are ngrp by ngrp matrices */
+       prepsingdowngrp = (diagrv(zeros(ngrp,ngrp),((indxdowngrp[i1,.])')));
+       prepsingupgrp = (diagrv(zeros(ngrp,ngrp),((indxupgrp[i1,.])')));
+       prepdoubgrp =(diagrv(zeros(ngrp,ngrp),((indxdoubgrp[i1,.])')));
+   endif;
+
+   for j(1,ngrp,1);
+       maskdowngrpq[j,nummaskgrp1[j]+1:nummaskgrp1[j+1]]=maskdowngrp[i1,nummaskgrp1[j]+1:nummaskgrp1[j+1]];
+       maskupgrpq[j,nummaskgrp1[j]+1:nummaskgrp1[j+1]]=maskupgrp[i1,nummaskgrp1[j]+1:nummaskgrp1[j+1]];
+       xdowngrp = prepdoubgrp*maskdowngrpq*xthreshgrp;
+       xupgrp= prepdoubgrp*maskupgrpq*xthreshgrp;
+       xgggrp = (prepsingdowngrp*maskupgrpq+prepsingupgrp*maskdowngrpq)*xthreshgrp;
+   endfor;   
+   
+   if ncont>0;
+       selcontqq = ((selq[hunordq+hordq+hcntq+hgrpq+1:hunordq+hordq+hcntq+hgrpq+hcontq,nc3+nord+ncnt+ngrp+1:nc3+nord+ncnt+ngrp+ncont])');   /* ncont x hcontq matrix  */
+       ytempcont = yicont[i1,.];
+       zqforlater = reshape(ytempcont,ncont,ncoefcont);
+       zq[nc4+nord+ncnt+ngrp+1:totdep,ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont]=zqforlater;     /* ncont x ncoefcont */    
+   endif;
+
+   if nnom>0;
+       if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|xgggrp;
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|xdowngrp;
+           xup = zeros(nc3,1)|xupord|xupcnt|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xggcnt|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowncnt|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupcnt|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xggcnt;
+           xdown = zeros(nc3,1)|xdownord|xdowncnt;
+           xup = zeros(nc3,1)|xupord|xupcnt;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupcnt[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord|xgggrp;
+           xdown = zeros(nc3,1)|xdownord|xdowngrp;
+           xup = zeros(nc3,1)|xupord|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggord|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdownord|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupord|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggord;
+           xdown = zeros(nc3,1)|xdownord;
+           xup = zeros(nc3,1)|xupord;
+           indxcompq = zeros(nc3,1)|((indxup[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xggcnt|xgggrp;
+           xdown = zeros(nc3,1)|xdowncnt|xdowngrp;
+           xup = zeros(nc3,1)|xupcnt|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|xggcnt|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowncnt|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupcnt|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1)|xggcnt;
+           xdown = zeros(nc3,1)|xdowncnt;
+           xup = zeros(nc3,1)|xupcnt;
+           indxcompq = zeros(nc3,1)|((indxupcnt[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = zeros(nc3,1)|xgggrp|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|xdowngrp|zeros(ncont,1);
+           xup = zeros(nc3,1)|xupgrp|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = zeros(nc3,1)|xgggrp;
+           xdown = zeros(nc3,1)|xdowngrp;
+           xup = zeros(nc3,1)|xupgrp;
+           indxcompq = zeros(nc3,1)|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = zeros(nc3,1)|((ycont[i1,.])');
+           xdown = zeros(nc3,1)|zeros(ncont,1);
+           xup = zeros(nc3,1)|zeros(ncont,1);
+           indxcompq = zeros(nc3,1)|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = zeros(nc3,1);
+           xdown = zeros(nc3,1);
+           xup = zeros(nc3,1);
+           indxcompq = zeros(nc3,1);   
+       endif;
+   elseif nnom==0;
+       if nord>0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = xggord|xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = xdownord|xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = xupord|xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = xggord|xggcnt|xgggrp;
+           xdown = xdownord|xdowncnt|xdowngrp;
+           xup = xupord|xupcnt|xupgrp;
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = xggord|xggcnt|((ycont[i1,.])');
+           xdown = xdownord|xdowncnt|zeros(ncont,1);
+           xup = xupord|xupcnt|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = xggord|xggcnt;
+           xdown = xdownord|xdowncnt;
+           xup = xupord|xupcnt;
+           indxcompq = ((indxup[i1,.])')|((indxupcnt[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = xggord|xgggrp|((ycont[i1,.])');
+           xdown = xdownord|xdowngrp|zeros(ncont,1);
+           xup = xupord|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = xggord|xgggrp;
+           xdown = xdownord|xdowngrp;
+           xup = xupord|xupgrp;
+           indxcompq = ((indxup[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = xggord|((ycont[i1,.])');
+           xdown = xdownord|zeros(ncont,1);
+           xup = xupord|zeros(ncont,1);
+           indxcompq = ((indxup[i1,.])')|zeros(ncont,1);
+       elseif nord>0 and ncnt==0 and ngrp==0 and ncont==0;
+           xgg = xggord;
+           xdown = xdownord;
+           xup = xupord;
+           indxcompq = ((indxup[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont>0;
+           xgg = xggcnt|xgggrp|((ycont[i1,.])');
+           xdown = xdowncnt|xdowngrp|zeros(ncont,1);
+           xup = xupcnt|xupgrp|zeros(ncont,1);
+           indxcompq = ((indxupcnt[i1,.])')|((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp>0 and ncont==0;
+           xgg = xggcnt|xgggrp;
+           xdown = xdowncnt|xdowngrp;
+           xup = xupcnt|xupgrp;
+           indxcompq = ((indxupcnt[i1,.])')|((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont>0;
+           xgg = xggcnt|((ycont[i1,.])');
+           xdown = xdowncnt|zeros(ncont,1);
+           xup = xupcnt|zeros(ncont,1);
+           indxcompq = ((indxupcnt[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt>0 and ngrp==0 and ncont==0;
+           xgg = xggcnt;
+           xdown = xdowncnt;
+           xup = xupcnt;
+           indxcompq = ((indxupcnt[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont>0;
+           xgg = xgggrp|((ycont[i1,.])');
+           xdown = xdowngrp|zeros(ncont,1);
+           xup = xupgrp|zeros(ncont,1);
+           indxcompq = ((indxupgrp[i1,.])')|zeros(ncont,1);
+       elseif nord==0 and ncnt==0 and ngrp>0 and ncont==0;
+           xgg = xgggrp;
+           xdown = xdowngrp;
+           xup = xupgrp;
+           indxcompq = ((indxupgrp[i1,.])');
+       elseif nord==0 and ncnt==0 and ngrp==0 and ncont>0;
+           xgg = ((ycont[i1,.])');
+           xdown = zeros(ncont,1);
+           xup = zeros(ncont,1);
+           indxcompq = zeros(ncont,1);   
+       endif;
+   endif;
+
+   seed20=seednext;
+
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      xxj = x[rows(x)-sumnivinter+1:rows(x)];
+      xxj = xxj.*onetemp;   /* sumnivinter x ncont matrix  */
+      { gxxj } = gradelproduct(xxj,onetemp);     /* gxxj is sumnivinter x (sumnivinter x ncont) matrix  */
+      contval = zqforlater*xcont; 
+      yinterfin = yintercont[i1,.];
+      yinterfin = reshape(yinterfin,totdep,sumnivinter);
+      vinterfin = yinterfin*xxj*contval;      /*                yinterfin is (totdep x sumnivinter); xxj is sumnivinterx ncont;
+                                                                           zqforlater is ncontxncoefcont; xcont is ncoefcontx1; 
+                                                                           contval = (zqforlater*xcont) is ncontx1; 
+                                                                           [yinterfin*(zqforlater*xcont)] is (hnom+hordcont)x1 vector; 
+                                                                           vinterfin is [(sumc(nc)+nordcont)x1] = (wierd theta'.*xfinn')*xtilde   *(w         *alpha)   */ 
+       newcov = eye(totdep);  
+       newcov[.,sumc(nc)+nord+ncnt+ngrp+1:cols(newcov)]=newcov[.,sumc(nc)+nord+ncnt+ngrp+1:cols(newcov)]+yinterfin*xxj;
+       _omsymmetric=0; _omdiagonal=0;
+       gwtilde = yinterfin' .*. eye(cols(xxj));    /* (sumnivinter*ncont) x (totdep*ncont)  */
+       gwtilde1 = gxxj*gwtilde;                     /* sumnivinter x (totdep*ncont) */
+       gxfinal = gAomegaB(yinterfin,contval);      /* (sumnivinter*ncont) x (totdep*1) */ 
+       gxxjfinal = gxxj*gxfinal;                    /* sumnivinter x totdep   */
+       tempinter = yinterfin*xxj*zqforlater;        /* totdep x ncoefcont  */
+       ginteractxcont = zeros(ncoefunord+ncoeford + ncoefgrp,(sumc(nc)+nordcont))|((tempinter)');  /* (ncoefunord+ncoeford+ncoefcont) x (totdep) matrix */ 
+   endif;
+   
+   if nnom>0;
+       { Msubq,indxoneq,indxeqq } = Mutodu(nnom,nc,((altchosen[i1,.])'),0,0,0,nord+ncnt+ngrp,ncont);  /* M sub q is b x a matrix ; b = nc3+nordcont ; a = sumc(nc)+nordcont  */
+   else;
+       Msubq = eye(nordcont);
+       indxoneq = zeros(nordcont,1);
+       indxeqq = zeros(nordcont,1);
+       if ncont>0;
+          if nordcont>ncont;
+             indxeqq = zeros(nordcont-ncont,1)|ones(ncont,1);
+          else;
+             indxeqq = ones(ncont,1);
+          endif;       
+       endif;
+   endif;
+
+   Msubq = selq*Msubq;         /* For each individual, selecting only available dimensions; (M sub q is # of available dimensions-1) x a matrix; a = sumc(nc)+nordcont   */
+   Vsubq = zq*xfin;    /* (sumc(nc)+nordcont)x1  */
+   xisubq = (omegker);           /* xisubq is axa matrix, a = sumc(nc)+nordcont */
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+      Vsubq = Vsubq+vinterfin; 
+      xisubq = newcov*omegker*newcov';
+      _x2symmetric=1; _x1diagonal=0;_x1symmetric=0;_x2diagonal=0;_x2correlation=0; 
+      { ggnewcov,ggomegker } = gbothxomegax(newcov,omegker);
+      ggnewcov = ggnewcov[design1,.]|ggnewcov[designcont,.];      /* [totdep*(ncont)] x (a*(a+1)/2); a = totdep */  
+      _OMEGACORR=0; _XOMEGAXT=0;
+      gcovker = gomegxomegax(Msubq*newcov*convdutou);  /* convdutou is a x b matrix; gcovker is [b*(b+1)/2]x[h*(h+1)/2]; a=(sumc(nc)+nordcont), b=(nc3+nordcont) */
+      gxisubq = gomegxomegax(Msubq);                   /* [a*(a+1)/2]X[h*(h+1)/2]; a=totdep, b=(nc3+nordcont) */
+      ggnewcovtemp = ggnewcov*gxisubq;                  /* [totdep*ncont] x [h*(h+1)/2] matrix */
+   else;
+      gcovker = gomegxomegax(Msubq*convdutou);         /* [b*(b+1)/2]X[h*(h+1)/2]; a=(totdep), b=(nc3+nordcont) */
+   endif;
+
+   if nord>0;
+       indxoneq[nc3+1:nc3+nord] = (indxsing[i1,.])';
+   endif;
+   if ncnt>0;
+       indxoneq[nc3+nord+1:nc3+nord+ncnt] = (indxsingcnt[i1,.])';
+   endif;
+   if ngrp>0;
+       indxoneq[nc3+nord+ncnt+1:nc3+nord+ncnt+ngrp] = (indxsinggrp[i1,.])';
+   endif;     
+   
+   xgg = selq*xgg; xdown = selq*xdown;  xup = selq*xup;  indxoneq=selq*indxoneq;  indxcompq = selq*indxcompq;  indxeqq = selq*indxeqq;         
+   Bsubq = Msubq*((Vsubq));    /* B sub q is (b)x1 ; M sub q is h x a matrix (h=b only when all alternatives are available in nominal and all non-nominal outcomes are available); b = nc3+nordcont ; a = sumc(nc)+nordcont  */
+   newxisubq = Msubq*xisubq*Msubq';
+   _covarr = 1;
+   if ntotcoef==0;
+      Bsubq = zeros(rows(newxisubq),1);
+   endif;
+   { P,gBsubq,gnewxisubq,gxg,gxdown,gxup,sss } = gradpdfrectn(Bsubq,newxisubq,xgg,xdown,xup,seed20,indxoneq,indxcompq,indxeqq);
+   /* gBsubq - (h=# of available alternatives in nominal plus # of available non-nominal variables) x 1 vector */
+   /* gnewxisubq - [(h)*(h+1)/2] x 1 vector  vector */
+   gVsubq = Msubq';                                                      /* (totdep))x (h) matrix; i.e. a x h matrix */
+   gxmu = zq';                                                           /* (ncoefunord+ncoeford+nceofcnt+ncoefgrp+ncoefcont) x (totdep)   */
+   gxmufinal = gxmu*gVsubq*gBsubq;                                       /* (ncoefunord+ncoeford+ncoefcnt+ncoefgrp+ncoefcont) x 1 vector */
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+       gxmuintercont = gxxjfinal*gVsubq*gBsubq;                          /* [(sumnivinter)x 1 vector */
+       gxmufinal = gxmufinal+ginteractxcont*gvsubq*gBsubq;               /* (ncoefunord+ncoeford+ncoefcnt+ncoefgrp+ncoefcont) x 1 vector */
+       gwierdtilde = ggnewcovtemp*gnewxisubq;    /*   [totdep*ncont] x 1 vector */
+       gwierdtilde1 = gwtilde1*gwierdtilde;   /* [sumnivinter] x 1 vector  */ 
+       gxmuintercont = gxmuintercont+gwierdtilde1;  /* [(sumnivinter)x 1 vector */   
+   endif;
+
+   if nord>0;
+       gxthreshord = selordqq*gxg[hunordq+1:hunordq+hordq];                                    /* All three below are nord X 1 vectors; hordq=nord if all ordered outcomes are available for individual */
+       gxdowno = selordqq*gxdown[hunordq+1:hunordq+hordq];
+       gxupo = selordqq*gxup[hunordq+1:hunordq+hordq];
+       gxggord=((prepsingdown*maskupq+prepsingup*maskdownq)')*gxthreshord;
+       gxdownord = ((prepdoub*maskdownq)')*gxdowno;
+       gxupord = ((prepdoub*maskupq)')*gxupo;
+       gxthreshfin = gxggord+gxdownord+gxupord;  /* Accumulate across all observations and remove first and last elements (-inf and +inf) */
+   endif;
+
+   gordthreshfin={};
+   for j(1,nord,1);
+       gthreshfini = gxthreshfin[nummask1[j]+1:nummask1[j+1]];
+       gthreshfini = gthreshfini[2:ncord[j]];
+       gordthreshfin = gordthreshfin|gthreshfini;
+   endfor;
+   if nord>0;
+      gordfin = gordthreshfin|gxmufinal[ncoefunord+1:ncoefunord+ncoeford];
+   else;
+      gordfin = {};
+   endif;
+   
+   if ncnt>0;
+       gxthreshc = selcntqq*gxg[hunordq+hordq+1:hunordq+hordq+hcntq];                                    /* All three below are nord X 1 vectors; hordq=nord if all ordered outcomes are available for individual */
+       gxdownc = selcntqq*gxdown[hunordq+hordq+1:hunordq+hordq+hcntq];
+       gxupc = selcntqq*gxup[hunordq+hordq+1:hunordq+hordq+hcntq];
+       gxggcnt=((prepsingdowncnt*maskupcntq+prepsingupcnt*maskdowncntq)')*gxthreshc;                   /* nummaskcnt x ncnt matrix */
+       gxdowncnt = ((prepdoubcnt*maskdowncntq)')*gxdownc;                                               /* nummaskcnt x ncnt matrix */
+       gxupcnt = ((prepdoubcnt*maskupcntq)')*gxupc;                                                     /* nummaskcnt x ncnt matrix */
+       gxthreshfincnt1 = gxggcnt+gxdowncnt+gxupcnt;  /* nummaskcnt (sumc(ncntmax[j]+2) x 1 gradients with respect to all count thresholds (psi sub k thresholds)*/
+       ytempcnt = yifincntgamma[i1,.];
+       ytempcnt1 = reshape(ytempcnt,ncnt,ncoefcntgamma);
+   endif;
+    
+   gxthetafincnt = {};
+   gxlambdafincnt = {};
+   gxalphafincnt = {};
+   for j(1,ncnt,1);
+       gxthreshfincnt = (gxthreshfincnt1[nummaskcnt1[j]+1:nummaskcnt1[j+1]]);   /* (ncntmax[j]+2) x 1 vector  */
+       gxthreshfincnt = gxthreshfincnt[2:rows(gxthreshfincnt)];                  /* (ncntmax[j]+1) x 1 vector */
+       if numcntthresh[j]>0;
+          gxalphafincnt = gxalphafincnt|((galphavector1[ncntthresh1[j]+1:ncntthresh1[j+1],nummaskcntadd11[j]+1:nummaskcntadd11[j+1]])*gxthreshfincnt);
+       else;
+          gxalphafincnt = {};
+       endif;
+       gxthetafincnt = gxthetafincnt|((gthetafull[i1,nummaskcntadd11[j]+1:nummaskcntadd11[j+1]])*gxthreshfincnt);
+       gxlambdafincnt = gxlambdafincnt|((glambdafull[i1,nummaskcntadd11[j]+1:nummaskcntadd11[j+1]])*gxthreshfincnt);      
+   endfor;
+ 
+   if ncnt>0;
+      gxlambdafinfincnt = ytempcnt1'*gxlambdafincnt;
+      if numcntmain>0;
+         gcntfin = gxalphafincnt|gxthetafincnt|gxlambdafinfincnt|gxmufinal[ncoefunord+ncoeford+1:ncoefunord+ncoeford+ncoefcntmain];
+      else;
+         gcntfin = gxalphafincnt|gxthetafincnt|gxlambdafinfincnt;
+      endif;       
+   else;
+      gcntfin = {};
+   endif;
+   
+   if ngrp>0;
+       ggrpfin = gxmufinal[ncoefunord+ncoeford+ncoefcntmain+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp];
+   else;
+       ggrpfin = {};
+   endif;
+ 
+   if ncont>0;
+       gcontfin = gxmufinal[ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+1:ncoefunord+ncoeford+ncoefcntmain+ncoefgrp+ncoefcont];
+   else;
+       gcontfin = {};
+   endif;
+   
+   gfinW1 = gW1*gcovker*gnewxisubq;                                   /* b x 1 vector  */
+   if nscale>0;
+       gfinW1 = gfinW1[indxW];                                           /* number of distinct scale parameters x 1 vector */
+   else;
+       gfinw1 = {};
+   endif;
+   gfinstar = gtempstar*gcovker*gnewxisubq;                          /* [b x (b+1)/2] x 1 vector */
+   
+   Pcomp = pcomp|P;
+   if nnom>0;
+       g = ((gxmufinal[1:ncoefunord])')~(gordfin')~(gcntfin')~(ggrpfin')~(gcontfin')~(gfinstar')~(gfinW1');
+   elseif nnom==0;
+       g = (gordfin')~(gcntfin')~(ggrpfin')~(gcontfin')~(gfinstar')~(gfinW1');
+   endif;
+
+   if _nomcont or _ordcont or _cntcont or _grpcont or _contcont;
+       g = g~gxmuintercont';
+   endif;
+   
+   gfinal = gfinal|g;
+   seednext=sss;
+endfor;
+
+w=zeros(e1,1);
+if pcomp <= w;
+   pcomp=pcomp-((pcomp.<=w).*(pcomp-0.0001));
+endif;
+g1 = gfinal./pcomp;
+retp(dta[.,_weight].*g1);
+endp;
+
+proc (2) = init(dataset,dvv);
+  local fin,dta,obs,c,ncon,i,j,st,p,s,n;
+  open fin = ^dataset;
+  do until eof(fin);
+    dta = readr(fin,nobs);
+    obs = rows(dvv);
+    c = unique(dvv,1);
+    n = rows(c);
+    ncon = n-1;
+    i = 0;
+    s = zeros(n,1);
+    do until i == n;
+       i=i+1;
+       s[i]=sumc(dta[.,_weight].*(dvv .== i));
+    endo;
+  endo;
+  fin = close(fin);
+  clear p;
+  j=1;
+  do until j == n+1;
+    p=p|s[j]+p[rows(p)];
+    j=j+1;
+  endo;
+  p=trimr(p,1,1)/p[rows(p)];
+  st = cdfni(p);
+  retp(n,st);
+endp;
+
+proc (4) = initcnt(dataset,dvv);
+  local fin,nmax,nmin,dta,obs,c,ncon,i,j,st,p,s,n,smin,sminplus1,gammaconst;
+  open fin = ^dataset;
+  do until eof(fin);
+    dta = readr(fin,nobs);
+    obs = rows(dvv);
+    c = unique(dvv,1);
+    nmax = maxc(c);
+    nmin = minc(c);
+    n = rows(c);
+    i = 0;
+    s = zeros(2,1);
+    smin = sumc(dta[.,_weight].*(dvv .== (nmin)));
+    sminplus1 = sumc(dta[.,_weight].*(dvv .== (nmin+1)));
+    gammaconst = (sminplus1/smin)*(nmin+1); 
+  endo;
+  fin = close(fin);
+  retp(nmin,nmax,n,gammaconst);
+endp;
+
+proc (3) = initgrp(dataset,dvv,grptemp);    /* grptemp is number of thresholds (ncon) x 1 vector  */
+  local fin,dta,obs,c,ncon,i,j,st,p,s,n,grpmed,grpmean,grpstd;
+  open fin = ^dataset;
+  do until eof(fin);
+    dta = readr(fin,nobs);
+    obs = rows(dvv);
+    c = unique(dvv,1);
+    n = rows(c);
+    ncon=n-1;
+    i = 0;
+    if n>2;
+       grpmed = ((trimr(grptemp,1,0))+grptemp[1:ncon-1])/2; 
+       grpmed = (grptemp[1]/2)|grpmed|(2*grptemp[ncon]-grptemp[ncon-1]);  /* "midpoint" values for each grouped outcome */
+    else;
+       grpmed = (grptemp[1]/2)|(grptemp[1]*3/2);
+    endif;
+    s = zeros(n,1);
+    do until i == n;
+       i=i+1;
+       s[i]=sumc(dta[.,_weight].*(dvv .== (i)));
+    endo;
+  endo;
+  fin = close(fin);
+  grpmean = (sumc((s.*grpmed)))/(sumc(s));
+  grpstd = sqrt((sumc((s.*((grpmed-grpmean)^2))))/(sumc(s)));
+  retp(n,grpmean,grpstd);    /* n is total number of windows, grpmean is imputed mean, grpstd is imputed sd, grptemp is the set of threshold values */
+endp;
+
+
+
+proc (1) = init1(dataset,dvv);
+  local fin,dta,obs,c,i,j,st,p,s,n;
+  open fin = ^dataset;
+  do until eof(fin);
+    dta = readr(fin,nobs);
+    obs = rows(dta);
+    c = sumc(dvv);
+    c = ln(c/c[1]);
+    c = c[2:rows(c)];
+    c = (sqrt(3)*c)/(pi);
+  endo;
+  fin = close(fin);
+  retp(c);
+endp;

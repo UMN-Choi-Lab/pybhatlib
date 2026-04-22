@@ -1,0 +1,785 @@
+/******************************************************************************************************************************************************
+** (C) Copyright 2024 by Bhat 
+** All Rights Reserved.
+******************************************************************************************************************************************************
+
+** MNP analytic-based estimation - This is MNP cross-sectional model estimation code using a variety of different analytic approximation 
+   methods for the multivariate cumulative normal; The code uses analytic gradients, all written by Bhat.
+   
+** Use this for mixture-of-normals distributed random coefficients; this code supersedes MNPmix, which is specifically for the case of one segment;
+   this code can be used for any number of segments with a mixture-of-normals 
+
+** Please cite the following two papers, on which this code is based, if you use this code in any way:
+
+Bhat, C.R. (2018), "New Matrix-Based Methods for the Analytic Evaluation of the Multivariate Cumulative 
+Normal Distribution Function," Transportation Research Part B, Vol. 109, pp. 238-256 
+
+Saxena, S., Bhat, C.R., and Pinjari, A.R. (2023), "Separation-based Parameterization Strategies for Estimation 
+of Restricted Covariance Matrices in Multivariate Model Systems," Journal of Choice Modelling, Vol. 47, 100411 
+******************************************************************************************************************************************************
+
+Available analytic methods:
+
+        _method =        "SSJ"                     - Switzer, Solow, and Joe Method
+                         "TG"                      - Trinh and Genz's univariate conditioning approximation procedure
+                         "ME"                      - The traditional ME approach, implemented in a new matrix-based and LDLT-based manner
+                         "OVUS"                    - One-variate univariate screening approach
+                         "OVBS"                    - One-variate bivariate screening approach
+                         "TGBME"                   - Trinh and Genz's bivariate conditioning approximation procedure
+                         "BME"                     - Bivariate ME approach
+                         "TVBS"                    - Two-variate bivariate screening approach   */
+
+library maxlik, bhatlib; //You should have the GAUSS maxlik library to use this code
+maxset;
+format /m1/rzt 1,6;
+
+
+/* How do you want to parameterize the Cholesky of the Correlation Matrix */
+
+_Spher = 0;        /* Put _Spher =1 if you want spherical coordinate parameterization and 0 if you want radial coordinate parameterization */
+
+/*****************************************************************************************************************************************************/
+/*             Specification of path, data set specifications, analytic approximation method to be used (and related globals)                                                                                  */
+/*****************************************************************************************************************************************************/
+fname =  "C:/Users/dar4836/pybhatlib/Gauss Files and Comparison/MNP/TRAVELMODE.csv"; //ADD FULL DIRECTORY PATH AND CSV FILE NAME
+tempdata = csvreadM(fname,2);
+headers = getheaders(fname);
+dat_file = "C:/Users/dar4836/pybhatlib/Gauss Files and Comparison/MNP/TRAVELMODE.dat"; //ADD FULL DIRECTORY PATH AND DAT FILE NAME
+ret = saved(tempdata,dat_file, headers);
+dataset = dat_file;
+
+nobs = 1125;  
+_method = "OVUS";
+_perms = 1;                                    /* Number of random permutations if using SSJ */   
+_wantcovariance=1;                             /* If you want to translate estimates into covariance/kernel estimates */
+
+_start=0;                                     /* Have starting values (_start=1) for the parameter estimates or do you want the program to generate starting values too?  */
+_mix = 0;                                      /* Random coefficients on one or more non-constants? If random coefficients are present, __mix=1; otherwise 0 */
+if _mix;
+   _randdiag = 0;                              /* If random coefficients are present, do you want diagonal covariance matrix of random coefficients (if so, _randiag=1) */
+endif;
+
+nseg = 1;                                      /* Number of segments */
+seed10 = 70000000; ;                           /* In case allowing SSJ method  */
+
+/**********************************************************************************************************************************************
+                               covariance restriction specification for nominal variable
+**********************************************************************************************************************************************/
+
+_IID = 0;        /* if wanting independent and identical kernel estimation; put _IID=1 */
+_heteronly = 0;  /* If _IID=0, you can put _heteronly = 1; if _IID=1,
+                    _heteronly value does not matter; important to note that this specification relates to heteroscedasticity in the differenced 
+                    covariance matrix with the scale of the first element in the differenced matrix normalized to 1; just puts all estimable 
+                    correlation parameters in the differenced matrix to zero, leading to much fewer parameters estimated; Essentially, if
+                    willing to assume that the first alternative in nc has near-zero variance AND not correlated with any other alternative, 
+                    this specfication is saying there is no error correlation in the other nc-1 alternatives; that is, this specification is 
+                    not equivalent to heteroscedasticity of the utilities of the original nc alternatives; Basically, with the MNP, you are 
+                    estimating only the differenced matrix, which may not be compatible with an a priori-assumed original covariance matrix;
+                    Generally put this to zero, except if you would like to put this as 1 to get start values for the case when
+                    _heteronly=0 */
+_IIDFIRST = 0;   /* if you want to start off with IID Kernel regardless of _IID and _heteronly values; Generally put this to zero */ 
+
+/*******************************************************************************************************************************************************/
+/*                                     Data set specification                                                                                           */
+/*******************************************************************************************************************************************************/
+
+{ obsid,ivobsid } = indices(dataset,"CASE");           /* position of pointer to observation number in data set */
+
+/* The dataset should have a column of one (named UNO) and a column of zero (named SERO) */ 
+
+{ unoindx,_uno } = indices(dataset,"UNO");           /* position of pointer to observation number in data set */
+{ seroindx,_sero } = indices(dataset,"SERO");           /* position of pointer to observation number in data set */
+
+dvunordname = {   Alt1_ch Alt2_ch Alt3_ch };          /* position of pointer to observation number in data set */
+davunordname = {  UNO UNO UNO };            /* position of pointer to availability of alternatives in data set */
+
+/* Independent variable specification below; Put alternative specific constants FIRST; Have one row for each alternative and for each segment, so
+   the number of rows below will be #alts x nseg */
+
+let ivunord =  {	SERO SERO AGE45 SERO  IVTT_DA OVTT_DA  COST_DA ,
+                    UNO  SERO SERO  AGE45 IVTT_SR OVTT_SR  COST_SR ,
+                    SERO UNO  SERO  SERO  IVTT_TR OVTT_TR  COST_TR  };
+                        
+/* Specify the corresponding user-defined coefficient names below for printing on the output screen; inout must equal number of columns of ivunord */                       
+                    
+var_unordnames   =  { CON_SR CON_TR AGE45_DA AGE45_SR IVTT OVTT1 COST };   
+
+/* Specify random coefficients position with respect to var_unordnames */
+
+if _mix;  
+   ranvars = {  };
+/*   ranvars = { TT1 CST1 TT2 CST2 };  */ 
+   nrand = 2;     /* Number of random coefficients per segment */
+/*    ranvars = { TT1 TT2 }; 
+   nrand = 1;     /* Number of random coefficients per segment */   */
+endif;
+ 
+/*************************************************************************************************************************************************************/
+/*                                              NO NEED TO TOUCH ANYTHING BELOW
+                               Specification of coefficient types and start values/_max_active settings                                                      */
+/*************************************************************************************************************************************************************/
+
+if _iid == 1;
+   _heteronly=0;
+endif;
+
+seed10 = 70000000;        /* In case allowing SSJ method  */
+scal = 1;                 /* Scale used in spherical/radial parameterizations */
+nc = cols(dvunordname);
+iden_matrix = eye(nc-1);
+one_negative = -1*ones(nc-1,1);
+
+{ vdvunord,dvunord  } = indices(dataset,(dvunordname)');
+{ vdavunord,davunord } = indices(dataset,(davunordname)');
+{ vivunord,ivindx } = indices(dataset,vecr(ivunord));
+
+nvar = cols(ivunord);
+if _mix;
+   mixpos = (indcv(ranvars',var_unordnames'));
+   ncov = nrand*(nrand+1)/2;
+endif;
+nker = ((nc-1)*nc/2)-(nc-1);  /* Number of correlation parameters that can be estimated in most general specification */
+nscale = nc-2;                /* Number of scale parameters that can be estimated in most general specification */ 
+
+/* Arrange starting values so that means of all independent variables first, then cholesky of covariance matrix elements of any random coefficients,
+   and finally cholesky of kernel covariance elements; if you do not have starting values, and want the program to do everything, to begin, best to use equivalent of IID kernel covariance terms (though in differenced form) and
+   a zero covariance matrix for random coefficients; then use these as starting values to release kernel and random coefficient covariance matrices */
+
+{ bconst } = init1(dataset,dvunord);
+b = (bconst|(zeros(nvar-(nc-1),1)));
+if _mix==0;
+   b = b;
+   ncov = 0;
+   randname = {};
+   actrand = {};
+else;
+   ncov = nrand*(nrand+1)/2;          /* number of covariance elements for random coefficients in unordered model */
+   for i(1,nseg,1);
+       b = b|vecdup(0.1*i*eye(nrand));
+   endfor;
+   randname = 0 $+ "rcoef" $+ ftocv(seqa(1,1,ncov),2,0);
+   if _randdiag;
+      actrand = vecdup(eye(nrand));
+   else;
+      actrand = ones(ncov,1);
+   endif;
+   actrand = ones(nseg,1).*.(actrand);
+endif;
+
+startker = 0.5 * (eye(nc-1)) + 0.5 *ones((nc-1),(nc-1));     /* differenced kernel error term covariance if original alternative kernel errors are IID with variance 0.5 */
+startker = chol(startker);
+if _spher;
+   startker = revcholspherparmunconstscaled(startker,scal);
+else;
+   startker = revnewcholparmscaled(startker,scal);
+endif;
+scalker = ones(nscale,1);   
+
+actseg = {};
+b = b|startker|scalker;
+if nseg>1;
+   actseg = ones(nseg-1,1);
+   b = b|seqa(0.5,0.1,nseg-1);
+endif;
+
+if _iid or _iidfirst;
+   _max_active = ones(nvar,1)|actrand|zeros(nker,1)|zeros(nscale,1)|actseg;
+elseif _iid==0 and _iidfirst==0 and _heteronly;
+   _max_active = ones(nvar,1)|actrand|zeros(nker,1)|ones(nscale,1)|actseg;
+elseif _iid==0 and _iidfirst==0 and _heteronly==0;
+   _max_active = ones(nvar,1)|actrand|ones(nker,1)|ones(nscale,1)|actseg;    
+endif;
+
+/***********************************************************************************************************************************************************
+                                Main program area begins
+************************************************************************************************************************************************************/
+
+_row = nobs;
+nind=nobs;  /* for cross-sectional */
+
+open fin = ^dataset;
+ fpin = typef(fin);
+ nin = rowsf(fin);
+ do until eof(fin);
+   dta = readr(fin,nobs);
+ endo;
+fin = close(fin);
+ 
+popass = dta[.,ivobsid]; 
+depvar = dta[.,dvunord']; 
+availmat = dta[.,davunord'];
+indepvar = dta[.,ivindx'];
+
+print "The number of observations in the data is "; nobs;
+print;
+startTime = time();  
+varnammu = var_unordnames';
+
+/* associating columns with variable names for output */
+
+kername =  0 $+ "parker" $+ ftocv(seqa(1,1,nker),2,0);
+scalname = 0 $+ "scale" $+ ftocv(seqa(1,1,nscale),2,0);
+
+/* Start parameters vector and _max_active specs  */
+
+_mlhcond=0;
+_max_GradProc=&lgd;  
+_max_Options = { bfgs stepbt };
+_max_gradTol = 5e-5; 
+_max_CovPar = 2;
+_max_maxiters = 500;
+/* _max_GradCheckTol=1e-3;   */
+
+if _mix;
+    Cholcov =  0 $+ "CholCOv" $+ ftocv(seqa(1,1,nseg*ncov),2,0);
+    _max_ParNames=varnammu|cholcov|kername|scalname;
+else;
+    _max_ParNames=varnammu|kername|scalname;
+endif;
+
+segpar = {};
+if nseg>1;
+   segpar =  0 $+ "segpar" $+ ftocv(seqa(1,1,nseg-1),2,0);
+   _max_parnames = _max_parnames|segpar;
+endif;
+
+
+{ x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b)); 
+
+if _iidfirst and _iid==0 and _heteronly;
+   b=x;
+   _max_active = ones(nvar,1)|actrand|zeros(nker,1)|ones(nscale,1)|actseg;
+   { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b)); 
+elseif _iidfirst and _iid==0 and _heteronly==0;
+   b=x;
+   _max_active = ones(nvar,1)|actrand|ones(nker,1)|ones(nscale,1)|actseg;   
+  { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b)); 
+endif;
+
+if _wantcovariance;
+   _max_maxiters = 0;   
+   _max_GradProc=&lgd1;   
+   if _mix==0;
+      newker = x[nvar+1:nvar+nker];
+      newscale = x[nvar+nker+1:nvar+nker+nscale];
+   else;
+      newker =  x[nvar+nseg*ncov+1:nvar+nseg*ncov+nker];
+      newscale = x[nvar+nseg*ncov+nker+1:nvar+nseg*ncov+nker+nscale];
+   endif;    
+   if _spher;
+      newker1 = cholspherparmunconstscaled(newker,scal);  
+   else;
+      newker1 = newcholparmscaled(newker,scal);
+   endif;  
+   
+   newcorker = newker1;
+   newcorker = newcorker'*newcorker;
+   newcorker = vecndup(newcorker);
+   segunpar = {};
+   if nseg>1;
+      segunpar= 0 $+ "segunpar" $+ ftocv(seqa(1,1,nseg-1),2,0);
+   endif;
+   if _mix==0;
+      kername =  0 $+ "cor" $+ ftocv(seqa(1,1,nker),2,0);
+      _max_ParNames=varnammu|kername|scalname;
+      b = x[1:nvar]|newcorker|newscale;
+      { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr1,b)); 
+   else;
+      cholcov =  0 $+ "CovCOv" $+ ftocv(seqa(1,1,nseg*ncov),2,0);
+      _max_ParNames=varnammu|cholcov|kername|scalname|segunpar;
+      newcovcoef = {};
+      for i(1,nseg,1);
+         newcovcoef1 = matdup(x[nvar+(i-1)*ncov+1:nvar+i*ncov]);
+         newcovcoef = newcovcoef|vecdup((newcovcoef1'*newcovcoef1)); 
+      endfor;
+      if nseg>1;
+         newseg = exp(x[nvar+nseg*ncov+nker+nscale+1:nvar+nseg*ncov+nker+nscale+nseg-1]);
+         newseg1 = cumsumc(1|newseg);
+         newseg2 = newseg1/((sumc(newseg1)));
+         b = x[1:nvar]|newcovcoef|newcorker|newscale|newseg2[2:rows(newseg2)];
+      else;
+         b = x[1:nvar]|newcovcoef|newcorker|newscale;          
+      endif;
+      { x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr1,b));  
+   endif; 
+endif;
+
+endTime = time();
+timeTaken = endTime[4]/100+ endTime[3]+ endTime[2]*60+ endTime[1]*3600 - (startTime[4]/100+ startTime[3]+ startTime[2]*60+ startTime[1]*3600);
+
+/*****************************************************************************************************************************************************************
+                     Various procedures needed; no need to change anything here
+******************************************************************************************************************************************************************/
+
+/* procedure for log likelihood function calculation */
+
+proc lpr(x,dta);
+  local e1,xmu,xcov,xcov1,xcov2,xker,xscal,w1,cholker,omegastar,omegaker,covker,P,Pcomp,i,dataind,xsubq,ssubq,Vsubq,xisubq,Msubq,newxisubq,Bsubq,w,final;
+  local depvarq, availmatq,seednext,seed20,sss,xseg,xseg1,xseg5,p1,pseg;
+  e1 = rows(dta);
+  xmu = x[1:nvar];   
+  if _mix==0;
+     xker = x[nvar+1:nvar+nker];
+     xscal = x[nvar+nker+1:nvar+nker+nscale];  
+  else;
+     xcov2 = {};
+     for i(1,nseg,1);
+        xcov = x[nvar+(i-1)*ncov+1:nvar+i*ncov];
+        xcov1 = matdup(xcov);
+        xcov2 = xcov2|(xcov1'*xcov1);         
+     endfor;
+     xker = x[nvar+nseg*ncov+1:nvar+nseg*ncov+nker];
+     xscal = x[nvar+nseg*ncov+nker+1:nvar+nseg*ncov+nker+nscale];
+  endif;
+  xscal = 1|xscal;
+  xseg5 = {};  xseg = {}; 
+  if nseg>1;
+     xseg5 = x[nvar+nseg*ncov+nker+nscale+1:nvar+nseg*ncov+nker+nscale+nseg-1];
+     xseg = exp(xseg5);
+  endif;
+
+  W1 = diagrv(eye(nc-1),xscal);
+  if _spher;
+    cholker = cholspherparmunconstscaled(xker,scal);  
+  else;
+    cholker = newcholparmscaled(xker,scal);
+  endif;
+
+  omegastar = cholker'*cholker;
+  omegaker = w1*omegastar*w1;
+  
+  covker = zeros(nc,nc);
+  covker[2:nc,2:nc]=omegaker;   
+  
+  Pcomp={};
+  if popass[1]==1;
+    seednext=seed10;
+  endif; 
+  for i(1,e1,1); 
+     seed20=seednext;
+     dataind = indepvar[i,.];
+     xsubq = reshape(dataind,nc*nseg,nvar);            /* [nc*nseg] x nvar */
+     Vsubq = xsubq*xmu;                                 /* [nc*nseg] x 1 */
+     availmatq = availmat[i,.];  
+     depvarq=depvar[i,.];
+     Msubq = dM(depvarq,availmatq);
+     P =  0; 
+     if _mix;
+        if nseg>1;
+           xseg1 = cumsumc(1|xseg);
+           pseg  = xseg1/((sumc(xseg1)));
+        else;
+           pseg=1;
+        endif;
+        for j(1,nseg,1);
+           ssubq = xsubq[(j-1)*nc+1:j*nc,mixpos[(j-1)*nrand+1:j*nrand]];
+           xisubq = ssubq*xcov2[(j-1)*nrand+1:j*nrand,.]*ssubq'+(covker);          /* nc x nc */
+           Bsubq = Msubq*Vsubq[(j-1)*nc+1:j*nc];
+           newxisubq = Msubq*xisubq*Msubq';
+           { P1,sss } = cdfmvnanl(Bsubq,newxisubq,zeros(rows(Bsubq),1),seed20);  
+           seednext = sss;
+           P = P+pseg[j]*P1;             
+        endfor;
+     else;
+        xisubq = (covker);                             /* nc x nc, with first row and first column being zeros */
+        Bsubq = Msubq*Vsubq;
+        newxisubq = Msubq*xisubq*Msubq';
+        { P,sss } = cdfmvnanl(Bsubq,newxisubq,zeros(rows(Bsubq),1),seed20);
+     endif;         
+     Pcomp = pcomp|P;
+     seednext=sss;
+  endfor;  
+  w=zeros(e1,1);
+  if pcomp > w;
+     final=ln(pcomp);
+  else;
+     print "Check probability values";
+     final=ln(pcomp-((pcomp.<=w).*(pcomp-0.0001)));
+  endif;
+  retp(final);
+endp;
+ 
+
+/* procedure for gradient function calculation */
+
+proc lgd(x,dta);
+ local e1,xmu,xcov,xcov1,xcov2,xker,xscal,w1,cholker,omegastar,omegaker,covker,P,Pcomp,i,dataind,xsubq,ssubq,Vsubq,xisubq,Msubq,newxisubq,Bsubq,w;
+ local seednext,seed20,sss,depvarq, availmatq,gomegastar;
+ local gfinal,gVsubq,gBsubq,gnewxisubq,gxisubq,gzero,gxmufinal,pseg,P1;
+ local gcholkerr,gker,gscal,gw11,gkernel,gkernelnew,gkernelfin,gw11fin,g,g1,gxcovnew,gxcovchol,gxcovcholf,xseg,xseg1;
+ local lseglog,gseglog,xseg5,gseglog1,p1new,gseg,gseg1;
+  e1 = rows(dta);
+  xmu = x[1:nvar];
+  if _mix==0;
+     xker = x[nvar+1:nvar+nker];
+     xscal = x[nvar+nker+1:nvar+nker+nscale];  
+  else;
+     xcov2 = {};
+     for i(1,nseg,1);
+        xcov = x[nvar+(i-1)*ncov+1:nvar+i*ncov];
+        xcov1 = matdup(xcov);
+        xcov2 = xcov2|(xcov1'*xcov1);         
+     endfor;
+     xker = x[nvar+nseg*ncov+1:nvar+nseg*ncov+nker];
+     xscal = x[nvar+nseg*ncov+nker+1:nvar+nseg*ncov+nker+nscale];
+  endif;
+  xscal = 1|xscal;
+
+  xseg5 = {};  xseg = {};
+  if nseg>1;
+     xseg5 = x[nvar+nseg*ncov+nker+nscale+1:nvar+nseg*ncov+nker+nscale+nseg-1];
+     xseg = exp(xseg5);
+  endif;
+  
+  W1 = diagrv(eye(nc-1),xscal);
+  if _spher;
+    cholker = cholspherparmunconstscaled(xker,scal);  
+  else;
+    cholker = newcholparmscaled(xker,scal);
+  endif;
+
+  omegastar = cholker'*cholker;
+  omegaker = w1*omegastar*w1;
+
+  covker = zeros(nc,nc);
+  covker[2:nc,2:nc]=omegaker;
+
+  { gW11,gomegastar } = gradcovcor(omegaker);      /* gW11 is [nc-1] X [B=(nc-1)*(nc)/2]; gomegastar is nker X [B=(nc-1)*(nc)/2] */
+  gw11 = gw11[2:rows(gw11),2:cols(gw11)];          /* gw11 is [nc-2=nscale] x (B-1);   */
+  gomegastar = gomegastar[.,2:cols(gomegastar)];   /* gomegastar is nker x (B-1); the B-1 because first diagonal in differenced matrix is normalized */
+  
+  if _spher;
+     { gker,gscal } = gcholspherunconstcorscaled(omegastar,scal);        /* gker is nker x nker matrix */
+     gcholkerr = gker*gomegastar;                                           /* gcholkerr is nker x (B-1) */
+  else;
+     { gker,gscal } = gnewcholparmcorscaled(omegastar,scal);
+     gcholkerr = gker*gomegastar;    
+  endif;
+  
+  Pcomp={};
+  gfinal = {};
+  
+  if popass[1]==1;
+    seednext=seed10;
+  endif; 
+
+  for i(1,e1,1); 
+     seed20=seednext;
+     dataind = indepvar[i,.];
+     xsubq = reshape(dataind,nc*nseg,nvar);            /* [nc*nseg] x nvar */
+     Vsubq = xsubq*xmu;                                 /* [nc*nseg] x 1 */
+     availmatq = availmat[i,.];
+     depvarq=depvar[i,.];
+     Msubq = dM(depvarq,availmatq);                    /* (A=# available alts-1) x nc */
+     P=0;
+     gxmufinal = zeros(nvar,1);
+     _OMEGACORR=0; _XOMEGAXT=0;
+     gkernel = ggradm(Msubq);                         /* [(B-1)=((nc-1)*(nc)/2)-1] x [A*(A+1)/2] */
+     gkernelfin = zeros(nker,1);
+     gw11fin = zeros(nscale,1);
+     if _mix;
+        gxcovcholf = {};
+        P1new = {};
+        xseg1 = cumsumc(1|xseg);
+        if nseg>1;
+           { pseg,gseg }  = gradlogitmod(ln(xseg1));                                 /* gseg is nseg x nseg */
+           { lseglog,gseglog } = gradlogsum(0|xseg5);                                /* gseglog is nseg x nseg */
+           gseglog1 = gseglog*gseg;                                                  /* gseglog1 is nseg x nseg */
+        else;
+           pseg=1;
+           gseglog1=1;
+        endif;
+        for j(1,nseg,1);
+           ssubq = xsubq[(j-1)*nc+1:j*nc,mixpos[(j-1)*nrand+1:j*nrand]];           /* nc x nrand */
+           xisubq = ssubq*xcov2[(j-1)*nrand+1:j*nrand,.]*ssubq'+(covker);          /* nc x nc */
+           Bsubq = Msubq*Vsubq[(j-1)*nc+1:j*nc];                                   /* A x 1 */
+           newxisubq = Msubq*xisubq*Msubq';                                        /* A x A */
+           { P1,gBsubq,gnewxisubq,gzero,sss } = gradcdfmvnanl(Bsubq,newxisubq,zeros(rows(bsubq),1),seed20);
+               /* gBsubq is Ax1, gnewxisubq is A*(A+1)/2 x 1 */ 
+           seednext = sss;
+           P1new = p1new|P1;
+           P = P+pseg[j]*P1;   
+           gVsubq = (xsubq[(j-1)*nc+1:j*nc,.])'*(Msubq');                          /* nvar x A */
+           gxmufinal = gxmufinal+pseg[j]*gVsubq*gBsubq;                            /* nvar x 1 vector */
+           _OMEGACORR=0; _XOMEGAXT=0;
+           gxisubq = gomegxomegax(Msubq*ssubq);                                   /* ncov X [A*(A+1)/2]   */
+           gxcovnew = gxisubq*gnewxisubq;             /* ncov X 1 vector  */ 
+           gxcovchol = (gcholeskycov(xcov2[(j-1)*nrand+1:j*nrand,.]))*gxcovnew;                            /* ncov X 1 vector  */
+           gxcovcholf = gxcovcholf|(pseg[j]*gxcovchol);                                      /* [ncov*nseg] x 1 vector */
+           gkernelnew = gkernel*gnewxisubq;      /* (B-1) x 1 vector */
+           gkernelfin = gkernelfin+pseg[j]*gcholkerr*gkernelnew;    /* (nker x 1 vector)  */
+           gw11fin = gw11fin+pseg[j]*gw11*gkernelnew;            /* nscale x 1 vector */
+        endfor;      
+        gseg1 = gseglog1*P1new;                         /* nseg x 1 */
+     else;
+        xisubq = (covker);                             /* nc x nc, with first row and first column being zeros */
+        Bsubq = Msubq*Vsubq;                           /* A x 1 */
+        newxisubq = Msubq*xisubq*Msubq';               /* A x A */
+        { P,gBsubq,gnewxisubq,gzero,sss } = gradcdfmvnanl(Bsubq,newxisubq,zeros(rows(bsubq),1),seed20); 
+        gVsubq = (xsubq')*Msubq';                  /* (nvar x A) matrix */   
+        gxmufinal = gVsubq*gBsubq;                 /* nvar x 1 vector */
+        gkernelnew = gkernel*gnewxisubq;      /* (B-1) x 1 vector */
+        gkernelfin = gcholkerr*gkernelnew;    /* (nker x 1 vector)  */
+        gw11fin = gw11*gkernelnew;            /* nscale x 1 vector */
+     endif;         
+     
+     Pcomp = pcomp|P;
+     if _mix;
+        if nseg>1;
+           g = gxmufinal'~gxcovcholf'~gkernelfin'~gw11fin'~((gseg1[2:rows(gseg1)]'));
+        else;
+           g = gxmufinal'~gxcovcholf'~gkernelfin'~gw11fin';
+        endif;
+     else;
+        g = gxmufinal'~gkernelfin'~gw11fin';
+     endif;     
+     gfinal = gfinal|g;
+     seednext=sss;
+  endfor;  
+ w=zeros(e1,1);
+ if pcomp <= w;
+    pcomp=pcomp-((pcomp.<=w).*(pcomp-0.0001));
+ endif;
+ g1 = gfinal./pcomp;
+ retp(g1);
+endp;
+ 
+/* procedure for log likelihood function calculation with covariance elements*/
+
+proc lpr1(x,dta);
+ local e1,xmu,xcov,xcov2,xker,xscal,w1,omegastar,omegaker,covker,P,Pcomp,i,dataind,xsubq,ssubq,Vsubq,xisubq,Msubq,newxisubq,Bsubq,w,final;
+ local depvarq, availmatq,seednext,seed20,sss,xcov1,xseg,pseg,P1;
+  e1 = rows(dta);
+  xmu = x[1:nvar];   
+  if _mix==0;
+     xker = x[nvar+1:nvar+nker];
+     xscal = x[nvar+nker+1:nvar+nker+nscale];  
+  else;
+     xcov2 = {};
+     for i(1,nseg,1);
+        xcov = x[nvar+(i-1)*ncov+1:nvar+i*ncov];
+        xcov1 = matdupfull(xcov);
+        xcov2 = xcov2|xcov1;         
+     endfor;
+     xker = x[nvar+nseg*ncov+1:nvar+nseg*ncov+nker];
+     xscal = x[nvar+nseg*ncov+nker+1:nvar+nseg*ncov+nker+nscale];
+  endif;
+  xscal = 1|xscal;
+  xseg = {}; 
+  if nseg>1;
+     xseg = x[nvar+nseg*ncov+nker+nscale+1:nvar+nseg*ncov+nker+nscale+nseg-1];
+  endif;
+
+  W1 = diagrv(eye(nc-1),xscal);
+
+  omegastar = matndupdiagonefull(xker);
+  omegaker = w1*omegastar*w1;
+  covker = zeros(nc,nc);
+  covker[2:nc,2:nc]=omegaker;
+  
+  Pcomp={};
+  if popass[1]==1;
+    seednext=seed10;
+  endif; 
+  for i(1,e1,1); 
+     seed20=seednext;
+     dataind = indepvar[i,.];
+     xsubq = reshape(dataind,nc*nseg,nvar);            /* [nc*nseg] x nvar */
+     Vsubq = xsubq*xmu;                                 /* [nc*nseg] x 1 */
+     availmatq = availmat[i,.];  
+     depvarq=depvar[i,.];
+     Msubq = dM(depvarq,availmatq);
+     P =  0; 
+     if _mix;
+        if nseg>1;
+           pseg  = (1-sumc(xseg))|xseg;
+        else;
+           pseg=1;
+        endif;
+        for j(1,nseg,1);
+           ssubq = xsubq[(j-1)*nc+1:j*nc,mixpos[(j-1)*nrand+1:j*nrand]];
+           xisubq = ssubq*xcov2[(j-1)*nrand+1:j*nrand,.]*ssubq'+(covker);          /* nc x nc */
+           Bsubq = Msubq*Vsubq[(j-1)*nc+1:j*nc];
+           newxisubq = Msubq*xisubq*Msubq';
+           { P1,sss } = cdfmvnanl(Bsubq,newxisubq,zeros(rows(Bsubq),1),seed20);  
+           seednext = sss;
+           P = P+pseg[j]*P1;             
+        endfor;
+     else;
+        xisubq = (covker);                             /* nc x nc, with first row and first column being zeros */
+        Bsubq = Msubq*Vsubq;
+        newxisubq = Msubq*xisubq*Msubq';
+        { P,sss } = cdfmvnanl(Bsubq,newxisubq,zeros(rows(Bsubq),1),seed20);
+     endif;         
+     Pcomp = pcomp|P;
+     seednext=sss;
+  endfor;  
+  w=zeros(e1,1);
+  if pcomp > w;
+     final=ln(pcomp);
+  else;
+     print "Check probability values";
+     final=ln(pcomp-((pcomp.<=w).*(pcomp-0.0001)));
+  endif;
+  retp(final);
+endp;
+ 
+
+/* procedure for gradient function calculation */
+
+proc lgd1(x,dta);
+ local e1,xmu,xcov,xcov1,xcov2,xker,xscal,w1,omegastar,omegaker,covker,P,Pcomp,i,dataind,xsubq,ssubq,Vsubq,xisubq,Msubq,newxisubq,Bsubq,w;
+ local seednext,seed20,sss,depvarq, availmatq,gomegastar;
+ local gfinal,gVsubq,gBsubq,gnewxisubq,gxisubq,gzero,gxmufinal,pseg,P1;
+ local gw11,gkernel,gkernelnew,gseg2,gkernelfin,gw11fin,g,g1,gxcovnew,gxcovchol,gxcovcholf,xseg,p1new,gseg1;
+  e1 = rows(dta);
+  xmu = x[1:nvar];
+  if _mix==0;
+     xker = x[nvar+1:nvar+nker];
+     xscal = x[nvar+nker+1:nvar+nker+nscale];  
+  else;
+     xcov2 = {};
+     for i(1,nseg,1);
+        xcov = x[nvar+(i-1)*ncov+1:nvar+i*ncov];
+        xcov1 = matdupfull(xcov);
+        xcov2 = xcov2|xcov1;         
+     endfor;
+     xker = x[nvar+nseg*ncov+1:nvar+nseg*ncov+nker];
+     xscal = x[nvar+nseg*ncov+nker+1:nvar+nseg*ncov+nker+nscale];
+  endif;
+  xscal = 1|xscal;
+  xseg = {}; 
+  if nseg>1;
+     xseg = x[nvar+nseg*ncov+nker+nscale+1:nvar+nseg*ncov+nker+nscale+nseg-1];
+  endif;
+  W1 = diagrv(eye(nc-1),xscal);
+  omegastar = matndupdiagonefull(xker);
+  omegaker = w1*omegastar*w1;
+  
+  covker = zeros(nc,nc);
+  covker[2:nc,2:nc]=omegaker;
+
+  { gW11,gomegastar } = gradcovcor(omegaker);      
+  gw11 = gw11[2:rows(gw11),2:cols(gw11)];          
+  gomegastar = gomegastar[.,2:cols(gomegastar)];   
+  
+  Pcomp={};
+  gfinal = {};
+
+  if popass[1]==1;
+    seednext=seed10;
+  endif; 
+
+  for i(1,e1,1); 
+     seed20=seednext;
+     dataind = indepvar[i,.];
+     xsubq = reshape(dataind,nc*nseg,nvar);            /* [nc*nseg] x nvar */
+     Vsubq = xsubq*xmu;                                 /* [nc*nseg] x 1 */
+     availmatq = availmat[i,.];
+     depvarq=depvar[i,.];
+     Msubq = dM(depvarq,availmatq);                    /* (A=# available alts-1) x nc */
+     P=0;
+     gxmufinal = zeros(nvar,1);
+     _OMEGACORR=0; _XOMEGAXT=0;
+     gkernel = ggradm(Msubq);                         /* [(B-1)=((nc-1)*(nc)/2)-1] x [A*(A+1)/2] */
+     gkernelfin = zeros(nker,1);
+     gw11fin = zeros(nscale,1);
+     if _mix;
+        gxcovcholf = {};
+        P1new = {};
+        if nseg>1;
+           pseg  = (1-sumc(xseg))|xseg;
+        else;
+           pseg=1;
+        endif;
+        for j(1,nseg,1);
+           ssubq = xsubq[(j-1)*nc+1:j*nc,mixpos[(j-1)*nrand+1:j*nrand]];           /* nc x nrand */
+           xisubq = ssubq*xcov2[(j-1)*nrand+1:j*nrand,.]*ssubq'+(covker);          /* nc x nc */
+           Bsubq = Msubq*Vsubq[(j-1)*nc+1:j*nc];                                   /* A x 1 */
+           newxisubq = Msubq*xisubq*Msubq';               /* A x A */           { P1,gBsubq,gnewxisubq,gzero,sss } = gradcdfmvnanl(Bsubq,newxisubq,zeros(rows(bsubq),1),seed20);
+               /* gBsubq is Ax1, gnewxisubq is A*(A+1)/2 x 1 */ 
+           seednext = sss;
+           P1new = p1new|P1;
+           P = P+pseg[j]*P1;   
+           gVsubq = (xsubq[(j-1)*nc+1:j*nc,.])'*(Msubq');                          /* nvar x A */
+           gxmufinal = gxmufinal+pseg[j]*gVsubq*gBsubq;                            /* nvar x 1 vector */
+           _OMEGACORR=0; _XOMEGAXT=0;
+           gxisubq = gomegxomegax(Msubq*ssubq);                                   /* ncov X [A*(A+1)/2]   */
+           gxcovnew = gxisubq*gnewxisubq;             /* ncov X 1 vector  */ 
+           gxcovchol = gxcovnew;                            /* ncov X 1 vector  */
+           gxcovcholf = gxcovcholf|(pseg[j]*gxcovchol);                                      /* [ncov*nseg] x 1 vector */
+           gkernelnew = gkernel*gnewxisubq;      /* (B-1) x 1 vector */
+           gkernelfin = gkernelfin+pseg[j]*gomegastar*gkernelnew;    /* (nker x 1 vector)  */
+           gw11fin = gw11fin+pseg[j]*gw11*gkernelnew;            /* nscale x 1 vector */
+        endfor;
+        if nseg>1;
+           gseg2 = (-1*ones(nseg-1,1))~eye(nseg-1);
+           gseg1 = gseg2*P1new;                         /* (nseg-1) x 1 */
+        endif;
+     else;
+        xisubq = (covker);                             /* nc x nc, with first row and first column being zeros */
+        Bsubq = Msubq*Vsubq;                           /* A x 1 */
+        newxisubq = Msubq*xisubq*Msubq';               /* A x A */
+        { P,gBsubq,gnewxisubq,gzero,sss } = gradcdfmvnanl(Bsubq,newxisubq,zeros(rows(bsubq),1),seed20); 
+        gVsubq = (xsubq')*Msubq';                  /* (nvar x A) matrix */   
+        gxmufinal = gVsubq*gBsubq;                 /* nvar x 1 vector */
+        gkernelnew = gkernel*gnewxisubq;           /* (B-1) x 1 vector */
+        gkernelfin = gomegastar*gkernelnew;        /* (nker x 1 vector) */
+        gw11fin = gw11*gkernelnew;                 /* nscale x 1 vector */
+     endif;         
+     
+     Pcomp = pcomp|P;
+     if _mix;
+        if nseg>1;
+           g = gxmufinal'~gxcovcholf'~gkernelfin'~gw11fin'~((gseg1'));
+        else;
+           g = gxmufinal'~gxcovcholf'~gkernelfin'~gw11fin'; 
+        endif;
+     else;
+        g = gxmufinal'~gkernelfin'~gw11fin';
+     endif;     
+     gfinal = gfinal|g;
+     seednext=sss;
+  endfor;  
+ w=zeros(e1,1);
+ if pcomp <= w;
+    pcomp=pcomp-((pcomp.<=w).*(pcomp-0.0001));
+ endif;
+ g1 = gfinal./pcomp;
+ retp(g1);
+endp;
+
+proc (1) = init1(dataset,dvv);
+  local fin,dta,obs,dvv1,c;
+  open fin = ^dataset;
+  do until eof(fin);
+    dta = readr(fin,nobs);
+    obs = rows(dta);
+    dvv1 = dta[.,dvv];
+    c = sumc(dvv1);
+    c = ln(c/c[1]);
+    c = c[2:rows(c)];
+    c = (sqrt(3)*c)/(pi);
+  endo;
+  fin = close(fin);
+  retp(c);
+endp;
+
+
+
+proc (1) = dM(depvarq,availmatq);
+   local M,temp,alt_chosen,ch;
+   temp = delif((availmatq'),(depvarq'));
+   temp = (vectomat(temp))';
+   M = zeros((nc-1),nc);
+   Alt_chosen = maxindc((depvarq)');
+   if(Alt_chosen eq 1);
+	  M = one_negative ~ iden_matrix;
+   elseif(Alt_chosen eq nc);
+      M = iden_matrix ~ one_negative;
+   else;
+      ch = Alt_chosen;
+	  M = iden_matrix[.,1:ch-1] ~ one_negative ~ iden_matrix[.,ch:nc-1];
+   endif;	   
+   retp(temp*M); 
+endp;

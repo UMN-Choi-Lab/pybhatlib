@@ -1,0 +1,3187 @@
+/* Written by C. Bhat, November 2015-June 2024 
+** VECUP.src - various vector and matrix manipulation procedures
+** (C) Copyright 2024 by Bhat 
+** All Rights Reserved.
+** CHANGED RECTCOMBS AND RECTCOMBSGRAD NEAR LINE 1410 BECAUSE EARLIER WAY HAD A SMALL ISSUE WHEN LOWER BOUND WAS ZERO  
+******************************************************************************************************************************************
+** The File Header must accompany all files using any portion, in whole or in part, of this source
+** code, and the many gradient library procedures and other procedures written by Bhat and used by this code.  
+******************************************************************************************************************************************
+**
+** Purpose: picking out upper diagonal elements of a matrix (including diagonal) and converting to a column vector 
+**
+** Format:      { w } = vecdup(r)
+**
+** Input:       r - K x K matrix
+**              
+**
+** Output:      w - K x 1 vector. 
+**              
+**  r = { 1 2 3, 
+          2 4 5, 
+          3 5 6 };
+
+**  w =  1
+         2 
+         3
+         4
+         5
+         6 ;  
+
+*/
+
+library bhatlib;  
+
+#include vecup.ext
+
+proc vecdup(r);
+local h,c;
+    if cols(r) ne rows(r);
+        print "error: rows and columns not equal";
+    endif;
+    h = {};
+    c=1;
+    do until c >cols(r);
+      h = h~r[c,c:cols(r)];
+      c=c+1;
+    endo; 
+    retp(h');
+endp;
+
+/*
+** vecndup.src 
+**
+** Purpose: picking out upper diagonal elements of a matrix (excluding diagonal) and converting to a column vector 
+**
+** Format:      { w } = vecndup(r)
+**
+** Input:       r - K x K matrix
+**              
+**
+** Output:      w - [Kx(K-1)/2]x1 vector. 
+**           
+**  r = { 1 2 3, 
+          2 6 5, 
+          3 5 7 };
+
+**  w =  2 
+         3
+         5; 
+
+*/
+
+proc vecndup(r);
+local h,c;
+    if cols(r) ne rows(r);
+        print "error: rows and columns not equal";
+    endif;
+    h = {};
+    c=1;
+    do until c >cols(r)-1;
+      h = h~r[c,c+1:cols(r)];
+      c=c+1;
+    endo; 
+    retp(h');
+endp;
+
+/*
+** matdup.src 
+**
+** Purpose: Taking a column vector and converting it into an upper diagonal matrix including diagonal of the matrix 
+**
+** Format:      { w } = matdup(r)
+**
+** Input:       r - K x 1 matrix
+** Output:      w  - P x P matrix , P=(-1+sqrt(1+8K))/2;
+**              
+**
+**  r =  1
+         2 
+         3
+         4
+         5
+         6 ;
+
+**  w = { 1 2 3, 
+          0 4 5, 
+          0 0 6 };
+
+**              
+*/
+
+proc matdup(r);
+local p,i,j,L,c,sk;
+  p = (-1+(1+8*rows(r))^0.5)/2;
+  if (p*(p+1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else; 
+    L = zeros(p, p);
+    c = 1;
+    sk=1;
+    do until c>p;
+      L[c,c:p] = (r[sk:sk+p-c])';
+      sk=sk+p-c+1;
+      c=c+1;
+    endo; 
+    retp(L);
+  endif;
+endp;
+
+
+/*
+** matdupfull.src 
+**
+** Purpose: Taking a column vector of upper diagonal elements (including diagonal) and converting it into a full symmetric matrix including diagonal of the matrix 
+**
+** Format:      { w } = matdupfull(r)
+**
+** Input:       r - K x 1 matrix
+** Output:      w  - P x P matrix , P=(-1+sqrt(1+8K))/2;
+**              
+**
+**  r =  1
+         2 
+         3
+         4
+         5
+         6 ;
+
+**  w = { 1 2 3, 
+          2 4 5, 
+          3 5 6 };
+
+**              
+*/
+
+proc matdupfull(r);
+local p,i,j,L,Ldiag,c,sk;
+  p = (-1+(1+8*rows(r))^0.5)/2;
+  if (p*(p+1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else; 
+    L = zeros(p, p);
+    c = 1;
+    sk=1;
+    do until c>p;
+      L[c,c:p] = (r[sk:sk+p-c])';
+      sk=sk+p-c+1;
+      c=c+1;
+    endo; 
+    Ldiag=diag(L);
+    L=L+L';
+    L=diagrv(L,Ldiag);
+    retp(L);
+    endif;
+endp;
+
+/*
+** matndup.src 
+**
+** Purpose: Taking a column vector of upper diagonal elements and converting it into a matrix, with diagonal elements being sqrt of (1-sum of (non-diagonal elements^2) in column)
+**
+** Format:      { w } = matndup(r)
+**
+** Input:       r - K x 1 matrix
+**              
+**
+** Output:      w - PxP vector  ; p=(1+sqrt(1+8*K))/2. 
+**  r =  0.6
+         0.5 
+         0.5 ;
+
+**  w = { 1 0.6 0.5, 
+          0 0.8 0.5, 
+          0 0.0 0.7071 };  Note that w'w is a correlation matrix
+
+**              
+*/
+
+proc matndup(r);
+local d,p,i,j,L,c,sk;
+  p = (1+(1+8*rows(r))^0.5)/2;
+  if (p*(p-1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else;
+    L = zeros(p, p);
+    c=1;
+    sk=1;
+    do until c==p;
+       L[c,c+1:p] = (r[sk:sk+p-c-1])';
+       sk=sk+p-c;
+       c=c+1;
+     endo;       
+    clear c;
+    L[1,1]=1;
+    j=2;
+    do until j > p;
+        c = L[1:j-1,j];
+        d = 1-sumc((c^2));
+        if d<0;
+          print "problem here";
+          for i(1,j-1,1);
+            L[i,j]=0;
+            L[j,j]=1;
+          endfor;
+        else;
+          L[j,j]=sqrt(d);
+        endif;
+        j=j+1;
+    endo;
+  endif;  
+  retp(L);
+endp;
+
+
+
+
+/*
+** matndupdiagzero.src 
+**
+** Purpose: Taking a column vector of upper diagonal elememtns and converting it into a matrix, with diagonal elements being zero and 
+   lower diagonal elements being zero 
+**
+** Format:      { w } = matndupdiagzero(r)
+**
+** Input:       r - K x 1 matrix
+**              
+**
+** Output:      w - PxP vector  ; p=(1+sqrt(1+8*K))/2. 
+**  r =  0.6
+         0.5 
+         0.5 ;
+
+**  w = { 0 0.6 0.5, 
+          0 0.0 0.5, 
+          0 0.0 0.0 };  
+
+**              
+*/
+
+proc matndupdiagzero(r);
+local p,i,j,L,c,sk;
+  p = (1+(1+8*rows(r))^0.5)/2;
+  if (p*(p-1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else;
+    L = zeros(p, p);
+    c=1;
+    sk=1;
+    do until c==p;
+       L[c,c+1:p] = (r[sk:sk+p-c-1])';
+       sk=sk+p-c;
+       c=c+1;
+     endo;       
+
+  endif;  
+  retp(L);
+endp;
+
+
+
+
+/*
+** matndupdiagzerofull.src 
+**
+** Purpose: Taking a column vector of upper diagonal elememtns and converting it into a matrix, with diagonal elements being zero and 
+   upper diagonal filling lower diagonal to based on symmetry 
+**
+** Format:      { w } = matndupdiagzerofull(r)
+**
+** Input:       r - K x 1 matrix
+**              
+**
+** Output:      w - PxP vector  ; p=(1+sqrt(1+8*K))/2. 
+**  r =  0.6
+         0.5 
+         0.5 ;
+
+**  w = { 0.0 0.6 0.5, 
+          0.6 0.0 0.5, 
+          0.5 0.5 0.0 };  
+
+**              
+*/
+
+proc matndupdiagzerofull(r);
+local p,i,j,L,c,sk;
+  p = (1+(1+8*rows(r))^0.5)/2;
+  if (p*(p-1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else;
+    L = zeros(p, p);
+    c=1;
+    sk=1;
+    do until c==p;
+       L[c,c+1:p] = (r[sk:sk+p-c-1])';
+       sk=sk+p-c;
+       c=c+1;
+     endo;       
+  endif;  
+  retp(L+L');
+endp;
+
+
+
+/*
+** matndupdiagone.src 
+**
+** Purpose: Taking a column vector and converting it into a matrix, with diagonal elements being ones and lower diagonal elements being zeros
+**
+** Format:      { w } = matndupdiagone(r)
+**
+** Input:       r - K x 1 matrix
+**              
+**
+** Output:      w - PxP vector  ; p=(1+sqrt(1+8*K))/2. 
+**  r =  0.6
+         0.5 
+         0.5 ;
+
+**  w = { 1 0.6 0.5, 
+          0 1.0 0.5, 
+          0 0.0 1.0 };  
+
+**              
+*/
+
+proc matndupdiagone(r);
+local p,i,j,L,c,sk;
+  p = (1+(1+8*rows(r))^0.5)/2;
+  if (p*(p-1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else;
+    L = zeros(p, p);
+    c=1;
+    sk=1;
+    do until c==p;
+       L[c,c+1:p] = (r[sk:sk+p-c-1])';
+       sk=sk+p-c;
+       c=c+1;
+     endo;       
+     L = diagrv(L,ones(p,1));
+  endif;  
+  retp(L);
+endp;
+
+
+/*
+** matndupdiagonefull.src 
+**
+** Purpose: Taking a column vector and converting it into a matrix, with diagonal elements being ones and lower diagonal elements being filled too
+   based on symmetry with upper diagonal elements
+**
+** Format:      { w } = matndupdiagonefull(r)
+**
+** Input:       r - K x 1 matrix
+**              
+**
+** Output:      w - PxP vector  ; p=(1+sqrt(1+8*K))/2. 
+**  r =  0.6
+         0.5 
+         0.5 ;
+
+**  w = { 1.0 0.6 0.5, 
+          0.6 1.0 0.5, 
+          0.5 0.5 1.0 };  
+
+**              
+*/
+
+proc matndupdiagonefull(r);
+local p,i,j,L,c,sk;
+  p = (1+(1+8*rows(r))^0.5)/2;
+  if (p*(p-1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else;
+    L = zeros(p, p);
+    c=1;
+    sk=1;
+    do until c==p;
+       L[c,c+1:p] = (r[sk:sk+p-c-1])';
+       sk=sk+p-c;
+       c=c+1;
+     endo;     
+     L=L+L';  
+     L = diagrv(L,ones(p,1));
+  endif;  
+  retp(L);
+endp;
+
+
+
+
+/*
+** matcholeskycor.src  (actually, this is same as matndup.src).
+**
+** Purpose: Taking a column vector and converting it into a matrix that corresponds to the cholesky of a correlation matrix, 
+            with the input column vector being the Cholesky elements of the correlation matrix 
+**
+** Format:      { w } = matcholeskycor(r)
+**
+** Input:       r - K x 1 vector of cholesky elements
+**              
+**
+** Output:      w - PxP vector  ; p=(1+sqrt(1+8*K))/2. 
+**  r =  0.6
+         0.5 
+         0.4 ;
+
+**  w = { 1      0.6           0.5, 
+          0 sqrt(1-0.6^2)      0.4, 
+          0      0.0           sqrt(1-0.5^2-0.4^2)  };  
+
+**              
+*/
+
+proc matcholeskycor(r);
+local p,i,j,L,c,sk;
+  p = (1+(1+8*rows(r))^0.5)/2;
+  if (p*(p-1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else;
+    L = zeros(p, p);
+    c=1;
+    sk=1;
+    do until c==p;
+       L[c,c+1:p] = (r[sk:sk+p-c-1])';
+       sk=sk+p-c;
+       c=c+1;
+    endo;       
+    L[1,1]=1;
+    c=2;
+    do until c>p;
+       L[c,c]=sqrt(1-sumc(((L[.,c])^2)));
+       c=c+1;
+    endo;
+  endif;  
+  retp(L);
+endp;
+
+
+/*
+** Nondiag.src
+**
+** Purpose: Gets the non-diagonal elements of a matrix in a column vector  
+**
+** Format:      { w } = nondiag(r)
+**
+** Input:       r - K x K vector of cholesky elements
+**              
+**
+** Output:      w - (K^2-K) x 1 vector. 
+
+
+**  r =  1 2 3,
+         4 5 6,
+         7 8 9 };
+
+**  w = 2,
+        3,
+        4,
+        6,
+        7,
+        8 };
+
+**              
+*/
+
+proc nondiag(r);
+local p,L,c,L1;
+  p = rows(r); c = cols(r);
+  if p != c;
+    print "error in input matrix - not diagonal";
+    STOP;
+  else;
+    L = 1-eye(p);
+    L1 = selif(vecr(r),vecr(L));  
+    retp(L1);
+  endif;
+endp;
+
+/*
+** vecsymmetry.src 
+**
+** Purpose: Takes a square symmetric matrix, and creates a new matrix with each row unrolling out the symmetric elements 
+
+** Format:      { w } = vecsymmetry(r)
+**
+** Input:       r - Dimension of square matrix to be rolled out
+**              
+**  Say, r = 4
+** Implied input: { a11    a12     a13    a14.
+                    a12    a22     a23    a24,
+                    a13    a23     a33    a34,
+                    a14    a24     a34    a44  };
+
+** Output:      w - [(K X (K+1)/2] X K^2 matrix
+
+**  w = { 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0,
+          0 1 0 0 1 0 0 0 0 0 0 0 0 0 0 0,
+          0 0 1 0 0 0 0 0 1 0 0 0 0 0 0 0,
+          0 0 0 1 0 0 0 0 0 0 0 0 1 0 0 0,
+          0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 0,
+          0 0 0 0 0 0 1 0 0 1 0 0 0 0 0 0,
+          0 0 0 0 0 0 0 1 0 0 0 0 0 1 0 0,
+          0 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0,
+          0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0,
+          0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1  };
+ 
+**              
+*/
+
+
+
+Proc vecsymmetry(r); 
+local c,j,temp,temp1;
+temp1={};
+for c (1,r,1);
+   for j (c,r,1);
+       temp = zeros(r,r);
+       temp[c,j]=1;            temp[j,c]=1;
+       temp1 = temp1|reshape(temp,1,r*r);     /* temp1 is mechanism to add gradients of symmetric elements and get derivatives with respect to only upper triangular elements of CAPOMEGA */         
+   endfor;
+endfor;
+retp(temp1);
+endp;
+
+
+/*
+** vectranspose.src 
+**
+** Purpose: Creates an indicator vector to transform a matrix with respect to derivatives of the vectorization of the elements of a matrix A to 
+   derivatives with respect to the vectorization of the transpose elements of the matrix A.
+
+** Format:      { w } = vectranspose(r,c)
+**
+** Input:       r - rows of elements A
+**              c - columns of elements A
+
+
+** Output:      w - rc*1 vector for re-ordering rows. Let's say you have a matrix B and you have derivatives with respect to the vectorization of 
+                the elements of matrix A (say in matrix dvec(B)/dvec(A). Then, to get the derivatives with respect to the vectorization of 
+                the transpose elements of matrix A, you do the following:
+                dvec(B)/dvec(A') = submat(dvec(B)/dvec(A),w,0);
+                
+
+*/
+
+Proc vectranspose(r,c); 
+local c1,c2,c3;
+c1 = seqa(1,1,r*c);
+c2 = reshape (c1,r,c);
+c3 = vecr((c2'));
+retp(c3);
+endp;
+
+
+/* Vecindascending 
+**
+** Purpose: Creates an index of elements in ascending order 
+
+** Format:      { w } = vecindascending(r)
+**
+** Input:       r - vector r
+**            
+
+
+** Output:      w - same dimension as r with index of minimum element in r as first element, index of second lowest element as second 
+                    element, etc. 
+                
+
+*/
+
+Proc vecindascending(r); 
+local c1,c2,c3;
+c2=r;
+c3={};
+for i(1,rows(r),1);
+  c1 = minindc(c2);
+  c2[c1]=maxc(c2)+1;
+  c3=c3|c1;
+endfor;    
+retp(c3);
+endp;
+
+
+/* rearrange 
+**
+** Purpose: Rearranges a vector based on positioning on upper diagonal matrix of dimension m*/ 
+/*
+** Format:      { w } = rearrange(r)
+**
+** Input:       r - column vector r based on upper diagonal of m; dimension of r should be (m*(m+1)/2) x 1
+**            
+
+
+** Output:      w - same dimension as r                 
+
+Example: r = ( 1,2,3,4,5,6 } based on { 1 2 4,     m=3 here
+                                          3 5,
+                                            6 };
+w = { 1,2,4,3,5,6 };    */
+
+Proc rearrange(r); 
+local p,L,c,sk;
+  p = (-1+(1+8*rows(r))^0.5)/2;
+  if (p*(p+1)/2) != rows(r);
+    print "error in input vector";
+    STOP;
+  else; 
+    L = zeros(p, p);
+    c = 1;
+    sk=1;
+    do until c>p;
+      L[1:c,c] = (r[sk:sk+c-1]);
+      sk=sk+c;
+      c=c+1;
+    endo; 
+    retp(vecdup(L));
+  endif;
+endp;
+
+
+/* rearrangemaxcor
+**
+** Purpose: Rearranges a vector based on descending correlations among vector elements */ 
+/*
+** Format:      { newa,newc,temp } = rearrangemaxcor(a,c)
+**
+** Input:       a - column vector (mx1)
+**              c - correlation matrix (mxm)
+**            
+** Output:      newa - same dimension as r
+**              newc - same dimension as c
+                temp - same dimension as r with indices of reaarranged vector when imposed on a provides newa
+** Note that this procedure only provides the first two elements of a with the highest correlation, and then rearranges a and c such that all other 
+   elements are represented in newa and newc. Between the first two elements positioned first in newa, the element that has a higher absolute 
+   correlation with other elements is positioned first. But the rows of a and the rows/columns of c beyond the first two are just to retain all elements, and do not have any other
+   purpose (not arranged in any specific way)
+
+Example: a = { 0.1,0.2,0.3,0.4 };     r =   { 1.0  0.3   0.4  -0.25,     m=4 here
+                                              0.3  1.0   0.1   0.40,
+                                              0.4  0.1   1.0   0.50
+                                             -0.25 0.4   0.5   1.00 };
+newa =   { 0.4,0.3,0.1,0.2 }; newr = { 1.0 0.5 -0.25 0.4,        temp = { 4 3 1 2 }; 
+                                       0.5 1.0  0.4  0.1,
+                                     -0.25 0.4  1.0  0.3
+                                       0.4 0.1  0.3  1.0 };   */
+
+proc(3) = rearrangemaxcor(a,c);
+    local p,c1,vv,colind,rowind,temp,temp1;
+    p = rows(a);
+    c1 = abs(c);
+    vv = diagrv(c1,zeros(p,1));
+    colInd = maxindc(maxc(vv));
+    rowInd = maxindc(vv[.,colInd]);
+    if sumc(vv[.,rowind])>=sumc(vv[.,colind]);
+       temp = rowind|colind;
+    else;
+       temp = colind|rowind;
+    endif;
+    temp1 = delrows(seqa(1,1,p),temp);
+    temp = temp|temp1;
+    retp(a[temp],c[temp,temp],temp);
+endp;
+      
+
+
+
+/* rearrangemincor
+**
+** Purpose: Rearranges a vector based on ascending correlations among vector elements */ 
+/*
+** Format:      { newa,newc,temp } = rearrangemincor(a,c)
+**
+** Input:       a - column vector (mx1)
+**              c - correlation matrix (mxm)
+**            
+** Output:      newa - same dimension as r
+**              newc - same dimension as c
+                temp - same dimension as r with indices of reaarranged vector when imposed on a provides newa
+** Note that this procedure only provides the first two elements of a with the lowest correlation, and then rearranges a and c such that all other 
+   elements are represented in newa and newc. Between the first two elements positioned first in newa, the element that has a lower absolute 
+   correlation with other elements is positioned first. But the rows of a and the rows/columns of c beyond the first two are just to retain all elements, and do not have any other
+   purpose (not arranged in any specific way)
+
+Example: a = { 0.1,0.2,0.3,0.4 };     r =   { 1.0  0.3   0.4  -0.25,     m=4 here
+                                              0.3  1.0   0.1   0.40,
+                                              0.4  0.1   1.0   0.50
+                                             -0.25 0.4   0.5   1.00 };
+newa =   { 0.2,0.3,0.1,0.4 }; newr = { 1.0 0.1  0.3  0.4,        temp = { 2 3 1 4 }; 
+                                       0.1 1.0  0.4  0.5,
+                                       0.3 0.4  1.0  -0.25
+                                       0.4 0.5  -0.25  1.0 };   */
+
+proc(3) = rearrangemincor(a,c);
+    local p,c1,vv,colind,rowind,temp,temp1;
+    p = rows(a);
+    c1 = abs(c);
+    colInd = minindc(minc(c1));
+    rowInd = minindc(c1[.,colInd]);
+    if sumc(c1[.,rowind])<=sumc(c1[.,colind]);
+       temp = rowind|colind;
+    else;
+       temp = colind|rowind;
+    endif;
+    temp1 = delrows(seqa(1,1,p),temp);
+    temp = temp|temp1;
+    retp(a[temp],c[temp,temp],temp);
+endp;
+      
+
+
+/* multrunc
+**
+** Purpose: Provides mean and covariance matrix of a MVN distribution with one (first) component truncated from above using Cholesky matrix
+** Format:      { mutrunc, covtrunc } = multrunc(mu,cov,trpoint)
+**
+** Input:       mu - column vector of mean of the elements of the untruncated MVN distribution (mx1)
+                cov - Covariance matrix of the elements of the untruncated MVN distribution (mxm)
+                trpoint - Truncation point from above of the first element (W1 < trpoint)
+**            
+** Output:      mutrunc - column vector of the mean of the elements of the truncated (first element only) distribution
+                covtrunc - covariance matrix of the elements of the truncated (first element only) distribution
+
+Example: mu = { 1,2 }, cov = { 1.5   1    ,  trpoint =  0.5        
+                                1    2 }
+
+mutrunc = { -0.31618115,1.1225459 }, and covtrunc = 0.42575775  0.28383850
+                                                    0.28383850  1.52255900 };  */
+
+proc (2) = multrunc(mu,cov,trpoint);
+  local m,rr,lam,mutilde,munew,sigtilde2,signew2;  
+  m = rows(mu);
+  rr = chol(cov);
+  lam = (trpoint-mu[1])/rr[1,1];
+  mutilde = (-pdfn(lam))/cdfn(lam);
+  munew = mutilde|zeros(m-1,1);
+  sigtilde2 = 1+(mutilde*(lam-mutilde));
+  signew2 = (sigtilde2|zeros(m-1,1))~(zeros(1,m-1)|eye(m-1));  
+  retp((mu+rr'*munew),(rr'*signew2*rr));  
+endp;  
+    
+
+/* Below is to check if choleski method above is correct; below is same as above with partitioning method for mean/variance of singly truncated univariable
+   normal random variable */
+
+proc (2) = multrunc1(mu,cov,trpoint);
+  local m,rr,lam,mutilde,munew,sigtilde2,signew2,V11,V11inv,V12,V21,V22,mu2,omega11,omega12,omg;  
+  m = rows(mu);
+  lam = (trpoint-mu[1])/sqrt(cov[1,1]);
+  mutilde = (-pdfn(lam))/cdfn(lam);
+  sigtilde2 = 1+(mutilde*(lam-mutilde));
+  munew = mu[1]+mutilde*sqrt(cov[1,1]);
+  signew2 = cov[1,1]*sigtilde2;
+  V11 = cov[1,1];
+  V11inv = inv(V11); 
+  V12 = cov[1,2:m];
+  V21 = V12';
+  V22 = Cov[2:m,2:m];
+  mu2 = (munew)|(mu[2:m]+((V21*V11inv)*(munew-mu[1])));  
+  omega11 = signew2;   
+  omega12 = omega11*V11inv*V12;
+  omg = (omega11~omega12)|((omega12')~(V22-(V21*(V11inv-V11inv*omega11*V11inv)*V12)));  
+  retp(mu2,omg);    
+endp;  
+
+/* multruncldlt
+**
+** Purpose: Provides mean and covariance matrix of a MVN distribution with one (first) component truncated from above using LDLT decomposition
+** Format:      { mutrunc, covtrunc } = multruncldlt(mu,cov,trpoint)
+**
+** Input:       mu - column vector of mean of the elements of the untruncated MVN distribution (mx1)
+                cov - Covariance matrix of the elements of the untruncated MVN distribution (mxm)
+                trpoint - Truncation point from above of the first element (W1 < trpoint)
+**            
+** Output:      mutrunc - column vector of the mean of the elements of the truncated (first element only) distribution
+                covtrunc - covariance matrix of the elements of the truncated (first element only) distribution
+
+Example: mu = { 1,2 }, cov = { 1.5   1    ,  trpoint =  0.5        
+                                1    2 }
+
+mutrunc = { -0.31618115,1.1225459 }, and covtrunc = 0.42575775  0.28383850
+                                                    0.28383850  1.52255900 };  */
+
+proc (2) = multruncldlt(mu,cov,trpoint);
+  local m,lam,sig1,mutilde,L,D,munew;  
+  m = rows(mu);
+  { L, D }  = ldl(cov);
+  sig1 = sqrt(D[1,1]);
+  lam = (trpoint-mu[1])/sig1;
+  mutilde = (-pdfn(lam))/cdfn(lam);
+  munew = (sig1*mutilde)|zeros(m-1,1);
+  D[1,1] = D[1,1]*(1+(mutilde*(lam-mutilde)));  
+  retp((mu+L*munew),(L*D*L'));  
+endp;  
+
+/* univariatenormaltrunc
+**
+** Purpose:     Provides mean and covariance matrix of a truncated unvariate standard normal distribution with the element truncated ONLY from above
+** Format:      { mutrunc, sigtrunc } = univariatenormaltrunc(muuntrunc,siguntrunc,trpoint)
+**
+** Input:       muuntrunc - mean vector of the univariate elements of the untruncated univariate normal distribution (Kx1)
+                siguntrunc - Variance vector of the elements of the untruncated univariate standard normal distribution (Kx1)
+                trpoint - Truncation point vector from above of the elements (W1 < trpoint1) (Kx1 vector)
+**            
+** Output:      mutrunc - Mean vector of the elements of the truncated distribution (Kx1)
+                sigtrunc - variance vector of the elements of the truncated distribution (Kx1)
+
+Example: mu = { 1 }, sig = { 1.5 } ,  trpoint =  0.5        
+                               
+
+mutrunc = { -0.31618115 }, and sigtrunc = 0.42575775;
+
+
+Verified that below is correct based on test.src in path d:\gauss\com\new cdfapprox\test.src;
+
+Just do univariatenormaltrunc(muuntrunc,siguntrunc,trpoint)   */
+
+proc(2) = univariatenormaltrunc(muuntrunc,siguntrunc,trpoint);
+  local sig,lam,w,mutilde,mutrunc,sigtrunc; 
+  sig = sqrt(siguntrunc);
+  w = (trpoint-muuntrunc)./sig;
+  lam = (-pdfn(w))./cdfn(w);
+  mutrunc = muuntrunc+(sig.*lam);
+  sigtrunc = siguntrunc.*(1+(lam.*(w-lam)));  
+  retp(mutrunc,sigtrunc);  
+endp;
+
+
+/* Gradients for univariate truncated normal 
+
+**            
+** Output:      dmutrunc - Gradients of the mean vector of the elements of the truncated distribution (3xK matrix); first row is gradients with respect 
+                           to muuntrunc (mean of untruncated distribution), second row is wrt siguntrunc (variance of untruncated distribution),
+                           and third row is with respect to truncation points. 
+                sigtrunc - Gradients of the variance vector of the elements of the truncated distribution (3xK too)    */
+
+proc(2) = gradunivariatenormaltrunc(muuntrunc,siguntrunc,trpoint);
+  local sig,w,lam,mutrunc,sigtrunc,dlamdw,dsigtemp2,dmutrunc,dsigtemp,dsigtemp1,dsigtruncdw,dsigtrunc; 
+  sig = sqrt(siguntrunc);
+  w = (trpoint-muuntrunc)./sig;
+  lam = (-pdfn(w))./cdfn(w);
+  mutrunc = muuntrunc+(sig.*lam);
+  sigtrunc = siguntrunc.*(1+(lam.*(w-lam)));
+  dlamdw = lam.*(lam-w);
+  dmutrunc = ((1-dlamdw)')|((((lam-dlamdw.*w)./(2*sig))'))|((dlamdw)');
+  dsigtemp = dlamdw.*(w-2*lam);
+  dsigtruncdw = (sig^2).*(lam+dsigtemp);
+  dsigtemp1 = (1/sig).*dsigtruncdw;
+  dsigtemp2 = 1+(lam.*(w-lam))-((w/2).*(lam+dsigtemp));
+  dsigtrunc = ((-dsigtemp1)')|(dsigtemp2')|(dsigtemp1');     
+  retp(dmutrunc,dsigtrunc);  
+endp;    
+
+/* bivariatenormaltrunc
+**
+** Purpose:     Provides mean and covariance matrix of a truncated bivariate standard normal distribution with both elements truncated ONLY from above
+** Format:      { mutrunc, covtrunc } = bivariatenormaltrunc(muuntrunc,cov,trpoint)
+**
+** Input:       muuntrunc - mean of the elements of the untruncated bivariate normal distribution (2x1 vector)
+                cov - Covariance matrix of the elements of the untruncated bivariate standard normal distribution (2x2)
+                trpoint - Truncation points from above of the two element (W1 < trpoint1, W2 < trpoint2) (2x1 vector)
+**            
+** Output:      mutrunc - column vector of the mean of the elements of the truncated distribution (2x1)
+                covtrunc - covariance matrix of the elements of the truncated distribution (2x2)
+
+Example:  muuntrunc = { 0.5, 1 };
+          cov = {  1.2    0.7    ,    
+                   0.7    1.5 }
+          trpoint =  { 0.2,0.4  };  
+
+Verified that below is correct based on test.src in path d:\gauss\com\new cdfapprox\test.src;
+
+Just do bivariatenormaltrunc(muuntrunc,cov,trpoint):
+
+Output : 
+mutrunc = -0.72409974 
+          -0.49361924 
+
+covtrunc = { 0.43792485       0.11070777 
+             0.1107077       0.45961543   };   */ 
+             
+/* Added line 878 and lines 897-911 on March 16, 2019 to take care of extreme negative truncations as upper truncations; leads to problems in computing expected value and covariance matrix of bivariate truncations if not handled as I have */
+
+proc (2) = bivariatenormaltrunc(muuntrunc,cov,trpoint);
+  local m,newtrpoint,cor,newtrpointrev,diagcovroot,diag1,rho,rhotilde,trpointrev,
+        tempomg,veccc,muuntruncnew,mu1,omg1,tr1,covnew,tr2,pd1,pd2,cd1,cd2,mu,sig,sig12,q2,P,omg,ddd;  
+  m = rows(trpoint); 
+  newtrpoint = (trpoint-muuntrunc)./(sqrt(diag(cov)));   
+  cor = corrvc(cov);
+  rho = cor[1,2];
+  rhotilde = sqrt((1-rho^2));
+  P = cdfbvn(newtrpoint[1],newtrpoint[2],rho);
+  if P > 2e-7;   
+    newtrpointrev = rev(newtrpoint);
+    tr1 = (newtrpoint-rho*newtrpointrev)/rhotilde;
+    tr2 = rev(tr1);
+    pd1 = pdfn(newtrpoint);
+    pd2 = rev(pd1);
+    cd1 = cdfn(tr1);
+    cd2 = rev(cd1);
+    mu = (-(rho*pd2).*cd1-pd1.*cd2)/P; 
+    sig = ((P-(newtrpoint.*pd1.*cd2)-((rho^2)*newtrpointrev.*pd2.*cd1)+(rhotilde*rho*pd2.*pdfn(tr1)))/P)-mu^2;  
+    sig12 = ((rho*P-rho*newtrpoint[1]*pd1[1]*cd2[1]+rhotilde*pd1[1]*pdfn(tr2[1])-rho*newtrpointrev[1]*pd2[1]*cd1[1])/p)-prodc(mu);
+    diagcovroot = sqrt(diag(cov));
+    diag1 = diagrv(zeros(m,m),diagcovroot);
+    mu = muuntrunc+(diagcovroot.*mu);  
+    omg = zeros(2,2);
+    omg[1,2] = sig12;
+    omg[2,1]=sig12;
+    omg = diagrv(omg,sig);  
+    omg = diag1*omg*diag1;  
+  else;     
+    veccc = vecindascending(newtrpoint);
+    muuntruncnew = muuntrunc[veccc];
+    trpointrev = trpoint[veccc];
+    covnew = cov[veccc,veccc];
+    { mu,omg } = multruncldlt(muuntruncnew,covnew,trpointrev[1]);
+    tempomg = omg[2,2];
+    { mu[2],omg[2,2] } = univariatenormaltrunc(mu[2],tempomg,trpointrev[2]);      
+    omg[1,2]=omg[1,2]*(sqrt(omg[2,2])/sqrt(tempomg));
+    omg[2,1]=omg[1,2];  
+    mu = mu[veccc];
+    omg = omg[veccc,veccc];
+  endif;
+  retp(mu,omg);
+endp;  
+
+/* Gradients for bivariate truncated normal 
+
+**            
+** Output:      dmutrunc - Gradients of the mean vector of the elements of the truncated distribution; (7x2 matrix; first column is 
+                           gradients with respect to first truncated mean, second is gradients with respect to second truncated mean; first two rows
+                           provide gradients with respect to the untruncated means, next three rows provide gradients with respect to the three 
+                           unique covariance elements of the untruncated bivariate normal, and the last two rows provide gradients with respect to
+                           the two truncation points 
+                sigtrunc - Gradients of the variance vector of the elements of the truncated distribution (7x3 matrix)    */
+
+/* Added lines 1011 to 1054 on March 16, 2019 */
+
+proc (2) = gradbivariatenormaltrunc(muuntrunc,cov,trpoint);
+  local m,newtrpoint,cor,newtrpointrev,diagcovroot,diag1,rho,rhotilde,trpointrev,tr1,tr2,pd1,pd2,cd1,cd2,mu,sig,sig12,q2,P,omg; 
+  local  dmuderiv,dmutilde1da1,dmutilde1da2,dmutilde1sig1sq,dmutildedrho,dmutilde1dsig1sq,dmutildedsig12,dmutilde1dsig2sq,
+         dmutilde1dtr1,dmutilde1dtr2,dmutilde1dw1,dmutilde1dw2,dsigtilde,dsigtilde12dw1,dsigtilde12dw2,dsigtilde12drho;
+  local sigorig,sigoriginv,sigoriginvrev,rhotilde2,trcomp,del1,del2,pdf2,trcomprev,dmutilde1dsig1,dmutilde1dsig2;
+  local dsigtilde1dw1,dsigtilde1dw2,dsigtildedrho,domgderiv,domg1da1,domg1da2,domg1s1,domg1s12,domg1s2,domg1dtr1,domg1dtr2;
+  local domg12dtr,domg12da,sigorigsq,domg12s1,dmuderiv1,dmuderiv2,domg12s12,domgderiv11,domgderiv12,domgderiv22;
+  local veccc,gY, gmumean, gXmean, gCmean,gmucov,gXcov,gCcov,gmutrunc1,gsigtrunc1,gmutrunc2,gsigtrunc2,tempomg,check,gtemp;
+  local muuntruncnew,covnew,a,b,sigma12tilde,gtemp2,gtemp3,tempp1,tempp2,tempmu;
+    
+  m = rows(trpoint); 
+  sigorig = sqrt(diag(cov));
+  sigorigsq = sigorig^2;
+  sigoriginv = 1/sigorig;
+  sigoriginvrev = rev(sigoriginv);
+  newtrpoint = (trpoint-muuntrunc)./sigorig;   
+  cor = corrvc(cov);
+  rho = cor[1,2];
+  P = cdfbvn(newtrpoint[1],newtrpoint[2],rho);
+  rhotilde = sqrt((1-rho^2));
+  rhotilde2 = rhotilde^2;
+  if P>2e-7;  
+     newtrpointrev = rev(newtrpoint);
+     tr1 = (newtrpoint-rho*newtrpointrev)/rhotilde;
+     tr2 = rev(tr1);
+     trcomp = rho*newtrpoint-newtrpointrev;
+     trcomprev = rev(trcomp);
+     pd1 = pdfn(newtrpoint);
+     pd2 = rev(pd1);
+     cd1 = cdfn(tr1);
+     cd2 = rev(cd1);
+     del1 = pd1.*cd2;
+     del2 = pd2.*cd1;
+     pdf2 = (1/rhotilde)*(pd1[1]*pdfn(tr1[2]));
+     mu = (-rho*del2-del1)/P;
+
+     dmutilde1dw1=(1/P)*sigorig.*((newtrpoint.*del1)+(del1.*(-mu)));
+     dmutilde1dw2 = (1/P)*(-sigorig).*(rhotilde2*pdf2+(mu-rho*(newtrpointrev)).*(del2));
+     dmutildedrho = (1/P)*(-sigorig).*(del2+pdf2.*(mu-newtrpoint));
+     dmutilde1da1 = 1-(sigoriginv).*dmutilde1dw1;
+     dmutilde1da2 = -(sigoriginvrev).*dmutilde1dw2;
+     dmutilde1dsig1 = -(sigoriginv.*(newtrpoint).*dmutilde1dw1-mu+rho*sigoriginv.*dmutildedrho);
+     dmutilde1dsig2 = -(sigoriginvrev.*(newtrpointrev).*dmutilde1dw2+rho*sigoriginvrev.*dmutildedrho);
+     dmutilde1dsig1sq=0.5*(sigoriginv).*dmutilde1dsig1;
+     dmutilde1dsig2sq=0.5*(sigoriginvrev).*dmutilde1dsig2;  
+     dmutildedsig12 = (prodc(sigoriginv)).*dmutildedrho; 
+     dmutilde1dtr1 = (sigoriginv).*dmutilde1dw1;
+     dmutilde1dtr2 = (sigoriginvrev).*dmutilde1dw2;
+
+     dmuderiv1 = dmutilde1da1[1]|dmutilde1da2[1]|dmutilde1dsig1sq[1]|dmutildedsig12[1]|dmutilde1dsig2sq[1]|dmutilde1dtr1[1]|dmutilde1dtr2[1];
+     dmuderiv2 = dmutilde1da2[2]|dmutilde1da1[2]|dmutilde1dsig2sq[2]|dmutildedsig12[2]|dmutilde1dsig1sq[2]|dmutilde1dtr2[2]|dmutilde1dtr1[2];  
+     dmuderiv = dmuderiv1~dmuderiv2;
+
+  
+     sig = ((P-(newtrpoint.*pd1.*cd2)-((rho^2)*newtrpointrev.*pd2.*cd1)+(rhotilde*rho*pd2.*pdfn(tr1)))/P)-mu^2;
+     sig12 = ((rho*P-rho*newtrpoint[1]*pd1[1]*cd2[1]+rhotilde*pd1[1]*pdfn(tr2[1])-rho*newtrpointrev[1]*pd2[1]*cd1[1])/p)-prodc(mu);
+     diagcovroot = sqrt(diag(cov));
+     diag1 = diagrv(zeros(m,m),diagcovroot);
+ 
+     dsigtilde1dw1 = -(del1/P).*((-newtrpoint^2)+sig+mu^2)-2*mu.*(dmutilde1dw1./sigorig);
+     dsigtilde1dw2 = -(1/P)*((rhotilde2*(rho*pdf2*newtrpointrev+newtrpoint*pdf2-del2))-(rho^2)*(newtrpointrev^2).*del2+(sig+mu^2).*del2)-2*mu.*(dmutilde1dw2./sigorig);
+     dsigtildedrho = -(1/P)*(pdf2*(-newtrpoint^2)+2*rho*newtrpointrev.*del2-2*pdf2*rhotilde2+((sig+mu^2)*pdf2))-2*mu.*(dmutildedrho./sigorig);
+     dsigtilde = (1/P)*((rho*newtrpoint).*(rho*pdf2+newtrpoint.*del1)-pdf2*newtrpoint-del1*(sig12+prodc(mu)));
+     dsigtilde12dw1 = dsigtilde[1]-(sumc((mu.*((dmutilde1dw2[2]|dmutilde1dw1[1])./(rev(sigorig)))))); 
+     dsigtilde12dw2 = dsigtilde[2]-(sumc((mu.*((dmutilde1dw1[2]|dmutilde1dw2[1])./(rev(sigorig))))));    
+     dsigtilde12drho = 1-(1/P)*((-prodc(newtrpoint))*pdf2+(sumc((newtrpoint.*del1)))+(prodc(mu)+sig12)*pdf2);  
+     dsigtilde12drho = dsigtilde12drho-sumc((mu.*(rev(dmutildedrho)).*(sigoriginvrev))); 
+  
+     domg1dtr1 = (sigorig).*dsigtilde1dw1;
+     domg12dtr = (rev(sigorig)).*(dsigtilde12dw1|dsigtilde12dw2);
+     domg1dtr2 = ((sigorig)^2).*sigoriginvrev.*dsigtilde1dw2;
+     domg1da1 = - domg1dtr1;
+     domg12da=-domg12dtr;
+     domg1da2 = - domg1dtr2;
+     domg1s1 = sig+dsigtilde1dw1.*(newtrpoint).*(-0.5)+dsigtildedrho.*rho*(-0.5);
+     domg1s12 = (sigorig./(rev(sigorig))).*dsigtildedrho;
+     domg1s2 = (-0.5)*(sigorigsq.*(1/rev(sigorigsq))).*(dsigtilde1dw2.*newtrpointrev+dsigtildedrho*rho);
+     domg12s1 = (0.5)*(rev(sigorig)./sigorig).*(sig12-newtrpoint.*(dsigtilde12dw1|dsigtilde12dw2)-rho*dsigtilde12drho);  
+     domg12s12 = dsigtilde12drho;
+
+     domgderiv11 = domg1da1[1]|domg1da2[1]|domg1s1[1]|domg1s12[1]|domg1s2[1]|domg1dtr1[1]|domg1dtr2[1];
+     domgderiv12 = (domg12da)|domg12s1[1]|domg12s12|domg12s1[2]|(domg12dtr);
+     domgderiv22 = domg1da2[2]|domg1da1[2]|domg1s2[2]|domg1s12[2]|domg1s1[2]|domg1dtr2[2]|domg1dtr1[2];
+     domgderiv = domgderiv11~domgderiv12~domgderiv22;
+     retp(dmuderiv,domgderiv);
+  else;
+     veccc = vecindascending(newtrpoint);
+     check = sumc(veccc.==(seqa(1,1,2)));  /* check is zero if first newtrpoint is not lowest  */ 
+     muuntruncnew = muuntrunc[veccc];
+     trpointrev = trpoint[veccc];
+     covnew = cov[veccc,veccc];
+     tempp1 = _condcovsigtrunc;
+     tempp2 = _condcovmeantrunc;
+     _condcovsigtrunc=1; _condcovmeantrunc=1;  
+     { gY, gmumean, gXmean, gCmean } = gcondmeantrunc(1,muuntruncnew,covnew,trpointrev[1]);
+     { gmucov,gXcov,gCcov } = gcondcovtrunc(muuntruncnew,covnew,trpointrev[1]); 
+     { mu,omg } = multruncldlt(muuntruncnew,covnew,trpointrev[1]);
+     { gmutrunc1,gsigtrunc1 } = gradunivariatenormaltrunc(muuntruncnew[1],covnew[1,1],trpointrev[1]); 
+     tempomg = omg[2,2]; 
+     tempmu = mu[2];
+     { mu[2],omg[2,2] } = univariatenormaltrunc(tempmu,tempomg,trpointrev[2]);      
+     { gmutrunc2,gsigtrunc2 } = gradunivariatenormaltrunc(tempmu,tempomg,trpointrev[2]);   
+
+     a = (sqrt(omg[2,2])/sqrt(tempomg));
+     sigma12tilde=omg[1,2]*a;
+     b = omg[1,1]/covnew[1,1];
+     gtemp2 = (sigma12tilde/(omg[1,1]))|(-sigma12tilde/covnew[1,1])|(b*a)|(-sigma12tilde/(2*tempomg))|(sigma12tilde/(2*omg[2,2]));
+         dmuderiv1 = gmutrunc1[1]|0|gmutrunc1[2]|0|0|gmutrunc1[3]|0;
+         domgderiv11 = gsigtrunc1[1]|0|gsigtrunc1[2]|0|0|gsigtrunc1[3]|0; 
+
+     gtemp = ((gmumean'~gXmean'~gcmean'~0)|(gmucov'~gXcov'~gCcov'~0)|(zeros(1,6)~1));
+
+     dmuderiv2 = sumc((gmutrunc2.*gtemp)); 
+     domgderiv22 =  sumc((gsigtrunc2.*gtemp));
+     gtemp3 = domgderiv11'|(zeros(1,2)~1~zeros(1,4))|(zeros(1,3)~1~zeros(1,3))|(gmucov'~gXcov'~gCcov'~0)|domgderiv22';
+     domgderiv12 = sumc((gtemp2.*gtemp3));       
+     
+     if check==0;
+         dmuderiv1 = rev(dmuderiv1[1:2])|rev(dmuderiv1[3:5])|rev(dmuderiv1[6:7]);
+         dmuderiv2 = rev(dmuderiv2[1:2])|rev(dmuderiv2[3:5])|rev(dmuderiv2[6:7]);
+         dmuderiv = dmuderiv2~dmuderiv1;  
+         domgderiv11 = rev(domgderiv11[1:2])|rev(domgderiv11[3:5])|rev(domgderiv11[6:7]);
+         domgderiv12 = rev(domgderiv12[1:2])|rev(domgderiv12[3:5])|rev(domgderiv12[6:7]);
+         domgderiv22 = rev(domgderiv22[1:2])|rev(domgderiv22[3:5])|rev(domgderiv22[6:7]);
+         domgderiv = domgderiv22~domgderiv12~domgderiv11;
+     else;
+         dmuderiv = dmuderiv1~dmuderiv2;
+         domgderiv = domgderiv11~domgderiv12~domgderiv22;
+     endif;
+     _condcovsigtrunc=tempp1;
+     _condcovmeantrunc=tempp1;
+     retp(dmuderiv,domgderiv);
+  endif;   
+endp;  
+
+
+    
+/* multruncbivariate
+**
+** Purpose:     Provides mean and covariance matrix of a multivariate normal distribution (mean vector mu and 
+                covariance matrix cov with first two elements truncated ONLY from above;
+                
+
+** Format:      { mutrunc, covtrunc } = multruncbivariate(mu,cov,trpoint)
+**
+** Input:       mu - column vector of mean of the elements of the untruncated MVN distribution (mx1)
+                cov - Covariance matrix of the elements of the untruncated MVN distribution (mxm)
+                trpoint - Truncation point from above of the first two elements(W1 < trpoint, W2 < trpoint)
+**            
+** Output:      mutrunc - column vector of the mean of the elements of the truncated (with only the first two elements truncated and others not) distribution (mx1)
+                covtrunc - covariance matrix of the elements of the truncated distribution (mxm)   */
+                                                    
+ 
+proc (2) = multruncbivariate(mu,cov,trpoint);
+  local m,V11,V11inv,mu1,muuntrunc,omega11,V12,V21,V22,mu2,omega12,omg;  
+  m = rows(mu);
+  muuntrunc = mu[1:2];
+  V11 = cov[1:2,1:2];
+  V11inv = inv(V11);
+  { mu1,omega11 } = bivariatenormaltrunc(muuntrunc,V11,trpoint);  
+  V12 = cov[1:2,3:m];
+  V21 = V12';
+  V22 = Cov[3:m,3:m];
+  mu2 = (mu1)|(mu[3:m]+((V21*V11inv)*(mu1-muuntrunc)));     
+  omega12 = omega11*V11inv*V12;
+  omg = (omega11~omega12)|((omega12')~(V22-(V21*(V11inv-V11inv*omega11*V11inv)*V12)));  
+  retp(mu2,omg);
+endp;  
+    
+
+/* Generic Rank One update of LDLT decomposition without row/column deletion */
+
+/*
+** Purpose:     Rank One Update of LDLT decomposition of A (assumed symmetric and positive defnite) to that of A+alpha*zz';
+
+** Format:      { newL, newD } = ldltup(L,D,z,alpha)
+**
+** Input:       L - L matrix of A (lower diagonal) (of dimension KxK)
+                D - D matrix of A  (of dimension KxK)
+                z - vector of dimension (Kx1)
+                alpha - scalar
+
+** Output is newL (lower diagonal of dimension KxK) and new D (of dimension kxk). So, if A=L*D*L', then A+alpha*z*z'=newL*newD*newL'
+
+ Reference: Gill, Murray, and Wright, "Practical Optimization", p43., Author: Brian Borchers (borchers@nmt.edu)   */
+
+
+proc (2) = ldltup(L,D,z,alpha);
+   local m,newL,newD,oldt,j,p,t,beta;
+   m=rows(L);
+   newL = L;
+   newD= D;
+   oldt = 1;
+   z = sqrt(alpha)*z;
+   for j(1,m,1);
+     p=z[j];
+     t=oldt+p^2/D[j,j];
+     newD[j,j]=D[j,j]*t/oldt;
+     beta=p/(D[j,j]*t);
+     if j < m;
+       z[j+1:m]=z[j+1:m]-p*L[j+1:m,j];
+       newL[j+1:m,j]=L[j+1:m,j]+beta*z[j+1:m];
+     endif;
+     oldt=t;
+   endfor;
+   retp(newL,newD); 
+endp;
+
+
+/*
+** Purpose:     Update of LDLT decomposition of A (assumed symmetric and positive defnite) to that of 
+                the LDLT decomposition of A=L*D*L' (where D is obtained after substituting D[1:m,1:m] by an mxm matrix 
+                omega, or if D is to be used as is, just put omega as D[1:m,1:m] in the call to this procedure) AFTER removing 
+                the first m rows and first m columns
+                if m>1, then LDLT decomposition fed in should be of block m.
+
+** Format:      { newL, newD } = ldltupspecial(L,D,omega,m)
+**
+** Input:       L - L matrix of A (lower diagonal) (of dimension KxK)
+                D - D matrix of A  (of dimension KxK)
+                omega - matrix of dimension mxm
+                m - block dimension of original LDLT decomposition
+
+** Output is newL (lower diagonal of dimension (K-m)x(K-m) and new D (of dimension (k-m)x(k-m)). */
+
+
+
+proc (2) = ldltupspecial(L,D,omega,m);   
+   local D2,n,n1,newA,Dinv,z,t,B,tt,M1,L22,knew,i,j,h1,h,newL,newD;
+   n=rows(L);    n1 = n-m;
+   M1 = omega;
+   D2 = D[m+1:n,m+1:n];
+   B = zeros(n1,m);
+   L22 = L[m+1:n,m+1:n];
+   z = (inv(L22))*L[m+1:n,1:m];
+   NewL = eye(n1);
+   NewD = zeros(n1,n1);
+   if n1<=m;
+       newL = eye(n1);
+       newD = z[1:n1,.]*omega*((z[1:n1,.])')+D2;
+   else;
+       for i(1,n1,m);
+          if i+m-1<=n1;
+             t = M1*((z[i:i+m-1,.])');
+             NewD[i:i+m-1,i:i+m-1] = D2[i:i+m-1,i:i+m-1] +z[i:i+m-1,.]*t;
+             Dinv = inv(NewD[i:i+m-1,i:i+m-1]);
+             b[i:i+m-1,.]=((t*Dinv)');
+             M1 = M1-t*Dinv*t';
+             if i<n1-m+1;
+                if i!=n1-m;
+                   newL[i+m:i+2*m-1,1:i+m-1]=z[i+m:i+2*m-1,.]*((b[1:i+m-1,.])');
+                elseif i==n1-m;
+                   newL[i+m,1:i+m-1]=z[i+m,.]*((b[1:i+m-1,.])'); 
+                endif;
+             endif;  
+          elseif i==n1;
+             t = M1*((z[i,.])');
+             NewD[i,i] = D2[i,i] +z[i,.]*t;
+          endif;
+       endfor;
+   endif;
+   retp(L22*newL,newD); 
+endp;  
+
+
+
+
+/* Block LDLT factorization of a matrix */
+
+/*
+** Purpose:     Block LDLT decomposition of A (assumed symmetric and positive defnite);
+
+** Format:      { L, D } = ldltblock(A,m)
+**
+** Based on Trinh (2014)
+
+** Input:       A - (of dimension KxK)
+                m - Blocking dimension
+
+** Output is L (lower diagonal of dimension KxK) and D (of dimension KxK). 
+
+ Reference: Based on Trinh  */
+
+
+proc (2) = ldLtblock(A,m);
+   local n,L,D,i,j,h;
+   n=rows(A);
+   L = eye(n); 
+   D = zeros(n,n);
+   for i(1,n-m,m);
+       j=i+m-1; h=j+1; 
+       D[i:j,i:j]=A[i:j,i:j];
+       L[h:n,i:j]=A[h:n,i:j]*invpd(D[i:j,i:j]);
+       A[h:n,h:n]=A[h:n,h:n]-L[h:n,i:j]*D[i:j,i:j]*((L[h:n,i:j])');
+   endfor; 
+   D[h:n,h:n]=A[h:n,h:n];   
+   retp(L,D); 
+endp;
+
+
+/* Block Cholesky factorization of a matrix */
+
+/*
+** Purpose:     Block decomposition of A (assumed symmetric and positive defnite);
+
+** Format:      { L } = cholblock(A,n)
+**
+
+** Input:       A - (of dimension KxK)
+                m - Blocking dimension
+
+** Output is L (upper diagonal of dimension KxK)    */
+
+
+proc (1) = cholblock(A,m);
+   local n,L,D,i,j,h;
+   n=rows(A);
+   L = zeros(n,n); 
+   for i(1,n-m,m);
+       j=i+m-1; h=j+1; 
+       L[i:j,i:j]=chol(A[i:j,i:j]);
+       L[i:j,h:n]=(inv((L[i:j,i:j])'))*A[i:j,h:n];
+       A[h:n,h:n]=A[h:n,h:n]-((L[i:j,h:n])')*(L[i:j,h:n]);
+   endfor;
+   L[h:n,h:n]=chol(A[h:n,h:n]);   
+   retp(L); 
+endp;
+
+
+
+/*
+** Purpose:     Converting a dependent variable vector dep (nobsx1), with each element taking values from j= 1 to n, into a dummy variable matrix dumm of size (nobsxn) such
+                that dumm[i,j]=1 if dep[i]=j
+
+** Format:      { dumm } = deptodumm[dep];
+**
+
+** dep =  { 1,
+            2,
+            3,
+            2,
+            3 };
+
+** dumm = { 1 0 0,
+            0 1 0,
+            0 0 1,
+            0 1 0,
+            0 0 1 }; */
+
+proc(1) = deptodumm(x);
+    local dumm;
+    dumm = zeros(rows(x),maxc(x));
+    for i(1,rows(x),1);
+        dumm[i,x[i]]=1;
+    endfor;
+    retp(dumm);
+endp;
+        
+/*
+** Purpose:     Matrix that premultiplies with numbers in specific positions of a vector (part vector) based on an index to provide full vector 
+
+** Format:      { indx } = parttofull[part,fullsize];  similar to vectomat procedure  
+
+** part =  { 2,
+             3 };   part is indices of interest (Mx1 vector)
+
+** fullsize = 5     scalar with total number of entries (rows) of full vector  (K; K should be greater than or equal to M)
+
+** indx = { 0 0,
+            1 0,
+            0 1,
+            0 0,
+            0 0 }; 
+
+So let's say you have vector { 0.5,1.2 }, and you want vector { 0, 0.5,1.2,0,0 }; Just do indx*(0.5|1.2) */
+
+/* Can also use this to go from part matrix to full matrix 
+
+Say aa1 = {  0  2  4  0,           aa2 =  { 2 4,
+             0  0  0  0,                   10 12 };   
+             0 10  12 0,
+             0  0  0  0 };
+            
+To go from aa2 to aa1, just do indx*aa2*indx',  where part in this case = { 1,3 } and fullsize = 4; indx = { 1 0
+                                                                                                             0 0
+                                                                                                             0 1
+                                                                                                             0 0 };
+Also, easy to go from aa1 to aa2; simply do indx'*aa1*indx  to go from full to part */
+
+
+proc(1) = parttofull(x,f);
+    local dumm;
+    dumm = zeros(f,rows(x));
+    for i(1,rows(x),1);
+        dumm[x[i],i]=1;
+    endfor;
+    retp(dumm);
+endp;
+    
+
+/*
+** Purpose: Procedure generates a random correlation matrix of size d; delta (scalar) controls the magnitude of correlations; 
+   the higher the value of delta, the lower the correlations 
+
+Format:  { cor } = randcorr(d,delta);
+
+Inputs: d -     desired dimension of correlation matrix (scalar - 1x1)
+        delta - a positive scalar factor (1x1); can be any value from 0 to infinity; as you go towarr infinity, correlation matrix output becomes 
+                identity matrix */
+
+proc randcorr(d,delta);
+  local r1,r2,ru,r3,newstate;
+  r1 = rndn(d,d);
+  ru = rndu(d,1);
+  r2 = (r1*r1')+delta*diagrv(eye(d),ru);
+  r3 = corrvc(r2);
+  r3 = diagrv(r3,ones(rows(d),1));
+  retp(r3);
+endp;
+
+
+/*
+** Purpose: Procedure generates all possible combinations of elements of a given vector  
+
+
+Format:  { numb,combindx,comb } = allcombs(x);
+
+Inputs: x  - Kx1 vector
+        numb - (2^K-1)*1 matrix, each row showing the number of elements in combination
+        combindx - (2^(K)-1)*K matrix, each row being one index combination
+        comb - (2^(K)-1)*K matrix, each row being one combination */
+
+
+proc (3) = allcombs(x);
+    local e1,i,j,numb,comb,combindx,r,r1,a1,newi;
+    e1 = rows(x);
+    comb = zeros(2^(e1)-1,e1);
+    combindx = zeros(2^(e1)-1,e1);
+    r=0;
+    numb={};
+    for i(1,e1,1);
+        a1 = combinate(e1,i);  r1 = r+rows(a1);
+        combindx[r+1:r1,1:i]=a1;
+        for j(1,rows(a1),1);
+          comb[j+r,a1[j,.]] = (x[a1[j,.]])';
+        endfor;
+        r=r1;
+        numb = numb|(i*ones(rows(a1),1));
+    endfor;
+    retp(numb,combindx,comb);
+endp;
+        
+
+ 
+/*
+** Purpose: Procedure generates all elements not in y but in x
+
+
+Format:  { z } = notthere(x,y);
+
+Inputs: x  - Kx1 vector
+        y  - Mx1 vector (M<K)
+        z  - (K-M)x1 vector 
+
+Example:  x = { 3,                 y={ 1,                  z={ 2,
+                1,                     3 };                    4 };
+                2,
+                4 };   */
+
+proc notthere(x,y);
+    local z1,z2,j;
+    z2 = {};
+    for j(1,rows(x),1);
+        z1 = sumc(x[j].==y);
+        z2=z2|z1;
+    endfor;
+    retp(selif(x,(1-z2)));
+endp;
+     
+
+/*
+** Purpose: Procedure generates combinations of values for truncation from below for a rectangular CDF  
+
+
+Format:  { sign,comb } = rectcombs(a,b);
+
+Inputs: a  - Kx1 vector of lower bounds of rectangular integration;  b - Kx1 vector of upper bounds of rectangular integration 
+
+Output: sign - 2^K*1 vector indicating sign to be imposed on cdfs in rectangular computation
+        comb - 2^K*K matrix of combinations to use as upper bounds in CDF computation for the rectangular integration
+       
+
+Example : a= { a1,a2,a3 };    b = { b1,b2,b3 };
+
+sign = { 1,-1,-1,-1,1,1,1,-1 };
+
+        
+sign~Comb is 
+
+ +1 b1 b2 b3
+ -1 a1 b2 b3
+ -1 a2 b1 b3
+ -1 a3 b1 b2
+ +1 a1 a2 b3
+ +1 a1 a3 b2
+ +1 a2 a3 b1
+ -1 a1 a2 a3
+
+indxa = 0 0 0
+        
+ */
+
+proc (2) = rectcombs(a,b);
+    local e1,numb,comb,combnew,newindx,indx,aindx,bindx,temp;
+    e1 = rows(a);
+    { numb,indx,comb } = allcombs(a);
+    comb = zeros(1,e1)|comb;
+    aindx = zeros(2^e1-1,e1);
+    for j(1,2^e1-1,1);
+        temp = delif((indx[j,.])',((indx[j,.])').==0);
+        aindx[j,temp]=ones(1,rows(temp));
+    endfor;
+    aindx = zeros(1,e1)|aindx;
+    bindx = 1-aindx;    
+    combnew = a'.*aindx+b'.*bindx;
+    retp((-1)^(0|numb),combnew);
+endp;
+    
+
+/* Same as rectcombs, but provides a dummy variable matrix showing positions of elements of a and b appearing in each combination; helpful for 
+   gradients 
+
+ indxa - 2^K*K matrix of is and zeros, with a 1 denoting appearance of a values in corresponding row combination
+ indxb - 2^K*K matrix of is and zeros, with a 1 denoting appearance of b values in corresponding row combination
+      
+sign~Comb is 
+
+ +1 b1 b2 b3
+ -1 a1 b2 b3
+ -1 a2 b1 b3
+ -1 a3 b1 b2
+ +1 a1 a2 b3
+ +1 a1 a3 b2
+ +1 a2 a3 b1
+ -1 a1 a2 a3
+
+indxa = 0 0 0
+        1 0 0
+        0 1 0
+        0 0 1
+        1 1 0
+        1 0 1
+        0 1 1
+        1 1 1 ;
+        
+indxb = 1 - indxa;  */
+
+proc (4) = rectcombsforgrad(a,b);
+    local e1,numb,comb,combnew,temp,newindx,indx,aindx,bindx;
+    e1 = rows(a);
+    { numb,indx,comb } = allcombs(a);
+    comb = zeros(1,e1)|comb;
+    aindx = zeros(2^e1-1,e1);
+    for j(1,2^e1-1,1);
+        temp = delif((indx[j,.])',((indx[j,.])').==0);
+        aindx[j,temp]=ones(1,rows(temp));
+    endfor;
+    aindx = zeros(1,e1)|aindx;
+    bindx = 1-aindx;
+    combnew = a'.*aindx+b'.*bindx;
+    retp((-1)^(0|numb),combnew,aindx,bindx);
+endp;             
+
+
+/* Purpose: Procedure generates combinations of values in a matrix as specified below  
+
+Format:  { B,F,C,Bindx } = newcombs(a,m);
+
+Inputs: a  - NxK matrix of values to be combinated; m - 1x1 scalar of number of columns of a to be used in combination 
+
+Output: B - (N^m)*m matrix ;  F - (N^m)*m matrix   ;  C - (N^m)*N matrix ;  m<=K;   Bindx - (N^m)*m natrix
+        
+
+Example : a= { a1 a2  a3  a4,
+               a5 a6  a7  a8  };   if m = 1,   B = { a1            F = { 1                C = { 1 0, 
+                                                     a5 }                2   }                  2 0 };
+
+                                   if m = 2,   B = { a1 a2,        F = { 1 1,             C = { 2 0,
+                                                     a1 a6,              1 2,                   1 1,
+                                                     a5 a2,              2 1,                   1 1,
+                                                     a5 a6 };            2 2 }                  0 2 };
+                                                     
+
+                                   if m = 3,   B = { a1 a2 a3,        F = { 1 1 1,             C = { 3 0,              Bindx =   {  1   2   3,
+                                                     a1 a2 a7,              1 1 2,                   2 1,                           1   2   7,
+                                                     a1 a6 a3,              1 2 1,                   2 1,                           1   6   3,
+                                                     a1 a6 a7,              1 2 2,                   1 2,                           1   6   7,
+                                                     a5 a2 a3,              2 1 1,                   2 1,                           5   2   3,
+                                                     a5 a2 a7,              2 1 2,                   1 2,                           5   2   7,
+                                                     a5 a6 a3,              2 2 1,                   1 2,                           5   6   3,
+                                                     a5 a6 a7 };            2 2 2 };                 0 3 };                         5   6   7  };   */
+
+proc (4) = newcombs(a,m);
+    local e1,B,F,C,i,temp,Bindx,Bindx1,Findx;
+    e1 = rows(a);
+    Bindx = reshape(seqa(1,1,e1*cols(a)),e1,cols(a));
+    Findx = (seqa(1,1,e1)).*ones(e1,cols(a));
+    C = zeros(e1^m,e1);
+    B = zeros(e1^m,m); F=B; Bindx1=B;
+    for i(1,m,1);
+       B[.,i]=ones((e1^(i-1)),1).*.a[.,i].*.ones((e1^(m-i)),1);
+       Bindx1[.,i]=ones((e1^(i-1)),1).*.Bindx[.,i].*.ones((e1^(m-i)),1);
+       F[.,i]=ones((e1^(i-1)),1).*.Findx[.,i].*.ones((e1^(m-i)),1);  
+    endfor; 
+    for i(1,e1,1);
+      temp= F.==i;
+      C[.,i] = sumc((temp'));  
+    endfor;
+    retp(B,F,C,Bindx1);
+endp;
+
+
+
+/* Purpose: Procedure generates combinations of possible outcomes across rows of a matrix; each input matrix row value 
+   provides the maximum value for the row outcome ranging from 1 to the maximum value; Useful for forercasting algorithms 
+
+Format:  { B, Bindx } = combout(a,m);
+
+Inputs: a  - Kx1 vector of maximum values for each outcome; m - index of vectors to be combinated (rows(m)<=rows(a)) 
+
+Output: B - Combinations (matrix of size -- (product of numbers in the rows of B as identified by m) x (rows of m)) 
+        Bindx - Index of B (Size rows(B) x sumc(a)
+
+Example : a= { 3,
+               5 };   if m = 1,   B = { 1,          Bindx = { 1 0 0,
+                                        2,                    0 1 0,
+                                        3 };                  0 0 1 };
+                       
+                      if m = 2,   B = { 1,          Bindx = { 1 0 0 0 0,
+                                        2,                    0 1 0 0 0,
+                                        3,                    0 0 1 0 0,
+                                        4,                    0 0 0 1 0,
+                                        5 };                  0 0 0 0 1 };
+
+                       if m = {1,
+                               2  }   B = { 1 1,    Bindx = { 1 0 0 1 0 0 0 0,
+                                            1 2,              1 0 0 0 1 0 0 0,
+                                            1 3,              1 0 0 0 0 1 0 0,
+                                            1 4,              1 0 0 0 0 0 1 0,
+                                            1 5,              1 0 0 0 0 0 0 1,
+                                            2 1,              0 1 0 1 0 0 0 0,
+                                            2 2,              0 1 0 0 1 0 0 0,
+                                            2 3,              0 1 0 0 0 1 0 0,
+                                            2 4,              0 1 0 0 0 0 1 0,
+                                            2 5,              0 1 0 0 0 0 0 1,
+                                            3 1,              0 0 1 1 0 0 0 0,
+                                            3 2,              0 0 1 0 1 0 0 0,
+                                            3 3,              0 0 1 0 0 1 0 0,
+                                            3 4,              0 0 1 0 0 0 1 0,
+                                            3 5 };            0 0 1 0 0 0 0 1 }    */
+
+proc (2) = combout(a,m);
+    local c,c1,c2;
+    c = a[m];
+    c1 = zeros(prodc(c),rows(m));
+    for i(1,rows(m),1);
+        if i==1 and i!= rows(m);
+           c1[.,i] = seqa(1,1,c[i]).*.ones(prodc(c[i+1:rows(m)]),1);
+        elseif i !=1 and i!= rows(m);
+           c1[.,i] = ones(prodc(c[1:i-1]),1).*.seqa(1,1,c[i]).*.ones(prodc(c[i+1:rows(m)]),1);
+        elseif i !=1 and i==rows(m);
+           c1[.,i] = ones(prodc(c[1:i-1]),1).*.seqa(1,1,c[i]);
+        elseif i==1 and i==rows(m);
+           c1[.,i] = seqa(1,1,c[i]);
+        endif;
+    endfor; 
+    c2 = {};
+    for i(1,cols(c1),1);
+        c2 = c2~deptodumm(c1[.,i]);
+    endfor;    
+    retp(c1,c2);
+endp;
+
+/*
+** Purpose: Procedure generates a matrix to expand utility differential stochastic kernel covariance matrix (du) to utility stochastic kernel covariance
+   matrix (u); see page 11 of Bhat et al. A Joint Count-Continuous Model of Travel Behavior with Selection Based on a Multinomial Probit 
+   Residential Density Choice Model; YOU WILL NEED THIS ONLY IF THERE IS AT LEAST ONE NOMINAL VARIABLE; NOTE THAT I AM ALWAYS CONSODERING MDC 
+   VARIABLES AS HAVING AN OUTSIDE GOOD INCLUDED
+
+
+Format:  { D } = Ddutou(nnom,nc,nmdc,ncmdc,nnonnom);
+
+Inputs: nnom  - 1x1 scalar of the number of nominal variables (consider binary variables as nominal variables in this design; should be at least 1 for this procedure)
+        nc    - nnomx1 vector containing the number of alternatives in each nominal variable; each element of nc should be a value of 2 or higher
+        nmdc  - 1x1 scalar of the number of mdc variables
+        ncmdc - nmdcx1 vector containing the number of alternatives in each mdc variable (including the outside good, 
+                    which should always be included) (each element of ncmdc should be 3 or greater); ONLY exception is when nmdc=0, in which case ncmdc=0;        
+        nnonnom - 1x1 scalar of the number  of non-nominal variables (a value of 0 means no non-nominal variables); for the purposes of this 
+                  matrix design, consider count variables, ordinal variables, grouped regression variables, and continuous variables as non-nominal variables
+
+Output: D - (sumc(nc)+(sumc(ncmdc)-nmdc)+nnonnom) x (sumc(nc)-nnom+(sumc(ncmdc)-nmdc)+nnonnom) matrix 
+        Arranged such that first nominal, then mdc, then non-nominal */
+       
+
+proc (1) = Ddutou(nnom,nc,nmdc,ncmdc,nnonnom);
+  local rowss,colss,newnc,nc1,nv,ncmdc1,k,D,j,i;
+  rowss = sumc(nc)+sumc(ncmdc)-nmdc+nnonnom;
+  colss = sumc(nc)-nnom+sumc(ncmdc)-nmdc+nnonnom;
+  nc1 = nc-1;
+  if nmdc>0;
+    ncmdc1 = sumc((ncmdc-1));
+  else;
+    ncmdc1 = 0;
+  endif;
+  D = zeros(rowss,colss);
+  j = 1;
+  k = 1;
+  i = 1;
+  do until i > nnom;
+     D[j,.] = zeros(1,colss);
+     D[j+1:j+nc[i]-1,k:k+nc1[i]-1]=eye(nc[i]-1);       
+     j = j+nc[i];
+     k = k+nc1[i];
+     i=i+1; 
+  endo;     
+  if nnonnom+nmdc> 0;
+     nv = nnonnom+ncmdc1;
+     D[rows(D)-nv+1:rows(D),cols(D)-nv+1:cols(D)] = eye(nnonnom);
+  endif;
+  retp(D);
+endp;
+
+
+/*
+** Purpose: Procedure generates a mask matrix, and equality/inequality indicators based on the chosen alternative in an MNP
+            model, chosen alternatives in an MDC model, and with possible multiple non-nominal variables; mask M matrix is relevant only if there
+            are nominal variables; indxone is a vector indicating positions of single truncation inequality constraints (if only nominal and no continuous 
+            non-nominal variables, indxone is a vector of ones); indxeq is a vector indicating positions of equality constraints (if only continuous variables, 
+            indxeq is a vector on ones; if both indxone and indxeq are zero, it means a case of doubly truncated variables (count and variants of 
+            ordered-response dependent variables); for this procedure, binary variables are considered nominal variables
+
+Format:  { M,indxone,indxeq } = Mutodu(nnom,nc,ncchosen,nmdc,ncmdc,ncmdcchosen,ndoub,ncont);
+
+Inputs: nnom        - 1x1 scalar of the number of nominal variables (can be zero)
+        nc          - nnomx1 vector containing the number of alternatives in each nominal variable; each element of nc should be a value of 2 or higher; ONLY exception is when nnom=0, in which case nc=0;
+        ncchosen    - nnomx1 vector containing the number of the chosen alternative for each nominal variable (=0 if nnon=0) 
+        nmdc        - 1x1 scalar of the number of mdc variables (can be zero)
+        ncmdc       - nmdcx1 vector containing the number of alternatives in each mdc variable (including the outside good, 
+                      which should always be included) (each element of ncmdc should be 3 or greater); ONLY exception is when nmdc=0, in which case ncmdc=0;
+        ncmdcchosen - [sumc(nmdc-1)]x1 vector containing the continuous quantities of the chosen inside alternatives 
+                      (the MDC dependent variable without the outside good consumption, =0 if nmdc=0; the first alternative is always the outside good, 
+                      so provide this vector starting with the consumed inside good quantity for first inside good for first mdc variable, 
+                      then consumed inside good quantity for second inside good for first mdc variable,.....then first inside good quantity for second mdc variable,....
+                      for any good, 0 if not consumed)
+        ndoub       - 1x1 scalar of the number of count and ordinal variables or variants of ordinal variables such as semi-parametric duration models and grouped regression models
+        ncont       - 1x1 scalar of the number of continuous variables 
+
+        At least one of nnom,nmdc,ndoub, or ncont should be more than zero;
+        
+Output: M - (sumc(nc)-nnom+(sumc(ncmdc)-nmdc))+ndoubcont) x (sumc(nc)+(sumc(ncmdc)-nmdc)+ndoubcont) matrix 
+  indxone - (sumc(nc)-nnom+(sumc(ncmdc)-nmdc))+ndoubcont) x 1 vector
+  indxeq  - (sumc(nc)-nnom+(sumc(ncmdc)-nmdc))+ndoubcont) x 1 vector */
+       
+proc (3) = Mutodu(nnom,nc,ncchosen,nmdc,ncmdc,ncmdcchosen,ndoub,ncont);
+  local rowss,colss,newnc,nc1,k,M,j,i,iden_matrix,one_negative,alt_chosen,temp,indxone,indxeq,nctot,ncmdc1,ndoubcont,ncmdctot,nnonnom;
+  ndoubcont = ndoub+ncont; 
+  colss = sumc(nc)+(sumc(ncmdc)-nmdc)+ndoubcont;
+  rowss = (sumc(nc)-nnom)+(sumc(ncmdc)-nmdc)+ndoubcont;
+  indxone = zeros(rowss,1);
+  indxeq = zeros(rowss,1);
+  M = zeros(rowss,colss);
+  if nnom>0;
+     nc1 = nc-1;
+     nctot = sumc(nc1);
+     j = 1;
+     k = 1;
+     i = 1;
+     do until i > nnom;
+        iden_matrix = eye(nc1[i]);
+        one_negative = -1*ones(nc1[i],1);
+        alt_chosen = ncchosen[i];
+        if (Alt_chosen eq 1); 
+   	       temp = one_negative ~ iden_matrix;
+        elseif (Alt_chosen eq nc[i]);
+           temp = iden_matrix ~ one_negative;
+        else;
+	       temp = iden_matrix[.,1:alt_chosen-1] ~ one_negative ~ iden_matrix[.,alt_chosen:nc[i]-1];
+        endif;
+        M[k:k+nc1[i]-1,j:j+nc[i]-1]=temp;       
+        j = j+nc[i];
+        k = k+nc1[i];
+        i=i+1; 
+     endo;     
+     indxone[1:nctot]=ones(nctot,1);
+  elseif nnom==0;
+     nctot=0;
+  endif;
+  if nmdc>0;
+     ncmdc1 = ncmdc-1;
+     ncmdctot = sumc(ncmdc1);
+     indxone[nctot+1:nctot+ncmdctot]=ncmdcchosen.==0;
+     indxeq[nctot+1:nctot+ncmdctot]=ncmdcchosen.>0;
+  else;
+     ncmdctot = 0;
+  endif;   
+  if ncont>0;
+     indxone[nctot+ndoub+ncmdctot+1:nctot+ncmdctot+ndoub+ncont]=zeros(ncont,1);
+     indxeq[nctot+ndoub+ncmdctot+1:nctot+ncmdctot+ndoub+ncont]=ones(ncont,1);
+  endif;
+  nnonnom = ncmdctot+ndoubcont;
+  if nnonnom> 0;
+     M[rows(M)-nnonnom+1:rows(M),cols(M)-nnonnom+1:cols(M)] = eye(nnonnom);
+  endif;
+  retp(M,indxone,indxeq);
+endp;
+
+
+/*
+** Purpose: Procedure for non-GHMD generates the diagonal matrix of standard errors and correlation matrix of a set of nominal (in differenced form) and non-nominal variables for estimation based 
+            on individual correlation components; positions the correlation elements appropriately; C matrix 
+
+Format:  { indxrearrang,indxW, W,C } = poscor(veccor,vecdiag,nnom,nc,nmdc,ncmdc,nnonnomscalset, nnonnomscalenoset);
+
+see d:\gauss\com\shlomo\maxminissues\testing.gss
+
+Inputs: veccor    - vector of upper diagonal cholesky parameters (or correlation parameters or sstar parametrization of cholesky parameters; see cholparm in vecup.src) arranged as follows: first cholesky/correlation parameters for first nominal variable
+                    (if first nominal variable has five alternatives, difference matrix will be a 4x4 matrix with a 1 in the first diagonal 
+                    element; so, the number of cholesky/correlation/sstar parametrization parameters will be (4-1)*4/2=6 elements); if number of alternatives for a nominal variable
+                    is equal to 2, there will not be a cholesky/correlation/sstar parameter (across alternatives of that nominal variable) for the nominal variable;
+                    then for second nominal variable,then for third nominal variable,....then for non-nominal variables altogether with scaled (normalized)
+                    variables appearing first (followed by non-nominal variables with non-scaled variables, then correlation for 
+                    first nominal variable (in differenced form) with second nominal (in differenced form), then for first with third nominal,...then for first with non-nominal, then second nominal with
+                    third nominal,......
+        vecdiag   - square root of diagonal terms, excluding those for the second alternative (utilities differenced from a base first alternative) in nominal variables and
+                    for non-nominal variables for which scale has to be normalized to one.
+                    Of dimension (sumc(nc)-2*nnom+sumc(nmdc)-ncmdc+nnonnomscalnoset)
+        nnom      - 1x1 scalar of the number of nominal variables; for this procedure, consider binary variables as nominal variables
+        nc        - nnomx1 vector containing the number of alternatives in each nominal variable; each element of nc should be a value of 2 or higher,
+                    EXCEPT WHEN nnom=0, in which case nc MUST take the value of zero; Code WILL NOT CHECK THIS; RESPONSIBILITY OF
+                    ANALYST
+        nmdc      -  1x1 scalar of number of mdc variables
+        ncmdc     - nmdcx1 vector containing the number of alternatives in each mdc variable (including the outside good, 
+                    which should always be included) (each element of ncmdc should be 3 or greater); ONLY exception is when nmdc=0, in which case ncmdc=0;
+        nnonnomscalset   - 1x1 scalar of the number  of non-nominal variables with scale to 1 (a value of 0 for nnonnomscalset means no non-nominal variables with
+                        scale); for the purposes of this matrix design, consider count variables and ordinal variables as scaled non-nominal.
+        nnonnomnscalnoset - 1x1 scalar of the number of non-nominal variables with no scale normalization ((a value of 0 for nnonnomscal means no non-nominal variables with
+                        scale); for the purpose of this matrix design, continuous variables and grouped variables are non-nominal variables with noscaling. 
+
+   If both nnom=0 and nmdc = 0, then nnonnomscalset+nnonnomscalnoset should be at least equal to two. 
+   Output: tot = (sumc(nc)-nnom+sumc(ncmdc)-nmdc+nnonnomscalset+nnonnomscalenoset)
+
+   indxrearrrang - column vector of [(sumc(nc)-nnom)*(sumc(nc)-nnom+1)/2]x1 to rearrrange correlation matrix from upper matrix elements order back to order in input veccor  
+   indxW  - tot x 1 vector providing indx of diagonal parameters that are active (not scaled) and that are inactive (scaled); in the example context,
+            indx W is { 2,3,4,6,7,8,9,10,11,14 };
+   W -      square root of variances on the diagonal, so that W*C*W forms the covariance matrix; 
+            W is (sumc(nc)-nnom+sumc(ncmdc)-nmdc+nnonnomscal+nnonnomnoscale) x (sumc(nc)-nnom+sumc(ncmdc)-nmdc+nonnomscal+nnonnomnoscale) diagonal matrix; 
+            so if two nominal variables with
+            first having 5 alts. and second having 3 alts, and two mdc variables with first having 4 alts, and the second having 3 alts,
+            three non-nominal variables, the first two scaled with error term scale to 1 and the last with free scale (non-normalized errors always to appear last)
+            
+            W is a zero matrix with the following vector on the diagonal
+                { 1,                   first four elements correspond to differenced utility standard errors for first nominal variable
+                  vecdiag[1],
+                  vecdiag[2],
+                  vecdiag[3],
+                  1,                   next two elements correspond to differenced utility standard errors for second nominal variable
+                  vecdiag[4],           
+                  vecdiag[5]           next three elements correspond to MDC utility standard errors for the three inside goods of the first mdc variable
+                  vecdiag[6]            
+                  vecdiag[7]
+                  vecdiag[8]           next two elements correspond to MDC utility standard errors for the two inside goods of the second mdc variable
+                  vecdiag[9]
+                  1,                   next two elements correspond to scaled standard errors for scaled non-nominal variables
+                  1,
+                  vecdiag[10] };       this last element corresponds to non-scaled standard error for the non-scaled variable
+                  
+   C - (sumc(nc)-nnom+sumc(ncmdc)-nmdcn+nonnomscal+nnonnomnoscale) x (sumc(nc)-nnom+sumc(ncmdc)-nmdc+nnonnomscal+nnonnomnoscale) correlation matrix 
+        
+   C =       { 1    vc[1]   vc[2]    vc[3]   vc[15]    vc[16]    vc[23]    vc[24]     vc[25]    vc[35]  vc[36]    vc[43]    vc[44]     vc[45]
+               0     1      vc[4]    vc[5]   vc[17]    vc[18]    vc[26]    vc[27]     vc[28]    vc[37]  vc[38]    vc[46]    vc[47]     vc[48]
+               0     0        1      vc[6]   vc[19]    vc[20]    vc[29]    vc[30]     vc[31]    vc[39]  vc[40]    vc[49]    vc[50]     vc[51]
+               0     0        0        1     vc[21]    vc[22]    vc[32]    vc[33]     vc[34]    vc[41]  vc[42]    vc[52]    vc[53]     vc[54]
+               0     0        0        0       1       vc[7]     vc[55]    vc[56]     vc[57]    vc[61]  vc[62]    vc[65]    vc[66]     vc[67]
+               0     0        0        0       0         1       vc[58]    vc[59]     vc[60]    vc[63]  vc[64]    vc[68]    vc[69]     vc[70]
+               0     0        0        0       0         0          1      vc[8]      vc[9]     vc[71]  vc[72]    vc[77]    vc[78]     vc[79]
+               0     0        0        0       0         0          0          1      vc[10]    vc[73]  vc[74]    vc[80]    vc[81]     vc[82]
+               0     0        0        0       0         0          0          0        1       vc[75]  vc[76]    vc[83]    vc[84]     vc[85]
+               0     0        0        0       0         0          0          0        0         1     vc[11]    vc[86]    vc[87]     vc[88]
+               0     0        0        0       0         0          0          0        0         0       1       vc[89]    vc[90]     vc[91]
+               0     0        0        0       0         0          0          0        0         0       0         1       vc[12]     vc[13]   
+               0     0        0        0       0         0          0          0        0         0       0          0         1       vc[14]
+               0     0        0        0       0         0          0          0        0         0       0          0         0           1    };
+
+C will be a cholesky matrix if veccor input is cholesky, or C will be a upper triangular part of correlation matrix if veccor is upper triangular correlation, or
+C will be a sstar parameterization of cholesky if veccor is the sstar parametrization of cholesky
+
+Let gg = { vc[1], vc[2], vc[3], vc[15], vc[16], vc[23], vc[24], vc[25], vc[35], vc[36], vc[43], vc[44], vc[45], 
+                  vc[4], vc[5], vc[17], vc[18], vc[26], vc[27], vc[28], vc[37], vc[38], vc[46], vc[47], vc[48], 
+                         vc[6], vc[19], vc[20], vc[29], vc[30], vc[31], vc[39], vc[40], vc[40], vc[50], vc[51],
+                                vc[21], vc[22], vc[32], vc[33], vc[34], vc[41], vc[42], vc[52], vc[53], vc[54], 
+                                         vc[7], vc[55], vc[56], vc[57], vc[61], vc[62], vc[65], vc[66], vc[67],
+                                                vc[58], vc[59], vc[60], vc[63], vc[64], vc[68], vc[69], vc[70],
+                                                          vc[8], vc[9], vc[71], vc[72], vc[77], vc[78], vc[79],
+                                                                vc[10], vc[73], vc[74], vc[80], vc[81], vc[82],
+                                                                        vc[75], vc[76], vc[83], vc[84], vc[85],
+                                                                                vc[11], vc[86], vc[87], vc[88],
+                                                                                        vc[89], vc[90], vc[91],
+                                                                                                vc[12], vc[13],
+                                                                                                        vc[14] }
+            
+           When you do g1 = gg[indxrearrang],
+            
+           you will get things rearranged to be compatible with veccor
+           
+           g1 = { vc[1], vc[2], vc[3], vc[4], vc[5], vc[6], vc[7], vc[8], .......vc[91] };  */
+
+proc (4) = poscor(veccor,vecdiag,nnom,nc,nmdc,ncmdc,nnonnomscalset,nnonnomscalnoset);
+  local indxW,cov,nnonnom,indxrearrang,tot,ltemp,d,vecindx,ql,indxC,indxtemp,nc1,nc2,nm1,nm2,W,ncornonnom,k,i,m,l,j,q,ncor,temp,C,ncormdc,vecdiag1,temp1;  
+  nnonnom = nnonnomscalset+nnonnomscalnoset;
+  tot = sumc(nc)-nnom+sumc(ncmdc)-nmdc+nnonnom;
+  nc1 = nc-1;
+  nc2 = cumsumc(nc1);
+  nm1 = ncmdc-1;
+  nm2 = cumsumc(nm1);
+  vecdiag1 = ones(tot,1);
+  vecindx = seqa(1,1,rows(veccor));
+  C = zeros(tot,tot);
+  indxC = zeros(tot,tot);
+  W = eye(tot);
+  indXw = {};
+  ncornonnom = nnonnom*(nnonnom-1)/2;
+  k = 1;
+  i = 1;
+  l = 1;
+  q = 1;
+  if nnom>0 and nmdc > 0;
+     do until i > nnom;
+        ncor = nc1[i]*(nc1[i]-1)/2;
+        if ncor>0;
+           temp = veccor[l:l+ncor-1];
+           indxtemp = vecindx[l:l+ncor-1];
+           C[k:k+nc1[i]-1,k:k+nc1[i]-1] =  matndupdiagzero(temp);
+           indxC[k:k+nc1[i]-1,k:k+nc1[i]-1] =  matndupdiagzero(indxtemp);         
+           W[k+1:k+nc1[i]-1,k+1:k+nc1[i]-1] = diagrv(zeros(nc1[i]-1,nc1[i]-1),vecdiag[q:q+nc1[i]-2]);
+           indxW = indxW|seqa(k+1,1,nc1[i]-1);
+           q = q+nc1[i]-1;
+        endif;            
+        l = l+ncor;
+        k = k+nc1[i];
+        i=i+1;
+     endo;
+
+     i = 1;
+     ql = q-1;
+     do until i > nmdc;
+        ncormdc = nm1[i]*(nm1[i]-1)/2;
+        temp = veccor[l:l+ncormdc-1];
+        indxtemp = vecindx[l:l+ncormdc-1];
+        C[k:k+nm1[i]-1,k:k+nm1[i]-1] = matndupdiagzero(temp);
+        indxC[k:k+nm1[i]-1,k:k+nm1[i]-1] = matndupdiagzero(indxtemp);
+        W[k:k+nm1[i]-1,k:k+nm1[i]-1] = diagrv(zeros(nm1[i],nm1[i]),vecdiag[ql+1:ql+nm1[i]]);
+        indxW = indxW|seqa(k,1,nm1[i]);
+        l = l+ncormdc;
+        k = k+nm1[i];
+        ql = ql+nm1[i];
+        i=i+1;
+     endo;
+     if nnonnom>0;
+        if nnonnom>1;
+           temp = veccor[l:l+ncornonnom-1];
+           indxtemp = vecindx[l:l+ncornonnom-1];
+           C[k:k+nnonnom-1,k:k+nnonnom-1]=matndupdiagzero(temp);
+           indxC[k:k+nnonnom-1,k:k+nnonnom-1]=matndupdiagzero(indxtemp);
+        endif;
+        if nnonnomscalnoset;
+            W[k+nnonnomscalset:rows(W),k+nnonnomscalset:rows(W)] = diagrv(zeros(nnonnomscalnoset,nnonnomscalnoset),vecdiag[ql+1:ql+nnonnomscalnoset]);
+            indxW = indxW|seqa(k+nnonnomscalset,1,nnonnomscalnoset);
+        endif;
+        l=l+ncornonnom-1;
+     elseif nnonnom==0;
+        l = l-1;
+     endif;
+     i=1;
+     k=1;
+     do until i>nnom;
+        m = 1+nc2[i];
+        j = i+1;
+        do until j > nnom;
+           temp = veccor[l+1:l+nc1[i]*nc1[j]]; 
+           indxtemp = vecindx[l+1:l+nc1[i]*nc1[j]];             
+           C[k:k+nc1[i]-1,m:m+nc1[j]-1] = reshape(temp,nc1[i],nc1[j]);
+           indxC[k:k+nc1[i]-1,m:m+nc1[j]-1] = reshape(indxtemp,nc1[i],nc1[j]);
+           m = m+nc1[j];
+           l =  l+nc1[i]*nc1[j];
+           j = j+1;
+        endo;  
+        j = 1;
+        do until j > nmdc; 
+           temp = veccor[l+1:l+nc1[i]*nm1[j]]; 
+           indxtemp = vecindx[l+1:l+nc1[i]*nm1[j]]; 
+           C[k:k+nc1[i]-1,m:m+nm1[j]-1] = reshape(temp,nc1[i],nm1[j]);
+           indxC[k:k+nc1[i]-1,m:m+nm1[j]-1] = reshape(indxtemp,nc1[i],nm1[j]);
+           l =  l+nc1[i]*nm1[j];
+           m = m+nm1[j];
+           j = j+1;
+        endo;               
+        if nnonnom>=1;
+           temp = veccor[l+1:l+nc1[i]*nnonnom];
+           indxtemp = vecindx[l+1:l+nc1[i]*nnonnom];
+           C[k:k+nc1[i]-1,m:cols(C)] = reshape(temp,nc1[i],cols(C)-m+1);
+           indxC[k:k+nc1[i]-1,m:cols(C)] = reshape(indxtemp,nc1[i],cols(C)-m+1);
+           l =  l+nc1[i]*nnonnom;  
+        endif;  
+        k=k+nc1[i];
+        i=i+1;   
+     endo;     
+     k=1+sumc(nc1);
+     i=1;
+     do until i>nmdc;
+         m = sumc(nc1)+nm2[i]+1;
+         j=i+1;
+         do until j > nmdc;
+            temp = veccor[l+1:l+nm1[i]*nm1[j]];
+            indxtemp = vecindx[l+1:l+nm1[i]*nm1[j]];             
+            C[k:k+nm1[i]-1,m:m+nm1[j]-1] = reshape(temp,nm1[i],nm1[j]);         
+            indxC[k:k+nm1[i]-1,m:m+nm1[j]-1] = reshape(indxtemp,nm1[i],nm1[j]);     
+            m = m+nm1[j];
+            l = l+nm1[i]*nm1[j];
+            j=j+1;
+         endo;
+         if nnonnom>=1;
+            temp = veccor[l+1:l+nm1[i]*nnonnom];
+            indxtemp = vecindx[l+1:l+nm1[i]*nnonnom];
+            C[k:k+nm1[i]-1,m:cols(C)] = reshape(temp,nm1[i],cols(C)-m+1);
+            indxC[k:k+nm1[i]-1,m:cols(C)] = reshape(indxtemp,nm1[i],cols(C)-m+1);
+            l =  l+nm1[i]*nnonnom;  
+         endif;
+         k = k+nm1[i];
+         i=i+1;   
+     endo;           
+  endif;
+
+  if nnom==0 and nmdc > 0;
+     i = 1;
+     do until i > nmdc;
+        ncormdc = nm1[i]*(nm1[i]-1)/2;
+        temp = veccor[l:l+ncormdc-1];
+        indxtemp = vecindx[l:l+ncormdc-1];
+        C[k:k+nm1[i]-1,k:k+nm1[i]-1] = matndupdiagzero(temp);
+        indxC[k:k+nm1[i]-1,k:k+nm1[i]-1] = matndupdiagzero(indxtemp);
+        W[k:k+nm1[i]-1,k:k+nm1[i]-1] = diagrv(zeros(nm1[i],nm1[i]),vecdiag[q:q+nm1[i]-1]);
+        indxW = indxW|seqa(k,1,nm1[i]);
+        l = l+ncormdc;
+        k = k+nm1[i];
+        q = q+nm1[i];
+        i=i+1;
+     endo;
+     if nnonnom>0;
+        if nnonnom>1;
+          temp = veccor[l:l+ncornonnom-1];
+          indxtemp = vecindx[l:l+ncornonnom-1];
+          C[k:k+nnonnom-1,k:k+nnonnom-1]=matndupdiagzero(temp);
+          indxC[k:k+nnonnom-1,k:k+nnonnom-1]=matndupdiagzero(indxtemp);
+        endif;
+        if nnonnomscalnoset;
+            W[k+nnonnomscalset:rows(W),k+nnonnomscalset:rows(W)] = diagrv(zeros(nnonnomscalnoset,nnonnomscalnoset),vecdiag[q:q+nnonnomscalnoset-1]);
+            indxW = indxW|seqa(k+nnonnomscalset,1,nnonnomscalnoset);
+        endif;
+        l=l+ncornonnom-1;
+     elseif nnonnom==0;
+        l = l-1;
+     endif;
+     i=1;
+     k=1;
+     do until i>nmdc;
+         m = nm2[i]+1;
+         j=i+1;
+         do until j > nmdc;
+            temp = veccor[l+1:l+nm1[i]*nm1[j]];
+            indxtemp = vecindx[l+1:l+nm1[i]*nm1[j]];
+            C[k:k+nm1[i]-1,m:m+nm1[j]-1] = reshape(temp,nm1[i],nm1[j]);         
+            indxC[k:k+nm1[i]-1,m:m+nm1[j]-1] = reshape(indxtemp,nm1[i],nm1[j]); 
+            m = m+nm1[j];
+            l = l+nm1[i]*nm1[j];
+            j=j+1;
+         endo;
+         if nnonnom>=1;
+            temp = veccor[l+1:l+nm1[i]*nnonnom];
+            indxtemp = vecindx[l+1:l+nm1[i]*nnonnom];
+            C[k:k+nm1[i]-1,m:cols(C)] = reshape(temp,nm1[i],cols(C)-m+1);
+            indxC[k:k+nm1[i]-1,m:cols(C)] = reshape(indxtemp,nm1[i],cols(C)-m+1);
+            l =  l+nm1[i]*nnonnom;  
+         endif;
+         k = k+nm1[i];
+         i=i+1;   
+     endo;           
+  endif;
+
+  if nnom>0 and nmdc == 0;
+     do until i > nnom;
+        ncor = nc1[i]*(nc1[i]-1)/2;
+        if ncor>0;
+           temp = veccor[l:l+ncor-1];
+           indxtemp = vecindx[l:l+ncor-1];
+           C[k:k+nc1[i]-1,k:k+nc1[i]-1] =  matndupdiagzero(temp);
+           indxC[k:k+nc1[i]-1,k:k+nc1[i]-1] =  matndupdiagzero(indxtemp);
+           W[k+1:k+nc1[i]-1,k+1:k+nc1[i]-1] = diagrv(zeros(nc1[i]-1,nc1[i]-1),vecdiag[q:q+nc1[i]-2]);
+           q =q+nc1[i]-1;
+           indxW = indxW|seqa(k+1,1,nc1[i]-1);
+        endif;
+        l = l+ncor;
+        k = k+nc1[i];
+        i=i+1;
+     endo;
+     ql=q-1;
+     if nnonnom>0;
+        if nnonnom>1;
+           temp = veccor[l:l+ncornonnom-1];
+           indxtemp = vecindx[l:l+ncornonnom-1];
+           C[k:k+nnonnom-1,k:k+nnonnom-1]=matndupdiagzero(temp);
+           indxC[k:k+nnonnom-1,k:k+nnonnom-1]=matndupdiagzero(indxtemp);
+        endif;
+        if nnonnomscalnoset;
+            W[k+nnonnomscalset:rows(W),k+nnonnomscalset:rows(W)] = diagrv(zeros(nnonnomscalnoset,nnonnomscalnoset),vecdiag[ql+1:ql+nnonnomscalnoset]);
+            indxW = indxW|seqa(k+nnonnomscalset,1,nnonnomscalnoset);
+        endif;
+        l=l+ncornonnom-1;
+     elseif nnonnom==0;
+        l = l-1;
+     endif;
+     i=1;
+     k=1;
+     do until i>nnom;
+        m = 1+nc2[i];
+        j = i+1;
+        do until j > nnom;
+           temp = veccor[l+1:l+nc1[i]*nc1[j]]; 
+           indxtemp = vecindx[l+1:l+nc1[i]*nc1[j]]; 
+           C[k:k+nc1[i]-1,m:m+nc1[j]-1] = reshape(temp,nc1[i],nc1[j]);
+           indxC[k:k+nc1[i]-1,m:m+nc1[j]-1] = reshape(indxtemp,nc1[i],nc1[j]);
+           m = m+nc1[j];
+           l =  l+nc1[i]*nc1[j];
+           j = j+1;
+        endo;                
+        if nnonnom>=1;
+           temp = veccor[l+1:l+nc1[i]*nnonnom];
+           indxtemp = vecindx[l+1:l+nc1[i]*nnonnom];
+           C[k:k+nc1[i]-1,m:cols(C)] = reshape(temp,nc1[i],cols(C)-m+1);
+           indxC[k:k+nc1[i]-1,m:cols(C)] = reshape(indxtemp,nc1[i],cols(C)-m+1);
+           l =  l+nc1[i]*nnonnom;  
+        endif;  
+        k=k+nc1[i];
+        i=i+1;   
+     endo;            
+  endif;
+
+  if nnom==0 and nmdc == 0;
+    temp = veccor[l:l+ncornonnom-1];
+    indxtemp = vecindx[l:l+ncornonnom-1];
+    C[k:k+nnonnom-1,k:k+nnonnom-1]=matndupdiagzero(temp);
+    indxC[k:k+nnonnom-1,k:k+nnonnom-1]=matndupdiagzero(indxtemp);
+    if nnonnomscalnoset;
+       W[1+nnonnomscalset:rows(W),1+nnonnomscalset:rows(W)] = diagrv(zeros(nnonnomscalnoset,nnonnomscalnoset),vecdiag[1:nnonnomscalnoset]);
+       indxW = indxW|seqa(k+nnonnomscalset,1,nnonnomscalnoset);
+    endif;
+    l=l+ncornonnom-1;         
+  endif;
+  i=2;
+  do until i > tot;
+    ltemp = C[1:i-1,i];
+    d = 1-sumc((ltemp^2));
+    C[i,i] = sqrt(d);
+    i=i+1;
+  endo;
+  indxC = vecndup(indxC);  
+  indxrearrang = indcv(vecindx,indxC);
+  C = diagrv(C,ones(tot,1));
+  retp(indxrearrang,indxW,W,C);
+endp;  
+
+
+/*
+** Purpose: Removes diagonal values from a square matrix  
+
+Format:  y = nodiagonal(x);
+
+ x is a K*K matrix, and the output y is a(K-1)*K matrix that includes the elements of X without the diagonal elements 
+
+   x = { 1   2  3  4,                y = 5   2   3  4,
+         5   6  7  8,                    9  10   7  8,
+         9  10 11 12,                   13  14  15 12 };   
+         13 14 15 16    } ;      */          
+         
+proc nodiagonal(x);
+   local e1,k,mask,newx;
+   e1 = rows(x);
+   k = 1;
+   newx={};
+   do until k>e1;
+  	  mask = zeros(e1,1);
+      mask[k]=1;
+	  newx = newx~delif(x[.,k],mask);
+	  k=k+1;
+   endo;
+   retp(newx);
+endp;
+  
+/*
+** Purpose: concatenates all values in each row of a 2-column matrix
+
+Format:  y = concatenate(x);
+
+x is a L*2 matrix, and the output y is a Lx1 vector 
+
+x = 1  234,           y = 1234,
+   23   45 };             2345 };   */
+
+proc(1) = concatenate(x);
+  local y;
+  y = x[.,1] .*(10^(trunc (ln(x[.,2])./ln(10))+1)) + x[.,2];
+  retp(y);
+endp;
+
+
+/*
+** Intherabs.src - Nodes and weights for Gauss-Hermite Quadrature.
+
+** (C) Copyright Chandra Bhat September 19, 2025
+** All Rights Reserved.
+**
+** =========================================================================
+**   Procedure     Format                       
+** =========================================================================
+**   Intherabs      { nodes,wts } = intherabs(intord);          
+** =========================================================================
+*/
+
+#include inther.ext;
+
+/*
+**
+** Input:      _intord   scalar, the order of the integration
+**                  2, 4, 6, 10, 20, 30, 40, 50, 60, 76,
+**                  92, 104, 120, 136.
+**
+** Output:     abs   Nodes of quadrature
+**             w     weights of quadrature 
+*/
+
+proc (2) = intherabs(_intord);
+    local e,w;
+    if _intord==2;
+       e=_inth2[.,1];
+       w=_inth2[.,2];
+    elseif _intord==4;
+       e=_inth4[.,1];
+       w=_inth4[.,2];
+    elseif _intord==6;
+       e=_inth6[.,1];
+       w=_inth6[.,2];
+    elseif _intord==10;
+       e=_inth10[.,1];
+       w=_inth10[.,2];
+    elseif _intord==20;
+       e=_inth20[.,1];
+       w=_inth20[.,2];
+    elseif _intord==30;
+       e=_inth30[.,1];
+       w=_inth30[.,2];
+    elseif _intord==40;
+       e=_inth40[.,1];
+       w=_inth40[.,2];
+    elseif _intord==50;
+       e=_inth50[.,1];
+       w=_inth50[.,2];
+    elseif _intord==60;
+       e=_inth60[.,1];
+       w=_inth60[.,2];
+    elseif _intord==76;
+       e=_inth76[.,1];
+       w=_inth76[.,2];
+    elseif _intord==92;
+       e=_inth92[.,1];
+       w=_inth92[.,2];
+    elseif _intord==104;
+       e=_inth104[.,1];
+       w=_inth104[.,2];
+    elseif _intord==120;
+       e=_inth120[.,1];
+       w=_inth120[.,2];
+    elseif _intord==136;
+       e=_inth136[.,1];
+       w=_inth136[.,2];
+    endif;
+    e = (-e)|rev(e);
+    w = w|rev(w);
+    retp(e,w);
+endp; 
+
+
+/*
+** Purpose: Creates a Halton matrix appropriate for a specific context, as defined by whether untruncated uniform or normal 
+   draws needed, None or Bratten-Weller scrambling or random scrambling within EACH column to break correlation
+   across dimensions, no randomization or tuffin randomization (tuffin randomization serves same purpose of breaking correlations 
+   as scrambling approaches, but can be used with no or BW scrambling to generate alternative points for different runs),
+   and None or randomized Halton columns so that different columns (different prime numbers) are associated with
+   different integral dimensions across individuals 
+
+** Format: as = createhalt(datainunif,datainbrat,nrep,nobs,ndim,mu,cov,runno);
+
+Inputs:     datainunif    - Original Halton file with uniform draws; that is provide specification of datain as datain = drive $+ runpath $+ "haltr", 
+                            where haltr is the original raw Halton file, and then in call to writhalt put simple datain.  ;
+            datainbrat    - Bratten_weller scrambled file with uniform draws 
+                nrep      - Number of repetitions per observation/individual (scalar)
+                nobs      - Number of observations/individuals (scalar)
+                ndim      - Number of dimensions of integration scalar) 
+                mu        - Mean of distribution from which to get realizations (vector ndim x 1); if uniform distribution, mu is ndimx1 vector of zeros
+                cov       - Covariance of distribution from which to get realizations (ndim x ndim); if uniform distribution, cov is eye(ndim) or independence matrix 
+                runno     - If you want to estimate the model with different sets of Halton draws (useful for simulation purposes to see if you 
+                            are able to recover parameters with different runs, and then find mean/standard deviation of estimated parameters
+                            across runs and compare against data generation parameters; Typically, runno=1, because you will be estimating 
+                            model only once
+
+Output:        as         - Halton draws of dimension (nobs*nrep) x ndim; first nrep rows correspond to first individual, second nrep 
+                            rows to second individual, and so on....
+                            
+Globals:       _norm =1 if normal draws required; 0 if uniform draws desired
+               _corbreak = 0 if no scrambling, 1 if Bratten-Weller scrambling, and 2 if random scrambling
+               _rantuff = 0 if not using tuffin randomization, 1 if using Tuffin randomization (this is useful for multiple runs 
+                             with different sets of Halton draws in each run
+               _rancolumn = 0 if no randomization of columns and 1 if randomization of columns desired
+               Default is _norm=1, _corbreak=1, _rantuff=1, and _rancolumn=1;  */
+                              
+proc createhalt(datainunif,datainbrat,nrep,nobs,ndim,mu,cov,runno);
+  local fi1,fin,popass,seed4,seed5,seed6,_seedtuff,_seedbreakcorran,_seedrcolumn;
+  local as,inhalt,pp,ass,ssss,numbre,seqq,jj,ii,ss;
+
+  /* name of comprehensive halton file to read from */
+
+  seed4 = 4873872;    /* arbitrary randomization seed for Tuffin randomization (if _rantuff=) */
+  seed5 = 6749393;    /* arbitrary randomization seed for randomized scrambling within each observation for each dimension (for _corbreak=2) */
+  seed6 = 9836506;    /* arbitrary randomization seed for randomizing columns (for _rancolumn)  */
+  /*seeds below for various randomizations of Halton, and controlling what seed values are used for each run by seeting seednext to seed */
+  seed4 = seed4 + (runno-1)*10000;
+  seed5 = seed5 + (runno-1)*10000;
+  seed6 = seed6 + (runno-1)*40000;
+
+  _seedtuff = seed4;
+  _seedbreakcorran=seed5;
+  _seedrcolumn = seed6;
+
+  if _corbreak==0 or _corbreak==2;
+     open fin = ^datainunif for read;
+  elseif _corbreak==1;
+     open fin = ^datainbrat for read; 
+  endif;
+  
+  if fin == -1;
+      print "Raw Halton File Not Found";
+      end;
+  endif;
+  
+  call seekr(fin,11);
+  as = readr(fin,nrep*nobs);
+  as = as[.,1:ndim];        
+
+  if _corbreak==2;
+    { ssss,_seedbreakcorran }=rndu(nrep*nobs,ndim,_seedbreakcorran);
+    ssss = reshape(ssss',nobs*ndim,nrep);
+    ss = {};
+    for jj(1,nobs*ndim,1);
+       ss = ss|((sortind((ssss[jj,.])'))');
+    endfor;
+    clear ssss;
+    ss = (reshape(ss,ndim,nrep*nobs))';
+    ii=1;
+    ass={};
+    for ii(1,ndim,1);
+       pp = as[.,ii];
+       ass = ass~pp[ss[.,ii]];
+    endfor;
+  else;
+    ass=as;
+  endif;
+       
+  if _rantuff;
+     { numbre,_seedtuff } = rndu(1,ndim,_seedtuff);     
+     ass = ass+numbre;
+     ass = (ass-floor(ass));
+  endif;
+
+  if _rancolumn==1;
+     { seqq,_seedrcolumn }=rndu(ndim,1,_seedrcolumn);
+     { seqq } = sortind(seqq);
+  else;
+     seqq = seqa(1,1,ndim);
+  endif;
+  ass = ass[.,seqq'];
+  
+  if _norm==0;
+     retp(ass);
+  elseif _norm==1;
+     retp(mu+(cdfni(ass))*(chol(cov)));
+  endif;
+
+  closeall fin;
+endp;  
+
+/*
+** Purpose: gets the transformation from the real line to -1 to 1 range
+
+Format:  S = trmin1to1(sstar);
+
+Inputs:         sstar    - K x N matrix (in the range of -inf to +inf)
+
+** Output:      S        - K x N matrix ; S = (exp(sstar)-1)/(exp(sstar)+1)   (in the range of -1 to 1); when sstar=0, S=0  */
+
+proc trmin1to1(sstar);
+    retp((exp(sstar)-1)./(exp(sstar)+1));
+endp;
+
+
+/*
+** Purpose: gets the transformation from -1 to 1 range to the real line
+
+Format:  sstar = revtrmin1to1(S);
+
+Inputs:         S    - K x N matrix (in the range of -1 to +1)
+
+** Output:      sstar- K x N matrix ; sstar = ln((1+S)/(1-S)) (in the range of -inf to inf); when S=0, sstar=0  */
+
+proc revtrmin1to1(S);
+    retp(ln((1+S)./(1-S)));
+endp;
+
+/*
+** Purpose: gets the gradient of transformation from the real line to -1 to 1 range
+
+Format:  { S,dS } = gtrmin1to1(sstar);
+
+Inputs:         sstar    - K x 1 vector (in the range of -inf to +inf)
+
+** Output:      S        - K x 1 vector (in the range of -1 to +1)
+               dS        - K x K diagonal matrix ; if K=4,
+
+dS  = {  dS1/dstar1     0           0           0,
+         0          dS2/dstar2      0           0,
+         0              0       dS3/dstar3      0,
+         0              0           0         dS4/dstar4 };   */
+
+proc (2) = gtrmin1to1(sstar);
+    local rr,temp,s;
+    rr = rows(sstar);
+    s=(exp(sstar)-1)./(exp(sstar)+1);
+    temp=(pdlogit(sstar)+pdlogit(-sstar));
+    retp(s,(diagrv(zeros(rr,rr),temp)));
+endp;
+
+
+/*
+** Purpose: gets the transformation from the real line to -1 to 1 range with a scale
+
+Format:  S = trmin1to1scaled(sstar,scal);
+
+Inputs:         sstar    - K x N matrix (in the range of -inf to +inf)
+                scal    -  K x N matrix with all positive elements (or 1 x 1 positive scalar)
+
+** Output:      S        - K x N vector ; S = (exp(sstar/scale)-1)/(exp(sstar/scale)+1)   (in the range of -1 to 1); when sstar=0, S=0  */
+
+proc trmin1to1scaled(sstar,scal);
+    local sstarnew;
+    sstarnew = sstar./scal;
+    retp(trmin1to1(sstarnew));
+endp;
+
+
+/*
+** Purpose: gets the transformation from -1 to 1 range to the real line using a scale 
+
+Format:  sstar = revtrmin1to1scaled(S,scal);
+
+Inputs:         S    - K x N matrix (in the range of -1 to +1)
+                scal - K x N matrix with all positive elements  (or 1 x 1 positive scalar)
+
+** Output:      sstar- K x N matrix ; sstar = scal*(ln((1+S)/(1-S))) (in the range of -inf to inf); when S=0, sstar=0  */
+
+proc revtrmin1to1scaled(S,scal);
+    retp(scal.*revtrmin1to1(S));
+endp;
+
+/*
+** Purpose: gets the gradient of transformation from the real line to -1 to 1 range with a scale
+
+Format:  { S,dS,dscal } = gtrmin1to1scaled(sstar,scal);
+
+Inputs:         sstar    - K x 1 vector (in the range of -inf to +inf)
+                scal     - K x 1 vector of positive elements (or 1 x 1 positive scalar)
+
+** Output:      S        - K x 1 vector (in the range of -1 to +1)
+               dS        - K x K diagonal matrix ;
+               dscal     - K x K diagonal; if scal is 1 x 1, scal is 1 x 1
+
+if K = 4;
+
+dS  = {  dS1/dstar1     0           0           0,
+         0          dS2/dstar2      0           0,
+         0              0       dS3/dstar3      0,
+         0              0           0         dS4/dstar4 }; 
+
+dscal  = {  dS1/dscal1     0           0           0,
+            0          dS2/dscal2      0           0,
+            0              0       dS3/dscal3      0,
+            0              0           0         dS4/dscal4 }; */
+
+proc (3) = gtrmin1to1scaled(sstar,scal);
+    local temp,s,sstarnew,temp1,temp2;
+    sstarnew = sstar./scal;
+    { s,temp } = gtrmin1to1(sstarnew);
+    temp1 = temp./scal;
+    temp2 = -(temp).*(sstarnew./scal);
+    retp(s,temp1,temp2);
+endp;
+
+
+/*
+** Purpose: gets recursive product gradient matrix; pretty straightforward, but may be good for thinking
+
+Format:  dsstar = recprod(dS,mat);
+
+Inputs:         dS    - K x K matrix of gradients
+               dmat    - K x M matrix of gradients with respect to some function F
+
+** Output:      dsstar- K x M matrix of product of recursive gradients of F with respect to dS
+
+** Consider an upper diagonal matrix with inter-related elements such that elements in row(x) are functions of rows(x-1,x-2,...), but elements of 
+   row(x) are not dependent on those in rows(x,x+1,x+2....) so, below S44=f(S11,S12,S13,S14,S22,S23,S24,S33,S34), S34=f(S11,S12,S13,S14,S22,S23,S24),
+   S33=f(S11,S12,S13,S14,S22,S23,S24), S24=f(S11,S12,S13,S14), S23=f(S11,S12,S13,S14), S22=f(S11,S12,S13,S14).
+
+** S = {   S11     S12     S13      S14,
+                   S22     S23      S24,
+                           S33      S34  
+                                    S44 };
+
+** Say S11, S22, S33, and S44 are not important here (think for example a cholesky of a correlation matrix 
+** You have the direct gradients of each element with the elements that directly appear in the other element, 
+   but you need the total gradient of each element with the other based on indirect permeation
+    
+                
+** dS = {   dS12/dS12        0          0         dS23/dS12     dS24/dS12   dS34/dS12,   
+                0       dS13/dS13       0         dS23/dS13     dS24/dS13   dS34/dS13,   
+                0            0      dS14/dS14     dS23/dS14     dS24/dS14   dS34/dS14,
+                0            0          0             0             0       dS34/dS23,
+                0            0          0             0             0       dS34/dS24 
+                0            0          0             0             0       dS34/dS34   }; dsij/dsij = 1 for all ij.
+ 
+** In dS, each element provides only functions with respect to immediately preceding row.
+   so, for example, dS34/dS12 only above provides the direct gradient of 
+   S34 with respect to S12 based on appearance of S12 directly in the formula for S34, but this does not consider the fact that 
+   S34 is also a function of S24 and S23, and S24 and S23 are also functions of S12 
+   so actual gradient of S34 with respect to S12 will be:
+   dS34/dS12 =    dS34/dS12
+                 +(dS34/dS23)*(dS23/dS12)
+                 +(dS34/dS24)*(dS24/dS13);
+ 
+This procedure provides you the recursive gradients to get true gradients of F with respect to each dS element */
+
+
+proc recproduct(dS);
+    
+    local ks,dS1;
+    ks = rows(dS);
+    dS1 = zeros(ks,ks);
+    for k(1,ks-1,1);
+        dS1[1:ks-k,ks-k+1] = (dS[1:ks-k,1:ks-k])*(dS[1:ks-k,ks-k+1]);
+    endfor;
+    dS1 = diagrv(dS1,ones(ks,1));
+    retp(dS1);
+endp;
+
+
+
+/*
+** Purpose: Recproductnew
+
+Format:  dsstar = Recprodnew(dS,mat);
+
+Inputs:         dS    - K x K matrix of gradients
+
+** Output:      dsstar- K x M matrix of product of full gradients  with respect to dS
+
+** Consider an upper diagonal matrix with inter-related elements such that elements in row(x) are functions of rows(x-1,x-2,...), but elements of 
+   row(x) are not dependent on those in rows(x,x+1,x+2....) so, below S45=f(S11,S12,S13,S14,S22,S23,S24,S33,S34,S35), 
+   S35=f(S11,S12,S13,S14,S22,S23,S24,S33,S34), S34=f(S11,S12,S13,S14,S22,S23,S24),
+   S33=f(S11,S12,S13,S14,S22,S23,S24), S24=f(S11,S12,S13,S14), S23=f(S11,S12,S13,S14), S22=f(S11,S12,S13,S14).
+
+** S = {   S11     S12     S13      S14       S15,
+                   S22     S23      S24       S25,
+                           S33      S34       S35 
+                                    S44       S45
+                                              S55 };
+
+** Say S11, S22, S33, and S44 are not important here (think for example a cholesky of a correlation matrix 
+** You have the direct gradients of each element with the elements that directly appear in the other element, 
+   but you need the total gradient of each element with the other based on indirect permeation
+    
+                
+** dS = {   dS12/dS12        0          0          0          dS23/dS12     dS24/dS12   dS25/dS12      dS34/dS12      dS35/dS12       dS45/dS12   
+                0       dS13/dS13       0          0          dS23/dS13     dS24/dS13   dS25/dS13      dS34/dS13      dS35/dS13       dS45/dS13
+                0            0      dS14/dS14      0          dS23/dS14     dS24/dS14   dS25/dS14      dS34/dS14      dS35/dS14       dS45/dS14
+                0            0          0      dS15/dS15      dS23/dS14     dS24/dS14   dS25/dS15      dS34/dS15      dS35/dS15       dS45/dS15
+                0            0          0          0          dS23/dS14     dS24/dS14   dS25/dS23      dS34/dS23      dS35/dS23       dS45/dS23
+                0            0          0          0              0         dS24/dS14   dS25/dS24      dS34/dS24      dS35/dS24       dS45/dS24
+                0            0          0          0              0             0       dS25/dS25      dS34/dS25      dS35/dS25       dS45/dS25
+                0            0          0          0              0             0            0         dS34/dS34      dS35/dS34       dS45/dS34
+                0            0          0          0              0             0            0             0          dS35/dS35       dS45/dS35
+                0            0          0          0              0             0            0             0              0           dS45/dS45  };
+
+          dsij/dsij = 1 for all ij.
+ 
+** In dS, each element provides only functions with respect to immediately preceding row.
+   so, for example, dS45/dS34 only above provides the direct gradient of 
+   S45 with respect to S34 based on appearance of S34 directly in the formula for S45, but this does not consider the fact that 
+   S34 is also a function of S24 and S23, and S24 and S23 are also functions of S12 
+   so actual gradient of S45 with respect to S12 will be:
+   dS34/dS12 =    (dS45/dS35)*(dS35/dS35)=A
+                 +(dS34/dS34)*dS45/dS34+(dS35/dS34)*(dS45/dS35)*(dS35/dS35)  (second element is really dS45/dS34*A); Let dS45/dS34*A = B
+                 +(dS25/dS25*dS45/dS25)+(dS34/dS25)*B+(dS35/dS25)*(dS45/dS35)+.....;
+ 
+This procedure provides you the recursive gradients to get true gradients of each element with respect to each other dS element */
+
+
+proc recproductnew(dS);
+    local ks,dS1;
+    ks = rows(dS);
+    for i(ks,1,-1);
+       for k(1,i-1,1);
+         dS[i-k,i] = (dS[i-k,i-k:i-1])*(dS[i-k:i-1,i]);
+       endfor;
+    endfor;
+    dS = diagrv(dS,ones(ks,1));
+    retp(dS);
+endp;
+
+/* The next four procedures are for computing the gamma function and its derivatives */ 
+
+Proc gammafunc(theta);
+   local l;
+   l = integrate1d(&gamtheta,0,__INFP,theta);
+   retp(l);
+endp;
+
+Proc gammafuncder(theta);
+   local l;
+   l = integrate1d(&gamthetader,0,__INFP,theta);
+   retp(l);
+endp;
+
+proc gamtheta(x,theta);
+    retp((exp(-x)).*(x^(theta-1)));
+endp;  
+
+proc gamthetader(x,theta);
+    retp((exp(-x)).*(x^(theta-1)).*ln(x));
+endp;  
+
+/* These next procedures are to compute thresholds in a count model */
+
+/* Format:  upthresh = countthresh(lambda,theta,countvector,alphavector,_poisson);
+
+Inputs:         lambda -      1 x 1 vector
+                theta  -      1 x 1 vector (K+theta MUST BE BETWEEN 0 AND 60; otherwise, things blow up in computation of gamma function)
+                countvector - K x 1 vector (set of count values, generally (but not necessarily) consecutive from 0 to K)
+                alphavector - K x 1 vector (set of additional threshold constants, to allow low or high probability masses for specific count values
+                _Poisson:   - 1 x 1 If poisson count, put _poisson=1; also, put arbitrary zero value for theta when calling this function with _poisson=1
+
+** Output:      upthresh      - K x 1 vector of upper threshold values for each count, one for each count value
+                
+             If countvector is { 0,1,2,3 }, and say indalpha specified in code as { 1,2,3 }; indalpha cannot have lowest count value of 0 included
+             and cannot also have a value representing the cardinality of countvector (4 if countvector is { 0,1,2,3 }); 
+             alphavector will then be input by code to the current procedure as 
+             { alpha sub 1, alpha sub 1+alpha sub 2, alpha sub 1+alpha sub 2+alpha sub 3, alpha sub 1+alpha sub 2 + alpha sub 3 }; 
+             Then, basic thresholds will be -inf, del sub 0, del sub 1, del sub 2, inf, 
+             based on fundamental count model with the del vector parameterized by lambda and cdfni taken; so count = 0 if between -inf and del sub 0, count=1
+             if between del sub 0 and del sub 1, count = 2 if between del sub 1 and del sub 2, count =3 if between del sub 2 and del sub 3; basically
+             del sub i is upper bound of count i. del sub -1 = -inf. 
+
+             Output upthresh is {psi sub 0, psi sub 1, psi sub 2, psi sub 3 }, which will be 
+             
+             psi sub 0 = del sub 0 + alpha sub 1, 
+             psi sub 1 = del sub 1 + (alpha sub 1 + alpha sub 2),
+             psi sub 2 = del sub 2 + (alpha sub 1 + alpha sub 2 + alpha sub 3), 
+             psi sub 3 = del sub 3 + (alpha sub 1 + alphas sub 2 + alphas sub 3);
+             
+             Later in code, to get all the threshold bounds, you would do -inf|upthresh;
+             so if zero inflation, you would expect alpha sub 1 to be positive */
+
+proc counthresh(lambda,theta,countvector,alphavector,_poisson);
+    local e1,tol,vsubq,ret,onemvsubq,u,g,i,l,w,psitemp,psisubk1, psisubk ;
+    if _poisson==0;
+       e1 = rows(countvector);
+       vsubq = lambda/(lambda+theta);
+       onemvsubq = 1-vsubq;
+       u = (onemvsubq^theta)/(gammafunc(theta));
+       g = {};
+       for i(1,e1,1);
+          l = countvector[i];
+          g = g|(gammafunc(theta+l)*(vsubq^l))/(l!);
+       endfor;
+       w = cumsumc(g);
+       psitemp = (u*w);
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;   
+       psisubk = cdfni(psitemp)+alphavector;
+    elseif _poisson==1;
+       u = exp(-lambda);
+       g =(lambda^countvector)./(countvector!); 
+       w = cumsumc(g);
+       psitemp = u*w;
+/*       tol = 1e-12;
+       ret = dotfeqmt(psitemp,1, tol);  */
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;   
+/*       psitemp = (ret .ne 1).*psitemp+(ret.==1).*0.9999999999999;  */
+       psisubk1 = cdfni(psitemp);
+       psisubk = psisubk1 + alphavector ;
+    endif;
+    retp(psisubk);
+endp;
+
+/* Format:  { thresh,glambda,gtheta } = gcounthresh(lambda,theta,countvector,alphavector,_poisson);
+
+Inputs:         lambda -      1 x 1 vector
+                theta  -      1 x 1 vector (if Poisson count model; put this to an arbitrary value of zero)
+                countvector - K x 1 vector (set of count values, consecutive from 0 to K)
+                alphavector - Same as countthresh
+                _Poisson:   - 1 x 1 If poisson count, put _poisson=1; also, put arbitrary zero value for theta when calling this function with _poisson=1
+
+** Output:      thresh     - K x 1 vector
+                glambda     - 1 x K vector
+                gtheta      - 1 x K vector
+
+                glambda = {  dpsisub 0/dlambda    dpsisub1/dlambda    dpsisub2/dlambda    dpsisub3/dlambda    };
+                gtheta =  {  dpsisub 0/dtheta     dpsisub1/dtheta     dpsisub2/dtheta     dpsisub3/dtheta     };  
+                If _poisson=1, gtheta will return an arbitrary value of zero */ 
+
+proc (3) = gcounthresh(lambda,theta,countvector,alphavector,_poisson);
+    local e1,gammatemp,vsubq,onemvsubq,u,dudtheta,dudlambda,g1,dgdtheta1,dgdlambda1,gammatemp1,g,i,l,w,psitemp,psisubk;
+    local dwdtheta,dwdlambda,dpsitempdtheta,dpsitempdlambda,dpsitemp,dpsidlambda,dpsidtheta;
+    if _poisson==0;
+       gammatemp = gammafunc(theta);
+       e1 = rows(countvector);
+       vsubq = lambda/(lambda+theta);
+       onemvsubq = 1-vsubq;
+       u = (onemvsubq^theta)/gammatemp;
+       dudtheta = u*(ln(onemvsubq)+vsubq-((gammafuncder(theta))/gammatemp));
+       dudlambda = -u*onemvsubq;
+       g1 = {};
+       dgdtheta1 = {};   dgdlambda1= {};
+       for i(1,e1,1);
+          l = countvector[i];
+          gammatemp1 = gammafunc(theta+l);
+          g = (gammatemp1*(vsubq^l))/(l!);
+          g1 = g1|g;
+          dgdtheta1 = dgdtheta1|(((vsubq^l)/l!)*((gammafuncder(theta+l))-((gammatemp1*l)/(lambda+theta))));
+          dgdlambda1 = dgdlambda1|((onemvsubq/lambda)*(g*l));
+       endfor;
+       w = cumsumc(g1);
+       dwdtheta = cumsumc(dgdtheta1);    dwdlambda = cumsumc(dgdlambda1);
+       dpsitempdtheta = dudtheta*w+u*dwdtheta;
+       dpsitempdlambda = dudlambda*w+u*dwdlambda;
+       psitemp = (u*w);
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;  
+       psisubk = cdfni(psitemp)+alphavector;
+       dpsitemp = (1/(pdfn(cdfni(psitemp))));
+       dpsidlambda = dpsitemp.*dpsitempdlambda;
+       dpsidtheta = dpsitemp.*dpsitempdtheta;
+       retp(psisubk,(dpsidlambda'),(dpsidtheta'));
+    else;
+       u = exp(-lambda);
+       g =(lambda^countvector)./(countvector!); 
+       w = cumsumc(g);
+       psitemp = u*w;
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;  
+       dudlambda = -u;
+       dgdlambda1 =((lambda^(countvector-1)).*countvector)./(countvector!); 
+       dwdlambda = cumsumc(dgdlambda1);
+       dpsitempdlambda = dudlambda*w+u*dwdlambda;
+       psisubk = cdfni(psitemp)+alphavector;
+       dpsitemp = (1/(pdfn(cdfni(psitemp))));
+       dpsidlambda = dpsitemp.*dpsitempdlambda;
+       retp(psisubk,(dpsidlambda'),0);
+    endif;
+endp;
+
+
+/* These next procedures are to compute thresholds in a count model for a logistic inverse threshold case */
+
+/* Format:  upthresh = countthreshlogit(lambda,theta,countvector,alphavector,_poisson);
+
+Inputs:         lambda -      1 x 1 vector
+                theta  -      1 x 1 vector (K+theta MUST BE BETWEEN 0 AND 60; otherwise, things blow up in computation of gamma function)
+                countvector - K x 1 vector (set of count values, generally (but not necessarily) consecutive from 0 to K)
+                alphavector - K x 1 vector (set of additional threshold constants, to allow low or high probability masses for specific count values
+                _Poisson:   - 1 x 1 If poisson count, put _poisson=1; also, put arbitrary zero value for theta when calling this function with _poisson=1
+
+** Output:      upthresh      - K x 1 vector of upper threshold values for each count, one for each count value  */
+ 
+
+proc counthreshlogit(lambda,theta,countvector,alphavector,_poisson);
+    local e1,vsubq,onemvsubq,u,g,i,l,w,psitemp,psisubk;
+    if _poisson==0;
+       e1 = rows(countvector);
+       vsubq = lambda/(lambda+theta);
+       onemvsubq = 1-vsubq;
+       u = (onemvsubq^theta)/(gammafunc(theta));
+       g = {};
+       for i(1,e1,1);
+          l = countvector[i];
+          g = g|(gammafunc(theta+l)*(vsubq^l))/(l!);
+       endfor;
+       w = cumsumc(g);
+       psitemp = (u*w);
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;   
+       psisubk = cdlogitinverse(psitemp)+alphavector;
+    elseif _poisson==1;
+       u = exp(-lambda);
+       g =(lambda^countvector)./(countvector!); 
+       w = cumsumc(g);
+       psitemp = u*w;
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;  
+       psisubk = cdlogitinverse(psitemp)+alphavector;
+    endif;
+    retp(psisubk);
+endp;
+
+/* Format:  { thresh,glambda,gtheta } = gcounthreshlogit(lambda,theta,countvector,alphavector,_poisson);
+
+Inputs:         lambda -      1 x 1 vector
+                theta  -      1 x 1 vector (if Poisson count model; put this to an arbitrary value of zero)
+                countvector - K x 1 vector (set of count values, consecutive from 0 to K)
+                alphavector - K x 1 same as above 
+                _Poisson:   - 1 x 1 If poisson count, put _poisson=1; also, put arbitrary zero value for theta when calling this function with _poisson=1
+
+** Output:      thresh     - K x 1 vector
+                glambda     - 1 x K vector
+                gtheta      - 1 x K vector
+
+                glambda = {  dpsisub 0/dlambda    dpsisub1/dlambda    dpsisub2/dlambda    dpsisub3/dlambda    };
+                gtheta =  {  dpsisub 0/dtheta     dpsisub1/dtheta     dpsisub2/dtheta     dpsisub3/dtheta     };  
+                If _poisson=1, gtheta will return an arbitrary value of zero */ 
+
+proc (3) = gcounthreshlogit(lambda,theta,countvector,alphavector,_poisson);
+    local e1,gammatemp,vsubq,onemvsubq,u,dudtheta,dudlambda,g1,dgdtheta1,dgdlambda1,gammatemp1,g,i,l,w,psitemp,psisubk;
+    local dwdtheta,dwdlambda,dpsitempdtheta,dpsitempdlambda,dpsitemp,dpsidlambda,dpsidtheta;
+    if _poisson==0;
+       gammatemp = gammafunc(theta);
+       e1 = rows(countvector);
+       vsubq = lambda/(lambda+theta);
+       onemvsubq = 1-vsubq;
+       u = (onemvsubq^theta)/gammatemp;
+       dudtheta = u*(ln(onemvsubq)+vsubq-((gammafuncder(theta))/gammatemp));
+       dudlambda = -u*onemvsubq;
+       g1 = {};
+       dgdtheta1 = {};   dgdlambda1= {};
+       for i(1,e1,1);
+          l = countvector[i];
+          gammatemp1 = gammafunc(theta+l);
+          g = (gammatemp1*(vsubq^l))/(l!);
+          g1 = g1|g;
+          dgdtheta1 = dgdtheta1|(((vsubq^l)/l!)*((gammafuncder(theta+l))-((gammatemp1*l)/(lambda+theta))));
+          dgdlambda1 = dgdlambda1|((onemvsubq/lambda)*(g*l));
+       endfor;
+       w = cumsumc(g1);
+       dwdtheta = cumsumc(dgdtheta1);    dwdlambda = cumsumc(dgdlambda1);
+       dpsitempdtheta = dudtheta*w+u*dwdtheta;
+       dpsitempdlambda = dudlambda*w+u*dwdlambda;
+       psitemp = (u*w);
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;  
+       psisubk = cdlogitinverse(psitemp)+alphavector;
+       dpsitemp = gradcdlogitinverse(psitemp);   
+       dpsidlambda = dpsitemp.*dpsitempdlambda;
+       dpsidtheta = dpsitemp.*dpsitempdtheta;
+       retp(psisubk,(dpsidlambda'),(dpsidtheta'));
+    else;
+       u = exp(-lambda);
+       g =(lambda^countvector)./(countvector!); 
+       w = cumsumc(g);
+       psitemp = u*w;
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;  
+       dudlambda = -u;
+       dgdlambda1 =((lambda^(countvector-1)).*countvector)./(countvector!); 
+       dwdlambda = cumsumc(dgdlambda1);
+       dpsitempdlambda = dudlambda*w+u*dwdlambda;
+       psisubk = cdlogitinverse(psitemp)+alphavector;
+       dpsitemp = gradcdlogitinverse(psitemp);
+       dpsidlambda = dpsitemp.*dpsitempdlambda;
+       retp(psisubk,(dpsidlambda'),0);
+    endif;
+endp;
+
+
+/* These next procedures are to compute thresholds in a count model for a Gumbel threshold case using survivor function of reverse Gumbel*/
+
+/* Format:  upthresh = countthreshsurrevgumbel(lambda,theta,countvector,alphavector,_poisson);
+
+Inputs:         lambda -      1 x 1 vector
+                theta  -      1 x 1 vector (K+theta MUST BE BETWEEN 0 AND 60; otherwise, things blow up in computation of gamma function)
+                countvector - K x 1 vector (set of count values, generally (but not necessarily) consecutive from 0 to K)
+                alphavector - K x 1 vector (set of additional threshold constants, to allow low or high probability masses for specific count values
+                _Poisson:   - 1 x 1 If poisson count, put _poisson=1; also, put arbitrary zero value for theta when calling this function with _poisson=1
+
+** Output:      upthresh      - K x 1 vector of upper threshold values for each count, one for each count value  */
+
+
+proc counthreshsurrevgumbel(lambda,theta,countvector,alphavector,_poisson);
+    local e1,vsubq,onemvsubq,u,g,i,l,w,psitemp,psisubk;
+    if _poisson==0;
+       e1 = rows(countvector);
+       vsubq = lambda/(lambda+theta);
+       onemvsubq = 1-vsubq;
+       u = (onemvsubq^theta)/(gammafunc(theta));
+       g = {};
+       for i(1,e1,1);
+          l = countvector[i];
+          g = g|(gammafunc(theta+l)*(vsubq^l))/(l!);
+       endfor;
+       w = cumsumc(g);
+       psitemp = (u*w);
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;   
+       psisubk = -sdrgumbelinverse(psitemp)+alphavector;
+    elseif _poisson==1;
+       u = exp(-lambda);
+       g =(lambda^countvector)./(countvector!); 
+       w = cumsumc(g);
+       psitemp = u*w;
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;  
+       psisubk = -sdrgumbelinverse(psitemp)+alphavector;
+    endif;
+    retp(psisubk);
+endp;
+
+/* Format:  { thresh,glambda,gtheta } = gcounthreshsurrevgumbel(lambda,theta,countvector,alphavector,_poisson);
+
+Inputs:         lambda -      1 x 1 vector
+                theta  -      1 x 1 vector (if Poisson count model; put this to an arbitrary value of zero)
+                countvector - K x 1 vector (set of count values, consecutive from 0 to K)
+                alphavector - Same as above 
+                _Poisson:   - 1 x 1 If poisson count, put _poisson=1; also, put arbitrary zero value for theta when calling this function with _poisson=1
+
+** Output:      thresh     - K x 1 vector
+                glambda     - 1 x K vector
+                gtheta      - 1 x K vector
+
+                glambda = {  dpsisub 0/dlambda    dpsisub1/dlambda    dpsisub2/dlambda    dpsisub3/dlambda     };
+                gtheta =  {  dpsisub 0/dtheta     dpsisub1/dtheta     dpsisub2/dtheta     dpsisub3/dtheta      };  
+                If _poisson=1, gtheta will return an arbitrary value of zero */ 
+
+proc (3) = gcounthreshsurrevgumbel(lambda,theta,countvector,alphavector,_poisson);
+    local e1,gammatemp,vsubq,onemvsubq,u,dudtheta,dudlambda,g1,dgdtheta1,dgdlambda1,gammatemp1,g,i,l,w,psitemp,psisubk;
+    local dwdtheta,dwdlambda,dpsitempdtheta,dpsitempdlambda,dpsitemp,dpsidlambda,dpsidtheta;
+    if _poisson==0;
+       gammatemp = gammafunc(theta);
+       e1 = rows(countvector);
+       vsubq = lambda/(lambda+theta);
+       onemvsubq = 1-vsubq;
+       u = (onemvsubq^theta)/gammatemp;
+       dudtheta = u*(ln(onemvsubq)+vsubq-((gammafuncder(theta))/gammatemp));
+       dudlambda = -u*onemvsubq;
+       g1 = {};
+       dgdtheta1 = {};   dgdlambda1= {};
+       for i(1,e1,1);
+          l = countvector[i];
+          gammatemp1 = gammafunc(theta+l);
+          g = (gammatemp1*(vsubq^l))/(l!);
+          g1 = g1|g;
+          dgdtheta1 = dgdtheta1|(((vsubq^l)/l!)*((gammafuncder(theta+l))-((gammatemp1*l)/(lambda+theta))));
+          dgdlambda1 = dgdlambda1|((onemvsubq/lambda)*(g*l));
+       endfor;
+       w = cumsumc(g1);
+       dwdtheta = cumsumc(dgdtheta1);    dwdlambda = cumsumc(dgdlambda1);
+       dpsitempdtheta = dudtheta*w+u*dwdtheta;
+       dpsitempdlambda = dudlambda*w+u*dwdlambda;
+       psitemp = (u*w);
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;  
+       psisubk = -sdrgumbelinverse(psitemp)+alphavector;
+       dpsitemp = -gradsdrgumbelinverse(psitemp);   
+       dpsidlambda = dpsitemp.*dpsitempdlambda;
+       dpsidtheta = dpsitemp.*dpsitempdtheta;
+       retp(psisubk,(dpsidlambda'),(dpsidtheta'));
+    else;
+       u = exp(-lambda);
+       g =(lambda^countvector)./(countvector!); 
+       w = cumsumc(g);
+       psitemp = u*w;
+       psitemp = (psitemp.<1).*psitemp+(psitemp.==1).*0.9999999999999;  
+       dudlambda = -u;
+       dgdlambda1 =((lambda^(countvector-1)).*countvector)./(countvector!); 
+       dwdlambda = cumsumc(dgdlambda1);
+       dpsitempdlambda = dudlambda*w+u*dwdlambda;
+       psisubk = -sdrgumbelinverse(psitemp)+alphavector;
+       dpsitemp = -gradsdrgumbelinverse(psitemp);
+       dpsidlambda = dpsitemp.*dpsitempdlambda;
+       retp(psisubk,(dpsidlambda'),0);
+    endif;
+endp;
+
+
+/* Format:  g = gcumsumc(a);
+
+Inputs:         a           - K x 1 vector (including say M zero values)
+
+** Output:      g           - (K-M) x K matrix
+
+** Assume           a = { a1,
+                          a2,
+                           0,
+                          a4 };
+
+** b=cumsumc(a)           = { a1,                      =  { B1,
+                              a1+a2;                        B2,
+                              a1+a2;                        B3,
+                              a1+a2+a4 };                   B4 };
+
+** g =    { dB1/da1   dB2/da1   dB3/da1    B4/da1,
+            dB1/da2   dB2/da2   dB3/da2    B4/da2,
+            dB1/da4   dB2/da4   dB3/da4    B4/da4  };  */
+
+proc gcumsumc(a);
+  local e,tmp;
+  e = rows(a);
+  tmp = matdup(seqa(1,0,(e*(e+1)/2)));
+  tmp = selif(tmp,(a.!=0));
+  retp(tmp);
+endp;
+
+/* Format:  y = vectomat(x);
+
+Inputs:         x           - K x 1 vector (of 1s and 0s)
+
+** Output:      y           - K x M matrix, where M is number of rows of x with a value of 1.
+
+** Assume           x = { 0,
+                          1,
+                          0,
+                          1 };
+
+** y=vectomat(x)           = { 0 0                     
+                               1 0                      
+                               0 0                      
+                               0 1 };                 */
+
+proc vectomat(x);
+    local dumm;
+    dumm = zeros(rows(x),sumc(x));
+    for i(1,cols(dumm),1);
+        dumm[maxindc(x),i]=1;
+        x[maxindc(x)]=0;
+    endfor;
+    retp(dumm); 
+endp;
+
+
+/* Format:  y = dilog(z);
+
+Inputs:         z           - K x 1 vector
+
+** Output:      y           - K x 1 vecor of dilog values, one for each z element   */
+
+proc (1) = dilog(z);
+   local y,lims;
+   lims = z'|(zeros(1,rows(z)));
+   y = intquad1(&dilog1,lims);
+   retp(y);
+endp;  
+
+proc dilog1(x);
+   retp(-(ln(1-x))./x);
+endp;
+
+/* Fractional forecasting (Equation 30), where a is a sub k in paper = exp(b'z)(1/p^(1/sigma)), err is a single realization of epsilon k 
+   (random vector of row size nc x 1) for a single observation, and gam is the gamma satiation vector */
+
+/* a is nc x 1;  err is nc x 1, gam is nc x 1 ; output is fractional forecast for each good, which is nc x 1 */
+
+proc fracforecast(a,err,gam);   /* Two stage budgeting fractional forecasting */
+  local f2,e1,indx,newpsi,psigam,m,f,i,temp;
+  e1 = rows(err);
+  indx = seqa(1,1,e1);
+  newpsi = a.*exp(err);   /* nc x 1 */
+  psigam = newpsi~gam~indx;
+  psigam = rev(sorthc(psigam,1));  M=2;  
+  f = zeros(e1,1);   f[1]=1;
+  for i(M,e1,1);
+      if (psigam[M,1]<(psigam[1,1]/((f[1]/psigam[1,2])+1)));
+          f[M:e1]=zeros(e1-M+1,1);
+      else;      
+          temp = (psigam[1:M,1]-((psigam[1:M,1])')).*((psigam[1:M,2])');
+          temp = sumc(((temp)'));
+          f[1:M] = (psigam[1:M,1].*psigam[1:M,2]+psigam[1:M,2].*temp)/(sumc(psigam[1:M,1].*psigam[1:M,2]));
+          M=M+1;
+      endif;
+  endfor; 
+  f2 = zeros(e1,1);
+  f2[psigam[.,3]]=f;
+  retp(f2);
+endp;       
+
+/* Frequency of the elements in a matrix a ; output is categories (from minimum to maximum, and corresponding frequencies) */
+
+/* { categories, frequency, min value, max value } = freqmat(a) */
+
+proc (4) = freqmat(a);   /* Frequency */
+    local nmax,nmin,ints,c5,c;
+    c = unique(a,1);
+    nmax = maxc(c);
+    nmin = minc(c);
+    ints = __infn|seqa(nmin, 1, nmax+2);
+    c5 = counts(a, ints);
+    c5 = c5[2:rows(c5)-1];
+    ints = ints[2:rows(ints)-1];
+    retp(ints,c5,nmin,nmax);
+endp;
+
+/* Picking off count/binary value based on a random number generation */
+
+/* Format:  y = pickcount(x,c,v);
+
+Inputs:         x           - A set of probabilities for ordered-response, binary, or count; For binary, x is 2x1, otherwise K x 1 
+                              if K ordinal categories or K count categories; sumc(x) should be equal to 1. 
+                c           - The categories corresponding to x (for example, { 0,1 } for binary, { 1,2,3,...K } for ordinal, or
+                              { 0,1,2,3,...K-1 } for count. 2 x1 for binary and K x 1 for ordinal/count, compatible with x.
+                v           - Random uniform number between 0 and 1 (1x1)
+
+** Output:      y           - The predicted ordered-response category or binary category or count category (1 x 1)  */
+
+proc pickcount(x,c,v);
+   local d;
+   d = cumsumc(x);
+   retp(selif(c,counts(v,d)));
+endp;
+
+/* Format:  { tot, intg, seed, orignum, finnum } = conting(tot, frac, seed);  
+
+Inputs:        tot         -  Total Count  (1x1)
+               frac        -  Fractional allocations (Kx1)
+               seed        -  seed
+
+Outputs:       tot         - Total Count (1x1)
+               intg        - Integer counts (Kx1)
+               seed        - New seed
+               orignum     - Initial number of inside goods predicted to be consumed 
+               finnum      - Final number of inside goods predicted to be consumed */ 
+
+proc(5) = conting(tot,frac,seed);
+   local e1,c2,c3,c4,e2,c5,c6,c7,rem,y,L,yg,state;
+   e1 = rows(frac);
+   c2 = seqa(1,1,e1);
+   c3 = selif(frac,frac.!=0);   c4 = selif(c2,frac.!=0);   e2 = rows(c3);
+   if tot==0;
+      retp(tot, zeros(e1,1),seed,e2,0);
+   else;
+      c5 = zeros(e2,1);   L = tot;   yg = zeros(e2,1);   yg[1] = tot*c3[1];  c7 = zeros(e1,1);
+      state = seed;
+      for i(1,e2,1);
+          c6 = trunc(yg[i]);  rem = yg[i]-c6;
+          { y, state } = rndu(1, 1, state);
+          if rem <= y;
+             c5[i]=c6;  
+          else;
+             c5[i]=c6+1;
+          endif;
+          L = L-c5[i];
+          if L==0;
+             break;
+          else;
+             if i==e2-1;
+                c5[i+1] = L;
+                break;
+             else;    
+                yg[i+1] = L*((c3[i+1])/(sumc(c3[i+1:rows(c3)])));
+             endif;
+          endif;
+      endfor;    
+      c7[c4] = c5;
+   endif;
+   retp(tot,c7,state,e2,(sumc((c5.!=0))));
+endp;   
+              
+/* Format:  { val } = skipfact(x);  
+   Useful for computing t-distribution density 
+
+Inputs:        x           -  Q x 1
+
+Outputs:       val         -  Q x 1  
+
+                           - if x is even, [(x-1)*(x-3)*(x-5)....5*3*1]/[(x-2)*(x-4)*(x-6)...6*4*2], 
+                           - if x is odd and >1,  [(x-1)*(x-3)*(x-5)....6*4*2]/[(x-2)*(x-4)*(x-6)...5*3*1] 
+                           - if x == 1, result is 1. */
+ 
+proc(1) = skipfact(x);
+   local e1,c,c1,c2,c3,c4,c5;
+   e1 = rows(x);
+   c = {};
+   for i(1,e1,1);
+       if x[i]==1 or x[i]==2;
+           c5 = 1;
+       else;
+           c1 = seqa(1,1,x[i]-1);
+           c2 = c1%2 .== zeros((x[i])-1,1);
+           c3 = selif(c1,c2);
+           c4 = selif(c1,1-c2);
+           if x[i]%2 == 0;
+              c5 = prodc(c4)./(prodc(c3));
+           else;
+              c5 = prodc(c3)./(prodc(c4));
+           endif;
+       endif;
+       c = c|c5;
+   endfor;
+   retp(c);
+endp;    
