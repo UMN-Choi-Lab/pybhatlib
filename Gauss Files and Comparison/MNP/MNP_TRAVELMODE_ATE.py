@@ -44,7 +44,7 @@ alternatives = ["Alt1_ch", "Alt2_ch", "Alt3_ch"]
 ate_base = mnp_ate(
     results,
     changevar="AGE45",
-    changeval="UNO",
+    changeval=0,
     data=data,
     alternatives=alternatives,
     spec=spec,
