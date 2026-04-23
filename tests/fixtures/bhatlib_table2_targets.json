@@ -1,0 +1,101 @@
+{
+  "source": "BHATLIB paper, Table 2 (Estimation results of MNP models on TRAVELMODE data)",
+  "dataset": "Gauss Files and Comparison/MNP/TRAVELMODE.csv",
+  "n_obs": 1125,
+  "n_alts": 3,
+  "notes": {
+    "se_derivation": "SE = |coef| / |t_stat|. The BHATLIB paper table reports coefficients and t-statistics (not SE directly); SE is derived. GAUSS default is _max_CovPar = 2 (BHHH / cross-product of first derivatives), so these SEs are BHHH unless Dale ran a different option.",
+    "fixed_params": "Entries marked fixed are pinned to their value by the model specification (not estimated). For Model (a)(i) IID: parker01=0.5 and scale01=1.0. Tests should not include fixed parameters in the estimated-parameter SE vector.",
+    "covCov01": "Variance of the OVTT random coefficient (Models (c), (d))",
+    "covCov2": "Second mixture-segment covariance element (Model (d) only)",
+    "parker01": "Correlation between alt-2 and alt-3 error terms (differenced matrix)",
+    "scale01": "Variance of alt-3's differenced error term (alt-1 normalized to 1)",
+    "segunpar": "Segment-2 membership probability parameter (Model (d) only)",
+    "model_d_mixture": "For Model (d), OVTT = OVTT1 reports the first mixture-component mean; OVTT2 is the second mixture-component mean. CON_SR / CON_TR / AGE45_DA / AGE45_SR / IVTT / COST are shared across segments."
+  },
+  "models": {
+    "a_i_iid": {
+      "description": "Model (a)(i) — IID kernel (Bhat covariance restriction)",
+      "control": { "iid": true, "mix": false, "nseg": 1 },
+      "ll": -670.956,
+      "params": {
+        "CON_SR":    { "coef": -1.019, "t": -15.55, "se": 0.0655, "status": "estimated" },
+        "CON_TR":    { "coef": -0.345, "t":  -3.22, "se": 0.1071, "status": "estimated" },
+        "IVTT":      { "coef": -0.453, "t":  -7.60, "se": 0.0596, "status": "estimated" },
+        "OVTT":      { "coef": -0.486, "t": -11.95, "se": 0.0407, "status": "estimated" },
+        "COST":      { "coef": -0.347, "t": -12.14, "se": 0.0286, "status": "estimated" },
+        "parker01":  { "coef":  0.500, "t":   null, "se":   null, "status": "fixed" },
+        "scale01":   { "coef":  1.000, "t":   null, "se":   null, "status": "fixed" }
+      }
+    },
+    "a_ii_flexible": {
+      "description": "Model (a)(ii) — Flexible kernel covariance",
+      "control": { "iid": false, "mix": false, "nseg": 1 },
+      "ll": -661.111,
+      "params": {
+        "CON_SR":    { "coef": -0.988, "t": -9.86, "se": 0.1002, "status": "estimated" },
+        "CON_TR":    { "coef": -0.535, "t": -2.51, "se": 0.2131, "status": "estimated" },
+        "IVTT":      { "coef": -0.887, "t": -5.02, "se": 0.1767, "status": "estimated" },
+        "OVTT":      { "coef": -1.029, "t": -5.10, "se": 0.2018, "status": "estimated" },
+        "COST":      { "coef": -0.599, "t": -8.68, "se": 0.0690, "status": "estimated" },
+        "parker01":  { "coef":  0.473, "t":  2.96, "se": 0.1598, "status": "estimated" },
+        "scale01":   { "coef":  1.987, "t":  6.18, "se": 0.3215, "status": "estimated" }
+      }
+    },
+    "b_age45": {
+      "description": "Model (b) — Flexible kernel + AGE45 alternative-specific covariates. Matches the estimate vector embedded in MNP_TRAVELMODE_ATE.gss:89-98.",
+      "control": { "iid": false, "mix": false, "nseg": 1 },
+      "ll": -659.285,
+      "params": {
+        "CON_SR":    { "coef": -0.942, "t": -8.62, "se": 0.1093, "status": "estimated" },
+        "CON_TR":    { "coef": -0.412, "t": -1.78, "se": 0.2315, "status": "estimated" },
+        "AGE45_DA":  { "coef":  0.438, "t":  1.63, "se": 0.2687, "status": "estimated" },
+        "AGE45_SR":  { "coef":  0.305, "t":  1.14, "se": 0.2675, "status": "estimated" },
+        "IVTT":      { "coef": -0.884, "t": -4.96, "se": 0.1782, "status": "estimated" },
+        "OVTT":      { "coef": -1.036, "t": -5.03, "se": 0.2060, "status": "estimated" },
+        "COST":      { "coef": -0.597, "t": -8.65, "se": 0.0690, "status": "estimated" },
+        "parker01":  { "coef":  0.477, "t":  2.98, "se": 0.1601, "status": "estimated" },
+        "scale01":   { "coef":  2.005, "t":  6.11, "se": 0.3282, "status": "estimated" }
+      }
+    },
+    "c_random_coef": {
+      "description": "Model (c) — Random coefficient on OVTT (single-segment mixed MNP). CovCOv01 is the variance of the OVTT random coefficient.",
+      "control": { "iid": false, "mix": true, "nseg": 1, "randdiag": true },
+      "ll": -635.871,
+      "params": {
+        "CON_SR":    { "coef": -0.676, "t": -5.22, "se": 0.1295, "status": "estimated" },
+        "CON_TR":    { "coef":  0.536, "t":  1.68, "se": 0.3190, "status": "estimated" },
+        "AGE45_DA":  { "coef":  0.498, "t":  1.83, "se": 0.2721, "status": "estimated" },
+        "AGE45_SR":  { "coef":  0.352, "t":  1.31, "se": 0.2687, "status": "estimated" },
+        "IVTT":      { "coef": -1.117, "t": -5.18, "se": 0.2156, "status": "estimated" },
+        "OVTT":      { "coef": -2.049, "t": -4.97, "se": 0.4123, "status": "estimated" },
+        "COST":      { "coef": -0.625, "t": -8.73, "se": 0.0716, "status": "estimated" },
+        "CovCOv01":  { "coef":  1.083, "t":  2.39, "se": 0.4531, "status": "estimated" },
+        "parker01":  { "coef":  0.617, "t":  4.69, "se": 0.1315, "status": "estimated" },
+        "scale01":   { "coef":  1.378, "t":  5.08, "se": 0.2713, "status": "estimated" }
+      }
+    },
+    "d_mixture": {
+      "description": "Model (d) — Mixture of normals on OVTT across 2 segments. CON_SR/CON_TR/AGE45_DA/AGE45_SR/IVTT/COST are shared across segments; OVTT1 (reported as OVTT) and OVTT2 are the segment-specific mixture means for OVTT.",
+      "control": { "iid": false, "mix": true, "nseg": 2, "randdiag": false },
+      "ll": -634.975,
+      "ll_tolerance": 2.0,
+      "ll_tolerance_note": "Model (d) has multiple local optima; CLAUDE.md notes LL ≈ -634.975 (±2)",
+      "params": {
+        "CON_SR":    { "coef": -0.694, "t": -5.45, "se": 0.1273, "status": "estimated", "segment_role": "shared" },
+        "CON_TR":    { "coef":  0.468, "t":  1.45, "se": 0.3228, "status": "estimated", "segment_role": "shared" },
+        "AGE45_DA":  { "coef":  0.486, "t":  1.85, "se": 0.2627, "status": "estimated", "segment_role": "shared" },
+        "AGE45_SR":  { "coef":  0.343, "t":  1.30, "se": 0.2638, "status": "estimated", "segment_role": "shared" },
+        "IVTT":      { "coef": -1.097, "t": -5.17, "se": 0.2122, "status": "estimated", "segment_role": "shared" },
+        "OVTT":      { "coef": -0.553, "t": -0.56, "se": 0.9875, "status": "estimated", "segment_role": "seg1_mean", "alias": "OVTT1" },
+        "OVTT2":     { "coef": -2.347, "t": -4.17, "se": 0.5628, "status": "estimated", "segment_role": "seg2_mean" },
+        "COST":      { "coef": -0.615, "t": -8.71, "se": 0.0706, "status": "estimated", "segment_role": "shared" },
+        "CovCOv01":  { "coef":  0.182, "t":  0.32, "se": 0.5688, "status": "estimated", "segment_role": "seg1_var" },
+        "CovCOv2":   { "coef":  0.032, "t":  0.04, "se": 0.8000, "status": "estimated", "segment_role": "seg2_var" },
+        "parker01":  { "coef":  0.625, "t":  5.05, "se": 0.1238, "status": "estimated" },
+        "scale01":   { "coef":  1.383, "t":  5.11, "se": 0.2706, "status": "estimated" },
+        "segunpar":  { "coef":  0.756, "t":  2.59, "se": 0.2919, "status": "estimated" }
+      }
+    }
+  }
+}
