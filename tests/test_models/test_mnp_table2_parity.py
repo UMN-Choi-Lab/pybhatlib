@@ -148,6 +148,60 @@ def test_table2_model_d_mixture_paper_target(table2_targets, travelmode_path):
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize("se_method", ["bhhh", "hessian", "sandwich"])
+def test_se_methods_produce_valid_errors(se_method, travelmode_path):
+    """Each SE method must produce positive finite standard errors on Model (b)."""
+    ctrl = MNPControl(
+        iid=False, maxiter=200, verbose=0, seed=42, se_method=se_method,
+    )
+    model = MNPModel(
+        data=travelmode_path,
+        alternatives=ALTERNATIVES,
+        availability="none",
+        spec=SPEC_WITH_AGE45,
+        control=ctrl,
+    )
+    results = model.fit()
+    import numpy as np
+    assert (results.se > 0).all(), f"{se_method}: non-positive SE entries"
+    assert np.isfinite(results.se).all(), f"{se_method}: non-finite SE entries"
+
+
+@pytest.mark.slow
+def test_table2_model_b_bhhh_se_parity(table2_targets, travelmode_path):
+    """Model (b) BHHH standard errors should match paper (within 2 decimals).
+
+    Paper values are derived from t-stats via SE = |coef| / |t|, so they
+    carry ~2 decimals of effective precision. Parameter names follow the
+    BHATLIB reporting convention (normalized b_report).
+    """
+    target = table2_targets["models"]["b_age45"]
+    ctrl = MNPControl(
+        iid=False, maxiter=200, verbose=0, seed=42, se_method="bhhh",
+    )
+    model = MNPModel(
+        data=travelmode_path,
+        alternatives=ALTERNATIVES,
+        availability="none",
+        spec=SPEC_WITH_AGE45,
+        control=ctrl,
+    )
+    results = model.fit()
+
+    name_to_se = dict(zip(results.param_names, results.se))
+    for param, tdata in target["params"].items():
+        if tdata["status"] != "estimated":
+            continue
+        expected = tdata["se"]
+        got = name_to_se.get(param)
+        assert got is not None, f"param {param} missing from results"
+        assert abs(got - expected) < 0.02, (
+            f"Model (b) BHHH SE mismatch for {param}: got {got:.4f}, "
+            f"paper {expected:.4f}"
+        )
+
+
+@pytest.mark.slow
 def test_ate_mixed_mnp_uses_ranvar_indices(travelmode_path):
     """Guards that mnp_ate actually propagates random-coefficient information
     for mixed MNP (Model (c)). Before MNPResults.ranvar_indices was added,

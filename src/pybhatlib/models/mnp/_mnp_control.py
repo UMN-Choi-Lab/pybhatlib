@@ -56,6 +56,14 @@ class MNPControl:
         Convergence tolerance (gradient norm).
     optimizer : str
         Optimization method: "bfgs", "lbfgsb", "torch_adam", "torch_lbfgs".
+    se_method : str
+        Standard-error method: "bhhh" (default, matches GAUSS _max_CovPar=2),
+        "hessian" (inverse observed information), or "sandwich" (robust).
+        For "bhhh" and "sandwich", per-observation scores are computed by
+        numerical differencing of the per-observation log-likelihood at the
+        converged point (currently in parameterized theta space, then
+        delta-method-transformed to reporting space via the same Jacobian
+        used by "hessian"; unparameterized scoring is a planned follow-up).
     verbose : int
         Verbosity: 0=silent, 1=summary, 2=per-iteration NLL,
         3=per-iteration NLL + parameter/gradient/rel-gradient table.
@@ -89,6 +97,7 @@ class MNPControl:
     maxiter: int = 200
     tol: float = 1e-5
     optimizer: Literal["bfgs", "lbfgsb", "torch_adam", "torch_lbfgs"] = "bfgs"
+    se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh"
     verbose: int = 1
     seed: int | None = None
     analytic_grad: bool = True

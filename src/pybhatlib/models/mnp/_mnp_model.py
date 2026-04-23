@@ -1050,7 +1050,17 @@ class MNPModel(BaseModel):
         gradient: np.ndarray | None,
         active_mask: np.ndarray | None = None,
     ) -> tuple:
-        """Compute BHATLIB-normalized values with delta-method standard errors.
+        """Compute BHATLIB-normalized values with standard errors.
+
+        SE method is selected via ``self.control.se_method``:
+          - "hessian": inverse observed information (scipy hess_inv / N).
+          - "bhhh": per-observation score outer-product inverse. Default;
+            matches GAUSS ``_max_CovPar = 2``.
+          - "sandwich": H^{-1} (G^T G) H^{-1}, robust to misspecification.
+        All three paths compute a cov_theta in parameterized theta space and
+        delta-method-transform it into reporting space via the finite-
+        differenced Jacobian J. The "no delta method" path (lpr1/lgd1 native
+        unparameterized scoring) is a planned follow-up.
 
         Parameters
         ----------
@@ -1067,18 +1077,19 @@ class MNPModel(BaseModel):
         Returns
         -------
         b_report : ndarray  — normalized coefficient estimates
-        se : ndarray         — delta-method standard errors
+        se : ndarray         — standard errors (see se_method above)
         t_stat : ndarray     — b_report / se
         p_value : ndarray    — two-sided p-values
         cov_report : ndarray — covariance matrix of reporting params
         corr_report : ndarray — correlation matrix of reporting params
         g_report : ndarray   — gradient projected into reporting space
         """
+        from pybhatlib.models.mnp._mnp_loglik import per_obs_loglik
+
         b_report = self._theta_to_report(theta_hat)
         n_report = len(b_report)
         n_theta = len(theta_hat)
 
-        # Numerical Jacobian  J[k, i] = d(report_k)/d(theta_i)
         eps = 1e-7
         J = np.zeros((n_report, n_theta), dtype=np.float64)
         for i in range(n_theta):
@@ -1103,9 +1114,48 @@ class MNPModel(BaseModel):
         if active_mask is not None:
             J[:, ~active_mask] = 0.0
 
-        # Delta method:  Cov(report) = J @ Cov(theta) @ J^T
-        if hess_inv is not None:
+        # MNP-002: select Cov(theta) via control.se_method.
+        se_method = self.control.se_method
+        cov_theta: np.ndarray | None = None
+
+        if se_method in ("bhhh", "sandwich"):
+            eps_s = 1e-5
+            G = np.zeros((self.N, n_theta), dtype=np.float64)
+            for i in range(n_theta):
+                theta_p = theta_hat.copy()
+                theta_p[i] += eps_s
+                theta_m = theta_hat.copy()
+                theta_m[i] -= eps_s
+                ll_p = per_obs_loglik(
+                    theta_p, self.X, self.y, self.avail,
+                    self.n_alts, self.n_beta, self.control,
+                    self.ranvar_indices,
+                )
+                ll_m = per_obs_loglik(
+                    theta_m, self.X, self.y, self.avail,
+                    self.n_alts, self.n_beta, self.control,
+                    self.ranvar_indices,
+                )
+                G[:, i] = (ll_p - ll_m) / (2.0 * eps_s)
+
+            B = G.T @ G
+            try:
+                B_inv = np.linalg.inv(B)
+            except np.linalg.LinAlgError:
+                B_inv = np.linalg.pinv(B)
+
+            if se_method == "bhhh":
+                cov_theta = B_inv
+            else:
+                if hess_inv is None:
+                    cov_theta = B_inv
+                else:
+                    H_inv = hess_inv / self.N
+                    cov_theta = H_inv @ B @ H_inv
+        elif se_method == "hessian" and hess_inv is not None:
             cov_theta = hess_inv / self.N
+
+        if cov_theta is not None:
             cov_report = J @ cov_theta @ J.T
             se = np.sqrt(np.maximum(np.diag(cov_report), 0.0))
         else:
