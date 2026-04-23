@@ -64,6 +64,13 @@ class MNPControl:
         converged point (currently in parameterized theta space, then
         delta-method-transformed to reporting space via the same Jacobian
         used by "hessian"; unparameterized scoring is a planned follow-up).
+
+        Note: the default changed from implicit Hessian (scipy inverse BFGS
+        Hessian) to BHHH in the MNP-002 work. BHHH tends to produce larger,
+        more conservative SEs than scipy's approximate-Hessian path; on
+        BHATLIB Table 2 Model (b), BHHH matches the paper within 0.02 on
+        every estimated parameter. Set se_method="hessian" to recover the
+        pre-MNP-002 behavior.
     verbose : int
         Verbosity: 0=silent, 1=summary, 2=per-iteration NLL,
         3=per-iteration NLL + parameter/gradient/rel-gradient table.
