@@ -660,7 +660,9 @@ class MNPModel(BaseModel):
         corr_report : ndarray — correlation matrix of reporting params
         g_report : ndarray   — gradient projected into reporting space
         """
-        from pybhatlib.models.mnp._mnp_loglik import per_obs_loglik
+        import warnings
+
+        from pybhatlib.models.mnp._mnp_loglik import _per_obs_loglik
 
         b_report = self._theta_to_report(theta_hat)
         n_report = len(b_report)
@@ -681,30 +683,72 @@ class MNPModel(BaseModel):
         cov_theta: np.ndarray | None = None
 
         if se_method in ("bhhh", "sandwich"):
-            eps_s = 1e-5
+            # Scaled finite-difference step: eps_machine^(1/3) is the classic
+            # optimum for central-difference gradient of a smooth function
+            # (balances truncation error O(h^2) and roundoff O(eps/h)).
+            # Scale by (1 + |theta_i|) so the step respects parameter magnitude
+            # without vanishing when theta_i ~ 0. MVN CDF noise for OVUS is
+            # ~1e-5, so this floor dominates truncation.
+            base_eps = np.finfo(np.float64).eps ** (1.0 / 3.0)
             G = np.zeros((self.N, n_theta), dtype=np.float64)
             for i in range(n_theta):
+                eps_i = base_eps * (1.0 + abs(theta_hat[i]))
                 theta_p = theta_hat.copy()
-                theta_p[i] += eps_s
+                theta_p[i] += eps_i
                 theta_m = theta_hat.copy()
-                theta_m[i] -= eps_s
-                ll_p = per_obs_loglik(
+                theta_m[i] -= eps_i
+                ll_p = _per_obs_loglik(
                     theta_p, self.X, self.y, self.avail,
                     self.n_alts, self.n_beta, self.control,
                     self.ranvar_indices,
                 )
-                ll_m = per_obs_loglik(
+                ll_m = _per_obs_loglik(
                     theta_m, self.X, self.y, self.avail,
                     self.n_alts, self.n_beta, self.control,
                     self.ranvar_indices,
                 )
-                G[:, i] = (ll_p - ll_m) / (2.0 * eps_s)
+                G[:, i] = (ll_p - ll_m) / (2.0 * eps_i)
 
             B = G.T @ G
-            try:
-                B_inv = np.linalg.inv(B)
-            except np.linalg.LinAlgError:
-                B_inv = np.linalg.pinv(B)
+
+            # Project out parameters whose score is numerically zero.
+            # Happens routinely for IID models where theta contains unused
+            # Lambda slots, or when control options pin a coefficient. These
+            # parameters have exactly zero contribution to B and would leave
+            # it singular — a real identification failure would instead show
+            # up as weakly-nonzero scores, which we warn on below.
+            score_norms = np.linalg.norm(G, axis=0)
+            structural_zero = score_norms < 1e-12
+            active_mask = ~structural_zero
+
+            G_active = G[:, active_mask]
+            B_active = G_active.T @ G_active
+            cond_active = np.linalg.cond(B_active) if B_active.size else 0.0
+            if cond_active > 1e12:
+                warnings.warn(
+                    f"BHHH score outer-product has condition number "
+                    f"{cond_active:.2e} (>1e12) — parameters are weakly "
+                    f"identified. Using pseudo-inverse; reported SEs may "
+                    f"mask identification problems.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                B_inv_active = np.linalg.pinv(B_active)
+            else:
+                try:
+                    B_inv_active = np.linalg.inv(B_active)
+                except np.linalg.LinAlgError:
+                    warnings.warn(
+                        "BHHH B matrix is singular; falling back to pinv. "
+                        "Check for redundant or unidentified parameters.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    B_inv_active = np.linalg.pinv(B_active)
+
+            B_inv = np.zeros((n_theta, n_theta), dtype=np.float64)
+            active_idx = np.where(active_mask)[0]
+            B_inv[np.ix_(active_idx, active_idx)] = B_inv_active
 
             if se_method == "bhhh":
                 cov_theta = B_inv

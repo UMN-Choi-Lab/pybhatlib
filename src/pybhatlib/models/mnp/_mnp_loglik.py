@@ -372,7 +372,7 @@ def _batch_loglik_mixed(
     return total_ll
 
 
-def per_obs_loglik(
+def _per_obs_loglik(
     theta: np.ndarray,
     X: np.ndarray,
     y: np.ndarray,
