@@ -135,6 +135,36 @@ def test_table2_model_d_mixture_paper_target(table2_targets, travelmode_path):
 
 
 @pytest.mark.slow
+def test_ate_mixed_mnp_uses_ranvar_indices(travelmode_path):
+    """Guards that mnp_ate actually propagates random-coefficient information
+    for mixed MNP (Model (c)). Before MNPResults.ranvar_indices was added,
+    mnp_ate silently dropped the mixture component because the attribute was
+    absent, so Omega_L was never constructed. This test fits Model (c) and
+    runs ATE, asserting shares are valid and randvar_indices flow through.
+    """
+    import pandas as pd
+
+    from pybhatlib.models.mnp._mnp_ate import mnp_ate
+
+    results = _fit_model(
+        SPEC_WITH_AGE45, {"iid": False, "mix": True}, ["OVTT"], travelmode_path
+    )
+    assert results.ranvar_indices is not None, "ranvar_indices not propagated to results"
+    assert len(results.ranvar_indices) == 1, "expected 1 random coefficient (OVTT)"
+
+    data = pd.read_csv(travelmode_path)
+    ate = mnp_ate(
+        results,
+        data=data,
+        spec=SPEC_WITH_AGE45,
+        alternatives=ALTERNATIVES,
+    )
+    assert abs(ate.predicted_shares.sum() - 1.0) < 1e-6
+    assert (ate.predicted_shares >= 0).all()
+    assert (ate.predicted_shares <= 1).all()
+
+
+@pytest.mark.slow
 def test_table2_model_d_mixture_baseline_no_regression(travelmode_path):
     """Pins current Python LL for Model (d) so the MNP-001a refactor cannot
     silently drift the mixture path. Separate from the paper-target test above.
