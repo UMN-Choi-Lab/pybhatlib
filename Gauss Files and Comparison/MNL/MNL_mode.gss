@@ -1,0 +1,202 @@
+/**                                           Written by C. Bhat, October 1990 (modified later)
+                                                   ** (C) Copyright 1990 by Bhat
+                                                       ** All Rights Reserved.
+**********************************************************************************************************************************************
+                   This is the simplest discrete choice model (MNL), with elegant (even if not always realistic) properties
+******************************************************************************************************************************************
+**                   The File Header must accompany all files using any portion, in whole or in part, of this source code 
+*****************************************************************************************************************************************/
+
+library maxlik,bhatlib;
+maxset;
+Gausset;
+closeall fin;
+
+/*******************************************************************************************************************************************
+                                          Global Variable Definition and Settings
+********************************************************************************************************************************************/
+
+nobs = 3593;  /* Number of observations in dataset  */
+
+/**********************************************************************************************************************************************
+                                           Main modification area for different runs
+***********************************************************************************************************************************************/
+fname= "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MNL\\modedata.csv"; 
+ 
+dataset_name = csvReadM(fname);
+tempdata = csvreadM(fname,2);
+headers = getheaders(fname);
+
+// Step 2: Add uno and sero vector
+tempdata = tempdata ~ ones(rows(tempdata),1) ~ zeros(rows(tempdata),1);
+headers = headers $| "UNO" $| "SERO";
+
+//Step 3: convert chosen alternative to dummy variables
+mode_1 = (tempdata[.,17].==1);
+mode_2 = (tempdata[.,17].==2);
+mode_3 = (tempdata[.,17].==3);
+
+tempdata = tempdata ~ mode_1 ~ mode_2 ~ mode_3; // append the dummy variables to the data
+headers = headers $| "MODE1" $| "MODE2" $| "MODE3"; // apend the labels of the dummies to the headers vector
+
+/* Specify path where the .dat file corresponding to the dataset gets saved*/
+dat_file = "C:\\Users\\dar4836\\pybhatlib\\Gauss Files and Comparison\\MNL\\modedata.dat";
+ret = saved(tempdata,dat_file, headers);
+dataset = dat_file;   
+
+/* position of UNO variable in data set */
+
+{ dd,_dd } = indices(dataset,"uno");
+
+/*****************************************************************************************************************************************************
+                                                    Specification of variables area
+*****************************************************************************************************************************************************/
+
+/* Definition of dependent variables in unordered-response outcome part in the form of 0/1 dummy variables; should be a matrix of
+   dimension 1 x # alternatives; note that the sum across all dummy variables for any individual should be 1 */
+                                
+dvunordname = { MODE1	MODE2  MODE3  };
+
+/* Define alternative availability variables in unordered-response in the form of 0/1 dummy variables; should be a matrix of
+   dimension 1 x # alternatives */
+                 
+davunordname = { UNO UNO UNO };
+
+/* IMPORTANT: In the above specification, it is the analyst's responsibility to ensure that the chosen alternative for an individual is
+   CORRECTLY marked as being available to that individual; also, there needs to be at least two alternatives available for ALL individuals */
+
+/* definition of independent variables in unordered-response equation; names of iv variables in a matrix of size 
+   # alternatives x number of iv variables (including alternative-specific constants) */
+
+let ivunord = {	SERO	SERO	IVTT_CAR	SERO	    SERO	    ,
+                UNO	    SERO	IVTT_AIR	OVTT_AIR	FREQ_AIR	,
+                SERO	UNO	    IVTT_RAIL	OVTT_RAIL	FREQ_RAIL	};
+
+/* Provide variable names for output of size 1 x (number of iv variables); each variable name should be less than 7 characters   */
+
+var_unordnames   =      { ASC_AIR ASC_RAIL  IVTT OVTT FREQ  }; 
+
+/**********************************************************************************************************************************************
+                                          Actual program area begins; No need to touch anything below
+**********************************************************************************************************************************************/
+
+nc = cols(dvunordname);
+__row = nobs;
+{ vdvunord,dvunord } = indices(dataset,dvunordname');
+{ vdavunord,davunord } = indices(dataset,davunordname');
+{ vivunord,indxivunord } = indices(dataset,vecr(ivunord));
+ivnameunord = var_unordnames';   
+nker = (nc.*(nc-1))/2;
+numunord= cols(ivunord);             /* Number of exogenous variables in unordered-response  */ 
+ncoefunord = numunord;               /* Number of coefficients to be estimated in unordered-response */
+
+/*****************************************************************************************************************************************/
+/*                                                  start values/_maxlik settings                                                        */
+/*****************************************************************************************************************************************/
+
+b = zeros(ncoefunord,1);
+_max_ParNames = ivnameunord;
+_max_GradProc=&lgd; 
+_max_Options = { newton stepbt };
+_max_HessProc=&lhs;    
+_max_GradTol = 1e-5;
+_max_CovPar = 2;
+{ x,f,g,cov,retcode } = maxprt(maxlik(dataset,0,&lpr,b));
+
+/***********************************************************************************************************************************************
+                                                       Various procedures needed
+************************************************************************************************************************************************/
+
+/* procedure for log likelihood function calculation */
+
+proc lpr(x,dta);
+ local v,z,z1,w,e1,v2,j,p1,p2;
+ e1 = rows(dta);
+ v2 = (ones(nc,1) .*. x)*~((dta[.,indxivunord])');
+ j=1;
+ v = {};
+ do until j == nc+1;
+   v = v~(sumc(v2[(j-1)*numunord+1:(j*numunord),.]));
+   j = j+1;
+ endo;
+ clear v2;
+ p1 = exp(v);
+ p2 = (p1.*dta[.,davunord])./sumc((p1.*dta[.,davunord])');
+ z = sumc((p2.*dta[.,dvunord])');
+ w=zeros(e1,1);
+ if z > w;
+   z1=ln(z);
+ else;
+   z1=ln(z-((z.<=w).*(z-0.0001)));
+ endif;
+ retp(z1);
+endp;
+
+
+proc lgd(x,dta);
+ local v,e1,v2,j,p1,p2,g1,g4,ylarge;
+ e1 = rows(dta);
+ v2 = (ones(nc,1) .*. x)*~((dta[.,indxivunord])');
+ j=1;
+ v = {};
+ do until j == nc+1;
+   v = v~(sumc(v2[(j-1)*numunord+1:(j*numunord),.]));
+   j = j+1;
+ endo;
+ p1 = exp(v);
+ p2 = (p1.*dta[.,davunord])./sumc((p1.*dta[.,davunord])');
+ g1 = dta[.,dvunord]-p2;
+ g4 = {};
+ j = 0;
+ do until j == numunord;
+   g4 = g4~g1';
+   j = j+1;
+ endo;
+ ylarge= dta[.,indxivunord];
+ g4 = (reshape((sumc(g4.*(reshape(ylarge',nc,e1*numunord))))',numunord,e1))';
+ retp(g4);
+endp;
+
+proc lhs(x,dta);
+ local v,e1,v2,j,p1,p2,g1,g4,ylarge,r,r1,ymxbar,h2,h3,hesse,q;
+ e1 = rows(dta);
+ v2 = (ones(nc,1) .*. x)*~((dta[.,indxivunord])');
+ j=1;
+ v = {};
+ do until j == nc+1;
+   v = v~(sumc(v2[(j-1)*numunord+1:(j*numunord),.]));
+   j = j+1;
+ endo;
+ clear v2;
+ p1 = exp(v);
+ p2 = (p1.*dta[.,davunord])./sumc((p1.*dta[.,davunord])');
+ g1 = p2;
+ g4 = {};
+ j = 0;
+ do until j == numunord;
+   g4 = g4~g1';
+   j = j+1;
+ endo;
+ clear g1;
+ ylarge= dta[.,indxivunord];
+ g4 = (reshape((sumc(g4.*(reshape(ylarge',nc,e1*numunord))))',numunord,e1))';
+ h2 = vecr((dta[.,indxivunord])');
+ q = (seqa(1,1,e1))';
+ j = 0;
+ r = {};
+ do until j == nc;
+   r = r~(q+j*e1*numunord);
+   j = j+1;
+ endo;
+ j = 0;
+ r1 = {};
+ do until j == numunord;
+   r1 = r1|(r+j*e1);
+   j = j+1;
+ endo;
+ h2 = reshape((submat(h2,r1,0))',numunord,nc*e1);
+   h3 = ones(nc,1) .*. g4;
+   ymxbar = h2' - h3;
+ hesse = ymxbar' * ((reshape((dta[.,_dd]),nc*e1,1)) .*(vecr(p2') .* ymxbar));
+ retp(-hesse);
+endp;
