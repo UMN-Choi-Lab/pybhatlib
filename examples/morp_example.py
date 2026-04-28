@@ -118,6 +118,14 @@ def main():
         print(f"  {col}: {dict(counts)}")
     print()
 
+    # Per-outcome spec: each coef maps to per-outcome column names.
+    # Here all three variables enter both outcomes identically.
+    spec = {
+        "income":    {"satisfaction": "income",    "recommendation": "income"},
+        "age":       {"satisfaction": "age",       "recommendation": "age"},
+        "education": {"satisfaction": "education", "recommendation": "education"},
+    }
+
     # ------------------------------------------------------------------
     # Model 1: Independent errors
     # ------------------------------------------------------------------
@@ -128,9 +136,9 @@ def main():
     model_indep = MORPModel(
         data=df,
         dep_vars=["satisfaction", "recommendation"],
-        indep_vars=["income", "age", "education"],
+        spec=spec,
         n_categories=[3, 3],
-        control=MORPControl(indep=True, verbose=1, seed=42),
+        control=MORPControl(iid=True, verbose=1, seed=42),
     )
     results_indep = model_indep.fit()
     results_indep.summary()
@@ -146,10 +154,10 @@ def main():
     model_full = MORPModel(
         data=df,
         dep_vars=["satisfaction", "recommendation"],
-        indep_vars=["income", "age", "education"],
+        spec=spec,
         n_categories=[3, 3],
         control=MORPControl(
-            indep=False,
+            iid=False,
             method="ovus",
             verbose=1,
             seed=42,

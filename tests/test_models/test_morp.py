@@ -60,23 +60,23 @@ class TestMORPControl:
     def test_defaults(self):
         ctrl = MORPControl()
         assert ctrl.method == "ovus"
-        assert ctrl.indep is False
+        assert ctrl.iid is False
         assert ctrl.spherical is True
 
     def test_independent(self):
-        ctrl = MORPControl(indep=True)
-        assert ctrl.indep is True
+        ctrl = MORPControl(iid=True)
+        assert ctrl.iid is True
 
 
 class TestCountMORPParams:
     def test_independent_2d_3cat(self):
-        ctrl = MORPControl(indep=True)
+        ctrl = MORPControl(iid=True)
         n = count_morp_params(3, 2, [3, 3], ctrl)
         # 3 betas + 2*2 thresholds = 7
         assert n == 7
 
     def test_full_cov_2d_3cat(self):
-        ctrl = MORPControl(indep=False)
+        ctrl = MORPControl(iid=False)
         n = count_morp_params(3, 2, [3, 3], ctrl)
         # 3 betas + 2*2 thresholds + 1 scale + 1 corr = 9
         assert n == 9
@@ -91,7 +91,7 @@ class TestCountMORPParams:
 class TestUnpackMORPParams:
     def test_threshold_ordering(self):
         """Thresholds should be strictly increasing."""
-        ctrl = MORPControl(indep=True)
+        ctrl = MORPControl(iid=True)
         # 2 betas + 2 thresholds for dim1 + 2 thresholds for dim2
         theta = np.array([0.5, -0.3, -0.5, 0.2, -0.3, 0.3])
         beta, thresholds, sigma = _unpack_morp_params(
@@ -103,7 +103,7 @@ class TestUnpackMORPParams:
         assert thresholds[1][1] > thresholds[1][0]
 
     def test_sigma_identity_for_indep(self):
-        ctrl = MORPControl(indep=True)
+        ctrl = MORPControl(iid=True)
         theta = np.zeros(7)
         _, _, sigma = _unpack_morp_params(theta, 3, 2, [3, 3], ctrl)
         np.testing.assert_allclose(sigma, np.eye(2))
@@ -112,7 +112,7 @@ class TestUnpackMORPParams:
 class TestMORPLoglik:
     def test_loglik_finite(self, xp):
         """Log-likelihood should be finite for valid parameters."""
-        ctrl = MORPControl(indep=True, method="scipy", verbose=0)
+        ctrl = MORPControl(iid=True, method="scipy", verbose=0)
 
         X = np.random.randn(20, 2, 2)
         y = np.random.randint(0, 3, size=(20, 2))
@@ -126,7 +126,7 @@ class TestMORPLoglik:
 
     def test_loglik_with_gradient(self, xp):
         """Gradient computation should work."""
-        ctrl = MORPControl(indep=True, method="scipy", verbose=0)
+        ctrl = MORPControl(iid=True, method="scipy", verbose=0)
 
         X = np.random.randn(10, 2, 2)
         y = np.random.randint(0, 3, size=(10, 2))
@@ -145,12 +145,16 @@ class TestMORPModel:
     def test_model_construction(self, synthetic_morp_data):
         df, _, _, _ = synthetic_morp_data
 
+        spec = {
+            "x1": {"y1": "x1", "y2": "x1"},
+            "x2": {"y1": "x2", "y2": "x2"},
+        }
         model = MORPModel(
             data=df,
             dep_vars=["y1", "y2"],
-            indep_vars=["x1", "x2"],
+            spec=spec,
             n_categories=[3, 3],
-            control=MORPControl(indep=True, verbose=0),
+            control=MORPControl(iid=True, verbose=0),
         )
 
         assert model.N == 100
@@ -161,13 +165,17 @@ class TestMORPModel:
         """Test that independent MORP model converges."""
         df, _, _, _ = synthetic_morp_data
 
+        spec = {
+            "x1": {"y1": "x1", "y2": "x1"},
+            "x2": {"y1": "x2", "y2": "x2"},
+        }
         model = MORPModel(
             data=df,
             dep_vars=["y1", "y2"],
-            indep_vars=["x1", "x2"],
+            spec=spec,
             n_categories=[3, 3],
             control=MORPControl(
-                indep=True,
+                iid=True,
                 method="scipy",
                 verbose=0,
                 seed=42,
@@ -194,7 +202,7 @@ class TestMORPModel:
             MORPModel(
                 data=df,
                 dep_vars=["y1", "y2"],
-                indep_vars=["x1"],
+                spec={"x1": {"y1": "x1", "y2": "x1"}},
                 n_categories=[3],  # only 1 but 2 dep_vars
                 control=MORPControl(verbose=0),
             )
@@ -205,6 +213,6 @@ class TestMORPModel:
             MORPModel(
                 data=df,
                 dep_vars=["y1", "y2"],
-                indep_vars=["x1", "missing_col"],
+                spec={"x1": {"y1": "x1", "y2": "x1"}, "missing_col": {"y1": "missing_col", "y2": "missing_col"}},
                 n_categories=[3, 3],
             )
