@@ -14,7 +14,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pybhatlib.models.morp import MORPControl, MORPModel
+from pybhatlib.models.morp import (
+    MORPControl,
+    MORPModel,
+    morp_control_asdict,
+    morp_control_replace,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +176,32 @@ class TestIndepVarsKwargRemoved:
                 indep_vars=["a", "b"],  # old API — must raise
                 n_categories=[3, 4],
                 control=MORPControl(iid=True, verbose=0),
+            )
+
+    def test_friendly_message_mentions_spec(self):
+        """The TypeError message should mention 'spec=' and 'MORP-001' to guide migration."""
+        df = _make_small_df()
+        spec = _make_spec(["y1", "y2"])
+        with pytest.raises(TypeError, match="spec="):
+            MORPModel(
+                data=df,
+                dep_vars=["y1", "y2"],
+                spec=spec,
+                n_categories=[3, 4],
+                indep_vars=["a", "b"],  # old API: triggers friendly message
+            )
+
+    def test_other_unexpected_kwargs_raise(self):
+        """Any other unexpected kwarg should raise TypeError with the key name."""
+        df = _make_small_df()
+        spec = _make_spec(["y1", "y2"])
+        with pytest.raises(TypeError, match="totally_unknown"):
+            MORPModel(
+                data=df,
+                dep_vars=["y1", "y2"],
+                spec=spec,
+                n_categories=[3, 4],
+                totally_unknown=True,
             )
 
 
@@ -334,3 +365,72 @@ def test_morp_dining_spec_smoke():
     results = model.fit()
     assert results.converged or results.return_code in (0, 1, 2)
     assert np.isfinite(results.loglik)
+
+
+# ---------------------------------------------------------------------------
+# (5) dataclasses.replace / asdict compatibility shims (MORP-001 Fix #2)
+# ---------------------------------------------------------------------------
+
+
+class TestMORPControlReplace:
+    def test_replace_single_field(self):
+        """morp_control_replace should return a new instance with the changed field."""
+        ctrl = MORPControl(maxiter=100, verbose=1)
+        ctrl2 = morp_control_replace(ctrl, maxiter=500)
+        assert ctrl2.maxiter == 500
+        # Original must be unchanged
+        assert ctrl.maxiter == 100
+
+    def test_replace_preserves_other_fields(self):
+        """Unchanged fields should carry over from the original."""
+        ctrl = MORPControl(iid=True, verbose=2, seed=42)
+        ctrl2 = morp_control_replace(ctrl, verbose=0)
+        assert ctrl2.iid is True
+        assert ctrl2.seed == 42
+        assert ctrl2.verbose == 0
+
+    def test_replace_returns_morp_control_instance(self):
+        ctrl = MORPControl()
+        ctrl2 = morp_control_replace(ctrl, tol=1e-8)
+        assert isinstance(ctrl2, MORPControl)
+
+    def test_replace_unknown_field_raises(self):
+        ctrl = MORPControl()
+        with pytest.raises(TypeError, match="bad_field"):
+            morp_control_replace(ctrl, bad_field=True)
+
+    def test_replace_multiple_fields(self):
+        ctrl = MORPControl(maxiter=200, tol=1e-5, optimizer="bfgs")
+        ctrl2 = morp_control_replace(ctrl, maxiter=50, optimizer="lbfgsb")
+        assert ctrl2.maxiter == 50
+        assert ctrl2.optimizer == "lbfgsb"
+        assert ctrl2.tol == 1e-5
+
+
+class TestMORPControlAsDict:
+    def test_returns_dict(self):
+        ctrl = MORPControl()
+        d = morp_control_asdict(ctrl)
+        assert isinstance(d, dict)
+
+    def test_contains_all_fields(self):
+        ctrl = MORPControl(iid=True, verbose=0, seed=7)
+        d = morp_control_asdict(ctrl)
+        assert d["iid"] is True
+        assert d["verbose"] == 0
+        assert d["seed"] == 7
+
+    def test_roundtrip(self):
+        """asdict → MORPControl(**d) should produce an equivalent instance."""
+        ctrl = MORPControl(iid=True, method="scipy", maxiter=50, verbose=0)
+        d = morp_control_asdict(ctrl)
+        ctrl2 = MORPControl(**d)
+        assert ctrl2.iid == ctrl.iid
+        assert ctrl2.method == ctrl.method
+        assert ctrl2.maxiter == ctrl.maxiter
+
+    def test_deprecated_indep_not_in_dict(self):
+        """The deprecated 'indep' alias must NOT appear in asdict output."""
+        ctrl = MORPControl(iid=True)
+        d = morp_control_asdict(ctrl)
+        assert "indep" not in d

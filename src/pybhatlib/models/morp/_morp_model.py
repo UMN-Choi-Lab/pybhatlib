@@ -83,7 +83,18 @@ class MORPModel(BaseModel):
         spec: dict[str, dict[str, str]],
         n_categories: list[int],
         control: MORPControl | None = None,
+        **kwargs,
     ):
+        if "indep_vars" in kwargs:
+            raise TypeError(
+                "indep_vars= was removed in MORP-001; use spec={var: {outcome: column}} "
+                "instead — see docs/plans/UTA_MNP_MORP_FEEDBACK_2026_04.md §MORP-001"
+            )
+        if kwargs:
+            raise TypeError(
+                f"MORPModel got unexpected keyword arguments: {sorted(kwargs)}"
+            )
+
         self.control = control or MORPControl()
 
         # Load data from path if necessary
