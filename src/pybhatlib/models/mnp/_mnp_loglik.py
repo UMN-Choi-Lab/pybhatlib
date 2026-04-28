@@ -17,6 +17,8 @@ reused across observations.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -1319,6 +1321,31 @@ def _per_obs_loglik_unpar(
         )
         Omega_L = _safe_cholesky(Omega)
 
+    # For mixture models, pre-compute per-segment Cholesky factors once here
+    # (they depend only on theta, not on per-observation X_q).  Avoids
+    # ~N * nseg redundant Cholesky calls during the per-obs loop.
+    precomputed_omega_L: list | None = None
+    if control.nseg > 1 and control.mix and ranvar_indices is not None:
+        precomputed_omega_L = []
+        # Segment 1 Omega_L
+        if "omega_params" in params:
+            Omega_1 = _build_omega_direct(
+                params["omega_params"], ranvar_indices, control,
+            )
+            precomputed_omega_L.append(_safe_cholesky(Omega_1))
+        else:
+            precomputed_omega_L.append(None)
+        # Segments 2..nseg
+        for h in range(1, control.nseg):
+            seg_omegas = params.get("segment_omegas", [])
+            if h - 1 < len(seg_omegas):
+                Omega_h = _build_omega_direct(
+                    seg_omegas[h - 1], ranvar_indices, control,
+                )
+                precomputed_omega_L.append(_safe_cholesky(Omega_h))
+            else:
+                precomputed_omega_L.append(None)
+
     ll_per_obs = np.zeros(N, dtype=np.float64)
     for q in range(N):
         avail_q = avail[q] if avail is not None else np.ones(I)
@@ -1327,6 +1354,7 @@ def _per_obs_loglik_unpar(
             prob_q = _compute_mixture_prob_unpar(
                 X_np[q], params, chosen, avail_q, Lambda,
                 ranvar_indices, control, xp,
+                precomputed_omega_L=precomputed_omega_L,
             )
         else:
             prob_q = _compute_choice_prob(
@@ -1408,6 +1436,12 @@ def _safe_cholesky(M: np.ndarray, jitter: float = 1e-12) -> np.ndarray:
     during finite differencing (perturbing direct entries can violate PD
     constraints that the parameterization enforces by construction). Adds a
     small diagonal jitter on failure.
+
+    A ``RuntimeWarning`` is emitted when the successful jitter level exceeds
+    ``1e-8`` because at that magnitude the decomposition perturbs the input
+    matrix non-trivially and the resulting score may be biased.  The warning
+    includes the actual jitter level used and indicates that the matrix is
+    near-singular.
     """
     M = 0.5 * (M + M.T)
     try:
@@ -1415,13 +1449,33 @@ def _safe_cholesky(M: np.ndarray, jitter: float = 1e-12) -> np.ndarray:
     except np.linalg.LinAlgError:
         n = M.shape[0]
         for k in range(8):
+            j_level = jitter * 10 ** k
             try:
-                return np.linalg.cholesky(M + (jitter * 10 ** k) * np.eye(n))
+                L = np.linalg.cholesky(M + j_level * np.eye(n))
+                if j_level > 1e-8:
+                    warnings.warn(
+                        f"_safe_cholesky: matrix is near-singular; "
+                        f"Cholesky succeeded only with jitter={j_level:.2e}. "
+                        f"The resulting decomposition perturbs the covariance "
+                        f"matrix non-trivially — consider checking for "
+                        f"identification issues or near-zero eigenvalues.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                return L
             except np.linalg.LinAlgError:
                 continue
         # Last resort: eigendecomposition with floor.
         w, V = np.linalg.eigh(M)
         w_floor = np.maximum(w, 1e-10)
+        warnings.warn(
+            f"_safe_cholesky: all jitter levels up to "
+            f"{jitter * 10 ** 7:.2e} failed; falling back to "
+            f"eigendecomposition with eigenvalue floor=1e-10. "
+            f"Matrix is severely near-singular.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return np.linalg.cholesky(V @ np.diag(w_floor) @ V.T)
 
 
@@ -1437,7 +1491,32 @@ def _sequential_loglik_mixture_unpar(
     N: int,
     xp,
 ) -> float:
-    """Per-observation mixture log-likelihood for unparameterized theta."""
+    """Per-observation mixture log-likelihood for unparameterized theta.
+
+    Pre-computes per-segment Cholesky factors once (they are loop-invariant —
+    they depend only on ``theta``, not on per-observation design matrices).
+    """
+    # Hoist per-segment Cholesky outside the per-obs loop.
+    precomputed_omega_L: list | None = None
+    if control.mix and ranvar_indices is not None:
+        precomputed_omega_L = []
+        if "omega_params" in params:
+            Omega_1 = _build_omega_direct(
+                params["omega_params"], ranvar_indices, control,
+            )
+            precomputed_omega_L.append(_safe_cholesky(Omega_1))
+        else:
+            precomputed_omega_L.append(None)
+        for h in range(1, control.nseg):
+            seg_omegas = params.get("segment_omegas", [])
+            if h - 1 < len(seg_omegas):
+                Omega_h = _build_omega_direct(
+                    seg_omegas[h - 1], ranvar_indices, control,
+                )
+                precomputed_omega_L.append(_safe_cholesky(Omega_h))
+            else:
+                precomputed_omega_L.append(None)
+
     total_ll = 0.0
     for q in range(N):
         avail_q = avail[q] if avail is not None else np.ones(I)
@@ -1445,6 +1524,7 @@ def _sequential_loglik_mixture_unpar(
         prob_q = _compute_mixture_prob_unpar(
             X_np[q], params, chosen, avail_q, Lambda,
             ranvar_indices, control, xp,
+            precomputed_omega_L=precomputed_omega_L,
         )
         total_ll += np.log(max(prob_q, 1e-300))
     return total_ll
@@ -1459,11 +1539,21 @@ def _compute_mixture_prob_unpar(
     ranvar_indices: list[int] | None,
     control: MNPControl,
     xp,
+    precomputed_omega_L: list | None = None,
 ) -> float:
     """Mixture probability with unparameterized Omega entries.
 
     Mirrors ``_compute_mixture_prob`` but uses ``_build_omega_direct`` (and
     a safe Cholesky thereof) instead of ``_build_omega_cholesky``.
+
+    Parameters
+    ----------
+    precomputed_omega_L : list or None
+        Pre-computed per-segment Cholesky factors (length ``nseg``).  When
+        provided, the per-segment ``_build_omega_direct`` + ``_safe_cholesky``
+        calls are skipped, avoiding ~N*nseg redundant Cholesky factorizations
+        during the BHHH FD score loop.  If None, the factors are computed
+        on-the-fly (original behaviour, kept for standalone callers).
     """
     nseg = control.nseg
     seg_params = params.get("segment_params", np.array([]))
@@ -1479,11 +1569,14 @@ def _compute_mixture_prob_unpar(
     # Segment 1
     beta_1 = params["beta"]
     Omega_L_1 = None
-    if control.mix and ranvar_indices is not None and "omega_params" in params:
-        Omega_1 = _build_omega_direct(
-            params["omega_params"], ranvar_indices, control,
-        )
-        Omega_L_1 = _safe_cholesky(Omega_1)
+    if control.mix and ranvar_indices is not None:
+        if precomputed_omega_L is not None:
+            Omega_L_1 = precomputed_omega_L[0]
+        elif "omega_params" in params:
+            Omega_1 = _build_omega_direct(
+                params["omega_params"], ranvar_indices, control,
+            )
+            Omega_L_1 = _safe_cholesky(Omega_1)
 
     if control.mix and Omega_L_1 is not None:
         V_1 = X_q @ beta_1
@@ -1504,7 +1597,9 @@ def _compute_mixture_prob_unpar(
         )
         Omega_L_h = None
         if control.mix and ranvar_indices is not None:
-            if h - 1 < len(params.get("segment_omegas", [])):
+            if precomputed_omega_L is not None:
+                Omega_L_h = precomputed_omega_L[h] if h < len(precomputed_omega_L) else None
+            elif h - 1 < len(params.get("segment_omegas", [])):
                 Omega_h = _build_omega_direct(
                     params["segment_omegas"][h - 1],
                     ranvar_indices,
