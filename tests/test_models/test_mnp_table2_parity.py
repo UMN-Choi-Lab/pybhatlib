@@ -221,22 +221,13 @@ def test_table2_model_aii_bhhh_se_parity(table2_targets, travelmode_path):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason=(
-        "MNP-002b — BHHH SE underestimates the random-coefficient variance "
-        "(CovCOv01) on Model (c) by ~50% (got 0.218 vs paper 0.453). The "
-        "score outer-product is near-singular (cond ~1e18), forcing pinv. "
-        "Likely fixed by switching to unparameterized scoring (lpr1/lgd1) "
-        "and a noise-aware FD step. Tracked in MNP-002b PR scope."
-    ),
-    strict=False,
-)
 def test_table2_model_c_bhhh_se_parity(table2_targets, travelmode_path):
-    """Model (c) random coefficient — exercises the mixture/Omega_L SE path.
+    """Model (c) random coefficient — exercises the mixture/Omega SE path.
 
-    Looser 0.10 tolerance: Model (c)'s OVTT t-stat is ~5, but CovCOv01's
-    is ~2.4 with SE ~0.45, so a 0.02 absolute tolerance is too tight given
-    the paper-rounding precision. Currently xfails — see decorator.
+    With MNP-002b (unparameterized scoring, GAUSS lpr1/lgd1 convention)
+    the SE on ``CovCOv01`` (random-coefficient variance) lands within
+    0.001 of the paper value 0.4531. Tightened to 0.05 (from the 0.10
+    xfail tolerance pre-MNP-002b).
     """
     _assert_bhhh_se_parity(
         table2_targets["models"]["c_random_coef"],
@@ -245,7 +236,7 @@ def test_table2_model_c_bhhh_se_parity(table2_targets, travelmode_path):
         {"iid": False, "mix": True},
         ["OVTT"],
         travelmode_path,
-        tol=0.10,
+        tol=0.05,
     )
 
 
