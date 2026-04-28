@@ -702,10 +702,11 @@ class MNPModel(BaseModel):
         structure) so it is well-conditioned by construction.
 
         SE method is selected via ``self.control.se_method``:
-          - "hessian": ``J_norm @ J_pu @ (hess_inv/N) @ J_pu^T @ J_norm^T``.
+          - "hessian": ``J_norm @ V_unpar @ J_norm^T``
+                       where ``V_unpar = J_pu @ (hess_inv/N) @ J_pu^T``.
           - "bhhh":    ``J_norm @ (G_unpar^T G_unpar)^{-1} @ J_norm^T``.
-          - "sandwich": ``J_norm @ A^{-1} B A^{-1} @ J_norm^T`` where
-                       ``A = J_pu^T (hess_inv/N) J_pu`` (par->unpar) and
+          - "sandwich": ``J_norm @ V_unpar @ B @ V_unpar @ J_norm^T``
+                       where ``V_unpar`` is as above and
                        ``B = G_unpar^T G_unpar``.
 
         Returns
