@@ -1200,14 +1200,17 @@ class MNPModel(BaseModel):
         "no delta method" path for hessian / sandwich — only BHHH is
         unparameterized end-to-end):
 
-          - "hessian":  ``J_norm @ J_pu @ (hess_inv/N) @ J_pu^T @ J_norm^T``
-                        — applies finite-differenced ``J_pu`` (delta-method).
+          - "hessian":  ``J_norm @ V_unpar @ J_norm^T``
+                        where ``V_unpar = J_pu @ (hess_inv/N) @ J_pu^T``
+                        (or ``J_pu @ inv(hess_observed) @ J_pu^T`` when the
+                        true observed Hessian is available — preferred).
+                        Applies finite-differenced ``J_pu`` (delta-method).
           - "bhhh":     ``J_norm @ (G_unpar^T G_unpar)^{-1} @ J_norm^T``
                         — ``G_unpar`` is computed natively in unparameterized
                         space; truly no parameterization Jacobian.
-          - "sandwich": ``J_norm @ A^{-1} B A^{-1} @ J_norm^T`` where
-                        ``A = J_pu^T (hess_inv/N) J_pu`` and
-                        ``B = G_unpar^T G_unpar`` — uses ``J_pu`` for the
+          - "sandwich": ``J_norm @ V_unpar @ B @ V_unpar @ J_norm^T`` where
+                        ``V_unpar`` is as in the hessian path and
+                        ``B = G_unpar^T G_unpar``.  Uses ``J_pu`` for the
                         Hessian leg.
 
         Parameters
