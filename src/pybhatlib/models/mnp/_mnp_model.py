@@ -569,12 +569,40 @@ class MNPModel(BaseModel):
             hess_inv = result.hess_inv
             grad_full = result.grad
 
+        # MNP-002: compute the true observed Hessian H = ∂²(-Σℓ)/∂θ∂θᵀ via
+        # central FD over the gradient when the user requested an SE method
+        # that needs H (not H⁻¹).  This replaces ``result.hess_inv`` (the
+        # BFGS quasi-Newton inverse) only for SE purposes; the active_mask
+        # path's ``hess_inv`` is still used as the fallback covariance for
+        # other reporting paths.
+        #
+        # PR #4 review P0 #1: when ``_observed_hessian`` raises, the
+        # earlier code stored ``result.hess_inv`` (the inverse) into a
+        # variable that downstream code treated as ``H`` itself, producing
+        # ``inv(inv(H)) = H`` reported as the covariance.  Fix: on
+        # fallback set ``hess_observed = None`` so SE goes to NaN rather
+        # than silently double-inverting.
+        hess_observed: np.ndarray | None = None
+        if self.control.se_method in ("hessian", "sandwich"):
+            try:
+                hess_observed = self._observed_hessian(theta_hat)
+            except Exception as _exc:
+                warnings.warn(
+                    f"observed Hessian computation failed ({_exc}); "
+                    "SE for se_method='{}' will be NaN".format(
+                        self.control.se_method
+                    ),
+                    RuntimeWarning,
+                )
+                hess_observed = None
+
         # BHATLIB-normalized reporting
         param_names = self._build_report_names()
         (b_report, se, t_stat, p_value,
          cov_report, corr_report, g_report) = self._normalize_for_reporting(
             theta_hat, hess_inv, grad_full,
             active_mask=active_mask,
+            hess_observed=hess_observed,
         )
 
         # Extract normalized structural parameters
@@ -1043,20 +1071,76 @@ class MNPModel(BaseModel):
 
         return names
 
+    def _observed_hessian(self, theta_hat: np.ndarray) -> np.ndarray:
+        """Compute the observed Hessian H = ∂²(-Σ_q ℓ_q)/∂θ∂θᵀ at θ̂ via
+        central finite differences over the gradient.
+
+        Scaling note: ``mnp_loglik`` (and the optimizer objective) return the
+        *mean* NLL and its gradient (i.e. sum / N). To obtain the Hessian of
+        the *summed* NLL we call ``mnp_loglik(..., return_gradient=True)`` and
+        multiply the returned gradient by N before differencing. This makes H
+        sum-scale so that ``np.linalg.inv(H)`` equals the asymptotic variance
+        of θ̂ directly — no additional 1/N correction needed (contrast with
+        ``result.hess_inv / N`` which was required when using scipy's mean-scale
+        BFGS approximation).
+
+        Step size matches the adaptive eps used in the BHHH computation for
+        consistency: ``eps_machine^(1/3) * (1 + |theta_i|)``.
+
+        Returns
+        -------
+        H : ndarray, shape (n, n)
+            Symmetric, positive-semi-definite at the MLE.
+        """
+        from pybhatlib.models.mnp._mnp_loglik import mnp_loglik
+
+        n = len(theta_hat)
+        # Adaptive step: classic optimum for central-FD of a smooth function
+        eps_vec = np.cbrt(np.finfo(float).eps) * (1.0 + np.abs(theta_hat))
+        H = np.zeros((n, n), dtype=np.float64)
+
+        for j in range(n):
+            e = np.zeros(n, dtype=np.float64)
+            e[j] = eps_vec[j]
+            # Evaluate mean-scale gradient, then scale up to sum-scale (* N)
+            _, g_plus_mean = mnp_loglik(
+                theta_hat + e, self.X, self.y, self.avail,
+                self.n_alts, self.n_beta, self.control,
+                self.ranvar_indices, return_gradient=True,
+            )
+            _, g_minus_mean = mnp_loglik(
+                theta_hat - e, self.X, self.y, self.avail,
+                self.n_alts, self.n_beta, self.control,
+                self.ranvar_indices, return_gradient=True,
+            )
+            # mnp_loglik returns *negative* mean LL and its gradient.
+            # We want H = ∂²(-Σℓ)/∂θ∂θᵀ = ∂²(N*nll_mean)/∂θ∂θᵀ
+            # so multiply mean-scale gradient by N.
+            g_plus = g_plus_mean * self.N
+            g_minus = g_minus_mean * self.N
+            H[:, j] = (g_plus - g_minus) / (2.0 * eps_vec[j])
+
+        # Symmetrize to eliminate numerical asymmetry from FD noise
+        return 0.5 * (H + H.T)
+
     def _normalize_for_reporting(
         self,
         theta_hat: np.ndarray,
         hess_inv: np.ndarray | None,
         gradient: np.ndarray | None,
         active_mask: np.ndarray | None = None,
+        hess_observed: np.ndarray | None = None,
     ) -> tuple:
         """Compute BHATLIB-normalized values with standard errors.
 
         SE method is selected via ``self.control.se_method``:
-          - "hessian": inverse observed information (scipy hess_inv / N).
+          - "hessian": inverse observed information; H computed via central FD
+                       over the analytic gradient at theta_hat (sum-scale).
           - "bhhh": per-observation score outer-product inverse. Default;
             matches GAUSS ``_max_CovPar = 2``.
           - "sandwich": H^{-1} (G^T G) H^{-1}, robust to misspecification.
+            H is the true observed Hessian (sum-scale), not scipy's BFGS
+            quasi-Newton approximation.
         All three paths compute a cov_theta in parameterized theta space and
         delta-method-transform it into reporting space via the finite-
         differenced Jacobian J. The "no delta method" path (lpr1/lgd1 native
@@ -1157,9 +1241,9 @@ class MNPModel(BaseModel):
             # up as weakly-nonzero scores, which we warn on below.
             score_norms = np.linalg.norm(G, axis=0)
             structural_zero = score_norms < 1e-12
-            active_mask = ~structural_zero
+            scoring_active_mask = ~structural_zero
 
-            G_active = G[:, active_mask]
+            G_active = G[:, scoring_active_mask]
             B_active = G_active.T @ G_active
             cond_active = np.linalg.cond(B_active) if B_active.size else 0.0
             if cond_active > 1e12:
@@ -1185,33 +1269,56 @@ class MNPModel(BaseModel):
                     B_inv_active = np.linalg.pinv(B_active)
 
             B_inv = np.zeros((n_theta, n_theta), dtype=np.float64)
-            active_idx = np.where(active_mask)[0]
+            active_idx = np.where(scoring_active_mask)[0]
             B_inv[np.ix_(active_idx, active_idx)] = B_inv_active
 
             if se_method == "bhhh":
                 cov_theta = B_inv
             else:
-                if hess_inv is None:
+                if hess_observed is None:
                     warnings.warn(
-                        "se_method='sandwich' requested but hess_inv is None "
-                        "(optimizer did not return a Hessian approximation); "
-                        "falling back to BHHH covariance.",
+                        "se_method='sandwich' requested but observed Hessian "
+                        "is None (computation failed); falling back to BHHH "
+                        "covariance.",
                         RuntimeWarning,
                         stacklevel=2,
                     )
                     cov_theta = B_inv
                 else:
-                    # Scaling derivation: mnp_loglik returns the mean
-                    # negative log-likelihood, so scipy hess_inv ≈ (∇²f)⁻¹
-                    # = N · (-∇²L_summed)⁻¹. The MLE asymptotic variance
-                    # is (-∇²L_summed)⁻¹ = hess_inv / N. Sandwich is then
-                    # A⁻¹ B A⁻¹ with A⁻¹ = hess_inv / N and B = G^T G
-                    # built from per-obs scores of the *summed* log-lik.
-                    H_inv = hess_inv / self.N
+                    # hess_observed is the sum-scale observed Hessian H = ∂²(-Σℓ)/∂θ∂θᵀ.
+                    # Asymptotic variance = H⁻¹ (no /N needed — H is already sum-scale).
+                    # Sandwich: A⁻¹ B A⁻¹ with A⁻¹ = H⁻¹ and B = G^T G (sum-scale).
+                    try:
+                        H_inv = np.linalg.inv(hess_observed)
+                    except np.linalg.LinAlgError:
+                        warnings.warn(
+                            "Observed Hessian is singular; falling back to pinv. "
+                            "Check for unidentified parameters.",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                        H_inv = np.linalg.pinv(hess_observed)
                     cov_theta = H_inv @ B @ H_inv
-        elif se_method == "hessian" and hess_inv is not None:
-            # See mean-objective derivation above: Var(θ̂) = hess_inv / N.
-            cov_theta = hess_inv / self.N
+        elif se_method == "hessian":
+            if hess_observed is None:
+                warnings.warn(
+                    "se_method='hessian' requested but observed Hessian is None "
+                    "(computation failed); SE will be NaN.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            else:
+                # hess_observed is sum-scale: Var(θ̂) = H⁻¹ directly.
+                try:
+                    cov_theta = np.linalg.inv(hess_observed)
+                except np.linalg.LinAlgError:
+                    warnings.warn(
+                        "Observed Hessian is singular; falling back to pinv. "
+                        "Check for unidentified parameters.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    cov_theta = np.linalg.pinv(hess_observed)
 
         if cov_theta is not None:
             cov_report = J @ cov_theta @ J.T
@@ -1224,8 +1331,11 @@ class MNPModel(BaseModel):
             t_stat = np.where(se > 0, b_report / se, 0.0)
             p_value = 2.0 * (1.0 - _ndtr(np.abs(t_stat)))
 
-        # Correlation matrix of reporting parameters
-        if hess_inv is not None:
+        # Correlation matrix of reporting parameters.  PR #4 review P0 #2:
+        # gate on ``cov_theta`` (the actual SE source), not on the observed
+        # Hessian — the BHHH path produces a valid cov_theta without ever
+        # touching ``hess_observed``.
+        if cov_theta is not None:
             se_outer = np.outer(se, se)
             with np.errstate(divide="ignore", invalid="ignore"):
                 corr_report = np.where(
