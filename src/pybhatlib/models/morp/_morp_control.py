@@ -7,10 +7,27 @@ Probit (MORP) model, analogous to BHATLIB's morpControl struct.
 from __future__ import annotations
 
 import warnings
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
+
+__all__ = ["MORPControl", "morp_control_replace", "morp_control_asdict"]
+
+# Canonical field names for MORPControl (used by shims below).
+_MORP_CONTROL_FIELDS = (
+    "iid",
+    "correst",
+    "heteronly",
+    "method",
+    "spherical",
+    "maxiter",
+    "tol",
+    "optimizer",
+    "verbose",
+    "seed",
+    "startb",
+)
 
 
 class MORPControl:
@@ -125,3 +142,78 @@ class MORPControl:
             f"optimizer={self.optimizer!r}, verbose={self.verbose!r}, "
             f"seed={self.seed!r})"
         )
+
+
+# ---------------------------------------------------------------------------
+# dataclasses-compatibility shims
+# ---------------------------------------------------------------------------
+# MORPControl is a plain class (not a @dataclass) so that it can support the
+# ``indep=`` keyword-only deprecation alias.  Code that previously relied on
+# ``dataclasses.replace`` / ``dataclasses.asdict`` should use these helpers.
+
+
+def morp_control_replace(ctrl: "MORPControl", **changes: Any) -> "MORPControl":
+    """Return a new :class:`MORPControl` with selected fields replaced.
+
+    Drop-in replacement for ``dataclasses.replace(ctrl, ...)`` for callers
+    that were using the old ``@dataclass``-based ``MORPControl``.
+
+    Parameters
+    ----------
+    ctrl : MORPControl
+        The control instance to copy.
+    **changes
+        Fields to override.  Only canonical field names are accepted;
+        the deprecated ``indep`` alias is intentionally *not* supported here.
+
+    Returns
+    -------
+    MORPControl
+        A fresh instance with ``changes`` applied on top of ``ctrl``'s values.
+
+    Raises
+    ------
+    TypeError
+        If any key in ``changes`` is not a recognised MORPControl field.
+
+    Examples
+    --------
+    >>> ctrl = MORPControl(maxiter=100)
+    >>> ctrl2 = morp_control_replace(ctrl, maxiter=500, verbose=0)
+    >>> ctrl2.maxiter
+    500
+    """
+    unknown = set(changes) - set(_MORP_CONTROL_FIELDS)
+    if unknown:
+        raise TypeError(
+            f"morp_control_replace() got unknown field(s): {sorted(unknown)}"
+        )
+    current: dict[str, Any] = {f: getattr(ctrl, f) for f in _MORP_CONTROL_FIELDS}
+    current.update(changes)
+    return MORPControl(**current)
+
+
+def morp_control_asdict(ctrl: "MORPControl") -> dict[str, Any]:
+    """Return a shallow-copy dict of all canonical :class:`MORPControl` fields.
+
+    Drop-in replacement for ``dataclasses.asdict(ctrl)`` for callers that
+    were using the old ``@dataclass``-based ``MORPControl``.
+
+    Parameters
+    ----------
+    ctrl : MORPControl
+        The control instance to convert.
+
+    Returns
+    -------
+    dict
+        Mapping of field name → current value for all canonical fields.
+
+    Examples
+    --------
+    >>> ctrl = MORPControl(iid=True, verbose=0)
+    >>> d = morp_control_asdict(ctrl)
+    >>> d["iid"]
+    True
+    """
+    return {f: getattr(ctrl, f) for f in _MORP_CONTROL_FIELDS}
