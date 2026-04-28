@@ -25,6 +25,7 @@ import numpy as np
 import pytest
 
 from pybhatlib.models.mnp import MNPControl, MNPModel
+from pybhatlib.models.mnp._mnp_results import MNPResults
 
 ALTERNATIVES = ["Alt1_ch", "Alt2_ch", "Alt3_ch"]
 SPEC_BASE = {
@@ -215,3 +216,122 @@ def test_mnp_control_no_indep_field():
     # control either.
     ctrl = MNPControl()
     assert not hasattr(ctrl, "indep")
+
+
+# ----------------------------------------------------------------------
+# 7. MNPResults legacy-kwarg deprecation shim (construction-time)
+# ----------------------------------------------------------------------
+
+# Minimal set of values for all required (no-default) MNPResults fields.
+_CORR = np.eye(2)
+_REQUIRED = dict(
+    b_original=np.array([0.5, -0.5]),
+    se=np.array([0.1, 0.1]),
+    t_stat=np.array([5.0, -5.0]),
+    p_value=np.array([0.01, 0.01]),
+    gradient=np.array([0.0, 0.0]),
+    loglik=-1.5,
+    n_obs=100,
+    param_names=["x1", "x2"],
+    corr_matrix=_CORR,
+    cov_matrix=_CORR * 0.01,
+    n_iter=10,
+    convergence_time=0.01,
+    converged=True,
+    return_code=0,
+)
+
+
+_LEGACY_TO_CANONICAL = {"b": "params", "ll": "loglik", "n_iterations": "n_iter"}
+
+
+def _make_results(**overrides):
+    """Construct MNPResults with all required fields, allowing overrides.
+
+    Automatically drops the canonical field when a legacy alias is provided
+    (so callers can say ``_make_results(b=arr)`` without also passing params).
+    """
+    kw = dict(_REQUIRED)
+    # params is required — supply it unless the caller provides b= (legacy)
+    if "params" not in overrides and "b" not in overrides:
+        kw["params"] = np.array([0.5, -0.5])
+    # Drop canonical names for any legacy alias the caller is providing.
+    for legacy, canonical in _LEGACY_TO_CANONICAL.items():
+        if legacy in overrides:
+            kw.pop(canonical, None)
+    kw.update(overrides)
+    return MNPResults(**kw)
+
+
+def test_legacy_b_kwarg_emits_deprecation_warning():
+    """``b=`` at construction time warns and maps to ``params``."""
+    arr = np.array([1.0, 2.0])
+    with pytest.warns(DeprecationWarning, match=r"MNPResults\(b=\.\.\.\) is deprecated"):
+        r = _make_results(b=arr)
+    np.testing.assert_array_equal(r.params, arr)
+    # The read alias should also still work (and point to the same value).
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always", DeprecationWarning)
+        np.testing.assert_array_equal(r.b, arr)
+
+
+def test_legacy_ll_kwarg_emits_deprecation_warning():
+    """``ll=`` at construction time warns and maps to ``loglik``."""
+    with pytest.warns(DeprecationWarning, match=r"MNPResults\(ll=\.\.\.\) is deprecated"):
+        r = _make_results(ll=-2.5)
+    assert r.loglik == pytest.approx(-2.5)
+
+
+def test_legacy_n_iterations_kwarg_emits_deprecation_warning():
+    """``n_iterations=`` at construction time warns and maps to ``n_iter``."""
+    with pytest.warns(DeprecationWarning, match=r"MNPResults\(n_iterations=\.\.\.\) is deprecated"):
+        r = _make_results(n_iterations=42)
+    assert r.n_iter == 42
+
+
+def test_legacy_ll_total_kwarg_warns_and_discards():
+    """``ll_total=`` warns and is discarded; reading it returns loglik*n_obs."""
+    with pytest.warns(DeprecationWarning, match="ll_total"):
+        r = _make_results(ll_total=-999.0)
+    # ll_total was discarded; canonical loglik unchanged
+    assert r.loglik == pytest.approx(_REQUIRED["loglik"])
+    # The read property still computes total on demand
+    with warnings.catch_warnings(record=True):
+        warnings.simplefilter("always", DeprecationWarning)
+        assert r.ll_total == pytest.approx(r.loglik * r.n_obs)
+
+
+def test_passing_both_legacy_and_canonical_raises():
+    """Supplying both ``b=`` and ``params=`` is ambiguous and must raise."""
+    with pytest.raises(TypeError, match="received both legacy"):
+        _make_results(b=np.array([1.0, 2.0]), params=np.array([3.0, 4.0]))
+
+
+def test_unknown_kwarg_still_raises():
+    """Unknown kwargs should raise ``TypeError`` as before."""
+    with pytest.raises(TypeError, match="unexpected keyword arguments"):
+        _make_results(xyz="bad")
+
+
+def test_canonical_construction_unaffected():
+    """Constructing with canonical kwargs must not emit any warning."""
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        r = _make_results()
+    dep_warnings = [w for w in captured if issubclass(w.category, DeprecationWarning)]
+    assert dep_warnings == [], f"Unexpected DeprecationWarning(s): {dep_warnings}"
+    assert isinstance(r.params, np.ndarray)
+
+
+def test_read_aliases_still_work_after_init_change(fitted_iid):
+    """Existing read-alias tests must pass with the new __init__ in place."""
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", DeprecationWarning)
+        _ = fitted_iid.b
+        _ = fitted_iid.ll
+        _ = fitted_iid.n_iterations
+
+    names = [str(w.message) for w in captured if issubclass(w.category, DeprecationWarning)]
+    assert any("b" in m for m in names)
+    assert any("ll" in m for m in names)
+    assert any("n_iterations" in m for m in names)

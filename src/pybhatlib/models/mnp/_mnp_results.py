@@ -6,6 +6,7 @@ standard errors, test statistics, and model diagnostics.
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 from dataclasses import dataclass
 
@@ -16,7 +17,16 @@ from numpy.typing import NDArray
 from pybhatlib.models.mnp._mnp_control import MNPControl
 
 
-@dataclass
+# Legacy construction kwargs → canonical field names.
+# Handled at __init__ time with a DeprecationWarning.
+_MNPRESULTS_LEGACY_KWARGS: dict[str, str] = {
+    "b": "params",
+    "ll": "loglik",
+    "n_iterations": "n_iter",
+}
+
+
+@dataclass(init=False)
 class MNPResults:
     """Results from MNP model estimation.
 
@@ -120,6 +130,57 @@ class MNPResults:
     control: MNPControl | None = None
     data_path: str = ""
     ranvar_indices: list[int] | None = None
+
+    def __init__(self, **kwargs: object) -> None:
+        """Construct MNPResults, accepting both canonical and legacy kwargs.
+
+        Legacy kwargs (``b``, ``ll``, ``n_iterations``, ``ll_total``) are
+        translated to their canonical counterparts and emit a
+        ``DeprecationWarning``.  Unknown kwargs raise ``TypeError``.
+        """
+        # 1. Translate rename aliases with DeprecationWarning.
+        for old, new in _MNPRESULTS_LEGACY_KWARGS.items():
+            if old in kwargs:
+                warnings.warn(
+                    f"MNPResults({old}=...) is deprecated; use {new}=... instead. "
+                    f"This shim will be removed in pybhatlib v1.0.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                if new in kwargs:
+                    raise TypeError(
+                        f"MNPResults received both legacy {old}= and canonical {new}=; "
+                        f"pass only one"
+                    )
+                kwargs[new] = kwargs.pop(old)  # type: ignore[assignment]
+
+        # 2. Handle ll_total: deprecated computed quantity, discard silently.
+        if "ll_total" in kwargs:
+            warnings.warn(
+                "MNPResults(ll_total=...) is deprecated; ll_total is now computed "
+                "as loglik * n_obs and should not be passed explicitly. "
+                "This shim will be removed in pybhatlib v1.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs.pop("ll_total")
+
+        # 3. Assign canonical fields, applying defaults for missing optional ones.
+        for f in dataclasses.fields(self):
+            if f.name in kwargs:
+                object.__setattr__(self, f.name, kwargs.pop(f.name))
+            elif f.default is not dataclasses.MISSING:
+                object.__setattr__(self, f.name, f.default)
+            elif f.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
+                object.__setattr__(self, f.name, f.default_factory())  # type: ignore[misc]
+            else:
+                raise TypeError(f"MNPResults missing required argument: {f.name!r}")
+
+        # 4. Reject any remaining unknown kwargs.
+        if kwargs:
+            raise TypeError(
+                f"MNPResults got unexpected keyword arguments: {sorted(kwargs)}"
+            )
 
     def summary(self) -> str:
         """Print formatted estimation results (like BHATLIB Figure 10).
