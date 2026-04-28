@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import time
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -137,6 +138,25 @@ class MNPModel(BaseModel):
             self.ranvar_indices = self._resolve_ranvar_indices(ranvars)
         else:
             self.ranvar_indices = None
+
+        # Warn when auto-expansion produced duplicate column indices, which
+        # makes the random-coefficient Omega rank-deficient.  This happens
+        # when a base name (e.g. "OVTT") is expanded across ``nseg`` segments
+        # but all segments share the same column in the design matrix.
+        if self.ranvar_indices and len(set(self.ranvar_indices)) < len(
+            self.ranvar_indices
+        ):
+            warnings.warn(
+                "Mixture ranvars auto-expansion produced duplicate column indices "
+                f"{self.ranvar_indices}. The resulting random-coefficient Omega is "
+                "rank-deficient and the optimizer can only recover effective scalar "
+                "variance per segment. To fit a model with truly per-segment random "
+                "coefficients, list segment-suffixed names in spec (e.g. OVTT_seg1, "
+                "OVTT_seg2) and pass them explicitly. See "
+                "docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         # Extract choice vector y (0-based index of chosen alternative)
         self._build_choice_vector()

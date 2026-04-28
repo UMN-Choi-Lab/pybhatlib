@@ -13,6 +13,7 @@ to work and produces an identical fit.
 from __future__ import annotations
 
 import pytest
+import warnings
 
 from pybhatlib.models.mnp import MNPControl, MNPModel
 
@@ -417,3 +418,15 @@ class TestStripSegmentSuffixFix:
         names = [m.var_names[ri] for ri in m.ranvar_indices]
         assert "OVTT1" in names, f"Expected OVTT1 in {names}"
         assert "OVTT2" in names, f"Expected OVTT2 in {names}"
+
+    def test_duplicate_ranvar_indices_emits_warning(self, travelmode_path):
+        """``ranvars=["OVTT"]`` with ``nseg=2`` triggers auto-expansion to
+        duplicate column indices (both pointing to the same OVTT column in
+        the shared design matrix).  This must emit a ``RuntimeWarning``.
+        """
+        with pytest.warns(RuntimeWarning, match="duplicate column indices"):
+            _make_model(
+                SPEC_BASE, nseg=2,
+                ranvars=["OVTT"],
+                travelmode_path=travelmode_path,
+            )
