@@ -57,11 +57,20 @@ class MNPControl:
     optimizer : str
         Optimization method: "bfgs", "lbfgsb", "torch_adam", "torch_lbfgs".
     verbose : int
-        Verbosity: 0=silent, 1=summary, 2=per-iteration.
+        Verbosity: 0=silent, 1=summary, 2=per-iteration NLL,
+        3=per-iteration NLL + parameter/gradient/rel-gradient table.
     seed : int or None
         Random seed for reproducibility.
     startb : NDArray or None
         User-supplied starting values for parameters.
+    active_mask : NDArray of bool or None
+        Boolean mask of shape ``(n_params,)``.  ``True`` = parameter is
+        estimated; ``False`` = parameter is frozen at its ``startb`` value
+        (or default starting value when ``startb`` is None).  ``None``
+        (default) estimates all parameters with no overhead.  A
+        ``ValueError`` is raised if the length does not match ``n_params``
+        or if all entries are ``False``.  SE/t-stat/p-value are set to
+        ``np.nan`` for frozen parameters in the results.
     """
 
     iid: bool = False
@@ -84,6 +93,17 @@ class MNPControl:
     seed: int | None = None
     analytic_grad: bool = True
     startb: NDArray | None = None
+    active_mask: NDArray | None = None
+    """Boolean mask of shape (n_params,).  True = parameter is estimated,
+    False = parameter is frozen at its ``startb`` value (or at the default
+    starting value when ``startb`` is None).  ``None`` (default) means all
+    parameters are estimated — the fast path with no overhead.
+
+    If provided, ``len(active_mask)`` must equal ``n_params``; a
+    ``ValueError`` is raised at fit-time otherwise.  If all entries are
+    False, a ``ValueError`` is raised (nothing to optimize).
+    SE/t-stat/p-value are set to ``np.nan`` for frozen parameters.
+    """
     device: str = "cpu"
     """Device for computation: "cpu", "cuda", "cuda:0", or "auto".
     "auto" selects GPU when N >= gpu_threshold and CUDA is available."""
