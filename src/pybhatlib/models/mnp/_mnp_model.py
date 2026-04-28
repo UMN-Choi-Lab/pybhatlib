@@ -376,8 +376,15 @@ class MNPModel(BaseModel):
 
         return None
 
-    def fit(self) -> MNPResults:
+    def fit(self, bounds=None) -> MNPResults:
         """Estimate the MNP model.
+
+        Parameters
+        ----------
+        bounds : list of (lower, upper) tuples or None
+            Parameter bounds forwarded to scipy (L-BFGS-B only).
+            Must have length ``n_params`` if provided; when ``active_mask``
+            is set, the bounds are automatically filtered to the active subset.
 
         Returns
         -------
@@ -431,6 +438,15 @@ class MNPModel(BaseModel):
             # frozen_theta holds the full starting vector; active entries
             # will be overwritten by the optimizer at each call.
             frozen_theta = theta0.copy()
+
+        # ------------------------------------------------------------------
+        # Fix 2: filter bounds to active subset when active_mask is set.
+        # ``bounds`` has length n_params; the optimizer sees only active params.
+        # ------------------------------------------------------------------
+        if bounds is not None and active_mask is not None:
+            bounds_active = [bounds[i] for i, a in enumerate(active_mask) if a]
+        else:
+            bounds_active = bounds
 
         # Resolve device
         use_gpu = False
@@ -521,6 +537,7 @@ class MNPModel(BaseModel):
             tol=self.control.tol,
             verbose=self.control.verbose,
             jac=True,
+            bounds=bounds_active,
             param_names=theta_names_active,
         )
 
