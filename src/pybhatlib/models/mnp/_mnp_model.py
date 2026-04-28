@@ -1192,11 +1192,25 @@ class MNPModel(BaseModel):
                 cov_theta = B_inv
             else:
                 if hess_inv is None:
+                    warnings.warn(
+                        "se_method='sandwich' requested but hess_inv is None "
+                        "(optimizer did not return a Hessian approximation); "
+                        "falling back to BHHH covariance.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
                     cov_theta = B_inv
                 else:
+                    # Scaling derivation: mnp_loglik returns the mean
+                    # negative log-likelihood, so scipy hess_inv ≈ (∇²f)⁻¹
+                    # = N · (-∇²L_summed)⁻¹. The MLE asymptotic variance
+                    # is (-∇²L_summed)⁻¹ = hess_inv / N. Sandwich is then
+                    # A⁻¹ B A⁻¹ with A⁻¹ = hess_inv / N and B = G^T G
+                    # built from per-obs scores of the *summed* log-lik.
                     H_inv = hess_inv / self.N
                     cov_theta = H_inv @ B @ H_inv
         elif se_method == "hessian" and hess_inv is not None:
+            # See mean-objective derivation above: Var(θ̂) = hess_inv / N.
             cov_theta = hess_inv / self.N
 
         if cov_theta is not None:

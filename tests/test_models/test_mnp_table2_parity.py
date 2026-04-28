@@ -167,24 +167,21 @@ def test_se_methods_produce_valid_errors(se_method, travelmode_path):
     assert np.isfinite(results.se).all(), f"{se_method}: non-finite SE entries"
 
 
-@pytest.mark.slow
-def test_table2_model_b_bhhh_se_parity(table2_targets, travelmode_path):
-    """Model (b) BHHH standard errors should match paper (within 2 decimals).
-
-    Paper values are derived from t-stats via SE = |coef| / |t|, so they
-    carry ~2 decimals of effective precision. Parameter names follow the
-    BHATLIB reporting convention (normalized b_report).
-    """
-    target = table2_targets["models"]["b_age45"]
+def _assert_bhhh_se_parity(
+    target, model_label, spec, control_kwargs, ranvars, travelmode_path,
+    tol=0.02,
+):
+    """Shared assertion: fit `model_label` with BHHH SE, compare to paper SE."""
     ctrl = MNPControl(
-        iid=False, maxiter=200, verbose=0, seed=42, se_method="bhhh",
+        maxiter=200, verbose=0, seed=42, se_method="bhhh", **control_kwargs,
     )
     model = MNPModel(
         data=travelmode_path,
         alternatives=ALTERNATIVES,
         availability="none",
-        spec=SPEC_WITH_AGE45,
+        spec=spec,
         control=ctrl,
+        ranvars=ranvars,
     )
     results = model.fit()
 
@@ -194,11 +191,75 @@ def test_table2_model_b_bhhh_se_parity(table2_targets, travelmode_path):
             continue
         expected = tdata["se"]
         got = name_to_se.get(param)
-        assert got is not None, f"param {param} missing from results"
-        assert abs(got - expected) < 0.02, (
-            f"Model (b) BHHH SE mismatch for {param}: got {got:.4f}, "
+        assert got is not None, f"{model_label}: param {param} missing from results"
+        assert abs(got - expected) < tol, (
+            f"{model_label} BHHH SE mismatch for {param}: got {got:.4f}, "
             f"paper {expected:.4f}"
         )
+
+
+@pytest.mark.slow
+def test_table2_model_b_bhhh_se_parity(table2_targets, travelmode_path):
+    """Model (b) BHHH standard errors should match paper (within 2 decimals).
+
+    Paper values are derived from t-stats via SE = |coef| / |t|, so they
+    carry ~2 decimals of effective precision. Parameter names follow the
+    BHATLIB reporting convention (normalized b_report).
+    """
+    _assert_bhhh_se_parity(
+        table2_targets["models"]["b_age45"],
+        "Model (b)",
+        SPEC_WITH_AGE45,
+        {"iid": False},
+        None,
+        travelmode_path,
+    )
+
+
+@pytest.mark.slow
+def test_table2_model_aii_bhhh_se_parity(table2_targets, travelmode_path):
+    """Model (a)(ii) flexible — broadens BHHH SE coverage beyond Model (b).
+
+    Same 0.02 tolerance against paper SE. Catches scaling/conditioning bugs
+    that a single-model parity test could mask.
+    """
+    _assert_bhhh_se_parity(
+        table2_targets["models"]["a_ii_flexible"],
+        "Model (a)(ii)",
+        SPEC_BASE,
+        {"iid": False},
+        None,
+        travelmode_path,
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(
+    reason=(
+        "MNP-002b — BHHH SE underestimates the random-coefficient variance "
+        "(CovCOv01) on Model (c) by ~50% (got 0.218 vs paper 0.453). The "
+        "score outer-product is near-singular (cond ~1e18), forcing pinv. "
+        "Likely fixed by switching to unparameterized scoring (lpr1/lgd1) "
+        "and a noise-aware FD step. Tracked in MNP-002b PR scope."
+    ),
+    strict=False,
+)
+def test_table2_model_c_bhhh_se_parity(table2_targets, travelmode_path):
+    """Model (c) random coefficient — exercises the mixture/Omega_L SE path.
+
+    Looser 0.10 tolerance: Model (c)'s OVTT t-stat is ~5, but CovCOv01's
+    is ~2.4 with SE ~0.45, so a 0.02 absolute tolerance is too tight given
+    the paper-rounding precision. Currently xfails — see decorator.
+    """
+    _assert_bhhh_se_parity(
+        table2_targets["models"]["c_random_coef"],
+        "Model (c)",
+        SPEC_WITH_AGE45,
+        {"iid": False, "mix": True},
+        ["OVTT"],
+        travelmode_path,
+        tol=0.10,
+    )
 
 
 @pytest.mark.slow
