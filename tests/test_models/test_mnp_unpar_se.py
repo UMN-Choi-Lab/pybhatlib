@@ -322,6 +322,110 @@ def _assert_bhhh_se_parity(
         )
 
 
+# ---------------------------------------------------------------------------
+# Fix #3: _build_report_names ordering matches _unpar_to_report (upper-tri)
+# ---------------------------------------------------------------------------
+
+def test_report_names_length_matches_values_iid():
+    """IID: _build_report_names must have same length as _unpar_to_report output."""
+    import pandas as pd
+    from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar, count_params
+
+    n_alts = 3
+    n_beta = 5
+    control = MNPControl(iid=True, mix=False)
+    n_params = count_params(n_beta, n_alts, control, None)
+
+    rng = np.random.default_rng(99)
+    theta_par = rng.standard_normal(n_params) * 0.3
+
+    # Build a minimal MNPModel-like object to call _build_report_names.
+    # We use MNPModel with a tiny synthetic DataFrame so we can call the method.
+    X_dummy = rng.standard_normal((20, n_alts, n_beta))
+    y_dummy = rng.integers(0, n_alts, size=20)
+    # Construct the names manually via internal method
+    from pybhatlib.models.mnp._mnp_model import MNPModel
+
+    df = pd.DataFrame({
+        "Alt1_ch": (y_dummy == 0).astype(int),
+        "Alt2_ch": (y_dummy == 1).astype(int),
+        "Alt3_ch": (y_dummy == 2).astype(int),
+        **{f"v{k}_{a}": X_dummy[:, i, k]
+           for k in range(n_beta) for i, a in enumerate(["da", "sr", "tr"])},
+    })
+    spec = {f"v{k}": {f"Alt{i+1}_ch": f"v{k}_{a}"
+                      for i, a in enumerate(["da", "sr", "tr"])}
+            for k in range(n_beta)}
+    model = MNPModel(data=df, alternatives=["Alt1_ch", "Alt2_ch", "Alt3_ch"],
+                     spec=spec, control=control)
+
+    names = model._build_report_names()
+    theta_unpar = _param_to_unpar(theta_par, n_beta, n_alts, control, None)
+    values = model._unpar_to_report(theta_unpar)
+
+    assert len(names) == len(values), (
+        f"IID: len(names)={len(names)} != len(values)={len(values)}"
+    )
+
+
+def test_report_names_length_matches_values_mixed():
+    """Mixed MNP (n_rand=2): names and values must be same length AND in same order.
+
+    For the random-coef block with n_rand=2 (full Cholesky), both
+    ``_build_report_names`` and ``_unpar_to_report`` must iterate the
+    upper-triangle in the same order: (0,0), (0,1), (1,1).
+    """
+    import pandas as pd
+    from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar, count_params
+
+    n_alts = 3
+    n_beta = 4
+    ranvar_indices = [0, 1]
+    control = MNPControl(iid=True, mix=True, randdiag=False)
+    n_params = count_params(n_beta, n_alts, control, ranvar_indices)
+
+    rng = np.random.default_rng(100)
+    # Build tiny synthetic model
+    y_dummy = rng.integers(0, n_alts, size=20)
+    df = pd.DataFrame({
+        "Alt1_ch": (y_dummy == 0).astype(int),
+        "Alt2_ch": (y_dummy == 1).astype(int),
+        "Alt3_ch": (y_dummy == 2).astype(int),
+        **{f"v{k}_{a}": rng.standard_normal(20)
+           for k in range(n_beta) for a in ["da", "sr", "tr"]},
+    })
+    spec = {f"v{k}": {f"Alt{i+1}_ch": f"v{k}_{a}"
+                      for i, a in enumerate(["da", "sr", "tr"])}
+            for k in range(n_beta)}
+    from pybhatlib.models.mnp._mnp_model import MNPModel
+    model = MNPModel(data=df, alternatives=["Alt1_ch", "Alt2_ch", "Alt3_ch"],
+                     spec=spec, mix=True, ranvars=["v0", "v1"], control=control)
+
+    n_omega = len(ranvar_indices) * (len(ranvar_indices) + 1) // 2
+    theta_par = np.concatenate([
+        rng.standard_normal(n_beta) * 0.3,
+        np.array([0.5, 0.1, 0.4]),  # valid Cholesky (lower-tri)
+    ])
+
+    names = model._build_report_names()
+    theta_unpar = _param_to_unpar(theta_par, n_beta, n_alts, control, ranvar_indices)
+    values = model._unpar_to_report(theta_unpar)
+
+    assert len(names) == len(values), (
+        f"Mixed: len(names)={len(names)} != len(values)={len(values)}"
+    )
+    # Verify CovCOv entries appear exactly n_rand*(n_rand+1)/2 times
+    cov_names = [n for n in names if n.startswith("CovCOv")]
+    assert len(cov_names) == n_omega, (
+        f"Expected {n_omega} CovCOv entries, got {len(cov_names)}: {cov_names}"
+    )
+    # CovCOv01 corresponds to Omega[0,0] (diagonal, must be positive for valid Omega)
+    cov01_idx = names.index("CovCOv01")
+    assert values[cov01_idx] > 0, (
+        f"CovCOv01 (Omega[0,0]) should be positive, got {values[cov01_idx]}"
+    )
+
+
 @pytest.mark.slow
 def test_se_unpar_models_b_aii_c(table2_targets, travelmode_path):
     """Models (b), (a)(ii), (c): SE parity vs paper using unparameterized scoring.

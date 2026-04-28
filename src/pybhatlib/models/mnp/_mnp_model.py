@@ -1081,9 +1081,11 @@ class MNPModel(BaseModel):
                 for i in range(n_rand):
                     names.append(f"CovCOv{i + 1:02d}")
             else:
+                # Upper-triangle (including diagonal), row-by-row —
+                # matches _unpar_to_report which loops ``for j in range(i, n_rand)``.
                 idx = 0
                 for i in range(n_rand):
-                    for j in range(i + 1):
+                    for j in range(i, n_rand):
                         idx += 1
                         names.append(f"CovCOv{idx:02d}")
 
@@ -1099,9 +1101,10 @@ class MNPModel(BaseModel):
                         for i in range(n_rand):
                             names.append(f"CovCOv{i + 1:02d}_s{h + 1}")
                     else:
+                        # Upper-triangle, matching _unpar_to_report segment block.
                         idx = 0
                         for i in range(n_rand):
-                            for j in range(i + 1):
+                            for j in range(i, n_rand):
                                 idx += 1
                                 names.append(f"CovCOv{idx:02d}_s{h + 1}")
 
