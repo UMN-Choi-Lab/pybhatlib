@@ -530,19 +530,18 @@ class MNPModel(BaseModel):
                 segment_probs = np.exp(raw) / np.exp(raw).sum()
 
         return MNPResults(
-            b=theta_hat,
+            params=theta_hat,
             b_original=b_report,
             se=se,
             t_stat=t_stat,
             p_value=p_value,
             gradient=g_report,
-            ll=-result.fun,
-            ll_total=-result.fun * self.N,
+            loglik=-result.fun,
             n_obs=self.N,
             param_names=param_names,
             corr_matrix=corr_report,
             cov_matrix=cov_report,
-            n_iterations=result.n_iter,
+            n_iter=result.n_iter,
             convergence_time=elapsed,
             converged=result.converged,
             return_code=result.return_code,

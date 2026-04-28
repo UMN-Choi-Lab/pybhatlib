@@ -90,7 +90,7 @@ def mnp_ate(
     """
     xp = get_backend("numpy")
 
-    theta_hat = np.asarray(results.b, dtype=np.float64)
+    theta_hat = np.asarray(results.params, dtype=np.float64)
     control = results.control
 
     if X is None:

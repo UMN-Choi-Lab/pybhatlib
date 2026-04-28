@@ -6,6 +6,7 @@ standard errors, test statistics, and model diagnostics.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,13 +22,15 @@ class MNPResults:
 
     Attributes
     ----------
-    b : NDArray
+    params : NDArray
         Raw optimized parameters (theta-space).  Used internally for
         prediction and forecasting.  Length equals ``n_params``.
+        (Previously named ``b``; the old attribute is still available
+        as a deprecated alias.)
     b_original : NDArray
         BHATLIB-normalized reporting coefficients (Sigma_diff[0,0]=1).
         Aligned with ``param_names``.  For non-IID models this has
-        one fewer element than ``b`` (one scale absorbed).
+        one fewer element than ``params`` (one scale absorbed).
     se : NDArray
         Delta-method standard errors (aligned with ``b_original``).
     t_stat : NDArray
@@ -36,10 +39,12 @@ class MNPResults:
         Two-sided p-values.
     gradient : NDArray
         Gradient projected into reporting space.
-    ll : float
-        Mean log-likelihood (per observation).
-    ll_total : float
-        Total log-likelihood.
+    loglik : float
+        Mean log-likelihood (per observation).  (Previously named
+        ``ll``; the old attribute is still available as a deprecated
+        alias.  ``ll_total`` is also a deprecated alias of
+        ``loglik`` even though they referred to different quantities
+        previously — see Notes.)
     n_obs : int
         Number of observations.
     param_names : list[str]
@@ -48,8 +53,10 @@ class MNPResults:
         Correlation matrix of parameter estimates.
     cov_matrix : NDArray
         Variance-covariance matrix of parameter estimates.
-    n_iterations : int
-        Number of optimizer iterations.
+    n_iter : int
+        Number of optimizer iterations.  (Previously named
+        ``n_iterations``; the old attribute is still available as a
+        deprecated alias.)
     convergence_time : float
         Time in minutes to convergence.
     converged : bool
@@ -72,21 +79,35 @@ class MNPResults:
         Control structure used for estimation.
     data_path : str
         Path to data file used.
+
+    Notes
+    -----
+    Field renames (canonical name → deprecated alias):
+
+    - ``params`` ← ``b``
+    - ``loglik`` ← ``ll`` (mean log-likelihood)
+    - ``n_iter`` ← ``n_iterations``
+
+    Historically ``ll`` exposed the *mean* and ``ll_total`` the *total*
+    log-likelihood.  In the harmonized API only the *mean* is stored
+    (as ``loglik``).  Reading ``MNPResults.ll_total`` still returns
+    ``loglik * n_obs`` (preserving its original numerical meaning) but
+    emits a ``DeprecationWarning``; downstream code should switch to
+    ``loglik`` or compute the total explicitly.
     """
 
-    b: NDArray
+    params: NDArray
     b_original: NDArray
     se: NDArray
     t_stat: NDArray
     p_value: NDArray
     gradient: NDArray
-    ll: float
-    ll_total: float
+    loglik: float
     n_obs: int
     param_names: list[str]
     corr_matrix: NDArray
     cov_matrix: NDArray
-    n_iterations: int
+    n_iter: int
     convergence_time: float
     converged: bool
     return_code: int
@@ -120,7 +141,7 @@ class MNPResults:
         lines.append(f"  return code = {self.return_code:>5d}")
         lines.append(f"  {rc_msg}")
         lines.append("")
-        lines.append(f"  Mean log-likelihood    {self.ll:>14.6f}")
+        lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 
@@ -134,7 +155,7 @@ class MNPResults:
         lines.append("  " + "-" * 66)
 
         for i, name in enumerate(self.param_names):
-            est = self.b_original[i] if i < len(self.b_original) else self.b[i]
+            est = self.b_original[i] if i < len(self.b_original) else self.params[i]
             se = self.se[i] if i < len(self.se) else 0.0
             t = self.t_stat[i] if i < len(self.t_stat) else 0.0
             p = self.p_value[i] if i < len(self.p_value) else 0.0
@@ -156,7 +177,7 @@ class MNPResults:
             lines.append("  " + " ".join(row_vals))
 
         lines.append("")
-        lines.append(f"  Number of iterations   {self.n_iterations:>10d}")
+        lines.append(f"  Number of iterations   {self.n_iter:>10d}")
         lines.append(f"  Minutes to convergence {self.convergence_time:>10.5f}")
         lines.append(sep)
 
@@ -183,3 +204,71 @@ class MNPResults:
             },
             index=self.param_names,
         )
+
+
+# ----------------------------------------------------------------------
+# Deprecated property aliases
+# ----------------------------------------------------------------------
+#
+# Adding deprecated aliases to a ``@dataclass`` requires attaching
+# ``property`` descriptors after class construction (descriptors set on
+# the class body would otherwise be picked up by ``@dataclass`` as
+# fields).  Each alias forwards reads/writes to the canonical field and
+# emits a ``DeprecationWarning``.
+
+
+def _make_alias(old_name: str, new_name: str) -> property:
+    """Return a ``property`` that aliases ``old_name`` → ``new_name``."""
+
+    def _getter(self):
+        warnings.warn(
+            f"MNPResults.{old_name} is deprecated; use "
+            f"MNPResults.{new_name} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return getattr(self, new_name)
+
+    def _setter(self, value):
+        warnings.warn(
+            f"MNPResults.{old_name} is deprecated; use "
+            f"MNPResults.{new_name} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        setattr(self, new_name, value)
+
+    return property(_getter, _setter)
+
+
+MNPResults.b = _make_alias("b", "params")
+MNPResults.ll = _make_alias("ll", "loglik")
+MNPResults.n_iterations = _make_alias("n_iterations", "n_iter")
+
+
+def _ll_total_getter(self):
+    warnings.warn(
+        "MNPResults.ll_total is deprecated; use "
+        "MNPResults.loglik (mean log-likelihood) or "
+        "``loglik * n_obs`` for the total.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return self.loglik * self.n_obs
+
+
+def _ll_total_setter(self, value):
+    warnings.warn(
+        "MNPResults.ll_total is deprecated; use "
+        "MNPResults.loglik (mean log-likelihood) or "
+        "``loglik * n_obs`` for the total.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    if self.n_obs:
+        self.loglik = value / self.n_obs
+    else:
+        self.loglik = float(value)
+
+
+MNPResults.ll_total = property(_ll_total_getter, _ll_total_setter)
