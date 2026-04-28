@@ -156,7 +156,7 @@ def _unpack_morp_params(
         thresholds.append(tau_d)
 
     # Covariance parameters
-    if control.indep:
+    if control.iid:
         sigma = np.eye(n_dims, dtype=np.float64)
     elif control.heteronly:
         # Diagonal: D scale parameters (first dimension is reference)
@@ -210,7 +210,7 @@ def count_morp_params(
         n += max(0, n_categories[d] - 1)
 
     # Covariance
-    if not control.indep:
+    if not control.iid:
         if control.heteronly:
             n += n_dims - 1  # scale params
         else:
