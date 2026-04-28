@@ -43,6 +43,31 @@ SPEC_LEGACY_OVTT_SPLIT = {
     "COST": SPEC_BASE["COST"],
 }
 
+# Spec that uses ``AGE45`` directly as a coefficient key (not ``AGE45_DA``).
+# Used to verify that ``_strip_segment_suffix`` does not silently strip
+# ``"AGE45"`` → ``"AGE4"`` when ``"AGE4"`` is absent from var_names.
+SPEC_WITH_AGE45_KEY = {
+    "CON_SR": {"Alt1_ch": "sero", "Alt2_ch": "uno", "Alt3_ch": "sero"},
+    "CON_TR": {"Alt1_ch": "sero", "Alt2_ch": "sero", "Alt3_ch": "uno"},
+    "AGE45": {"Alt1_ch": "AGE45", "Alt2_ch": "AGE45", "Alt3_ch": "sero"},
+    "IVTT": SPEC_BASE["IVTT"],
+    "OVTT": SPEC_BASE["OVTT"],
+    "COST": SPEC_BASE["COST"],
+}
+
+# Explicit per-segment suffix form: OVTT_seg1 and OVTT_seg2 as separate keys
+# both pointing to the same OVTT_* raw data columns.
+SPEC_SEG_SUFFIX = {
+    "CON_SR": SPEC_BASE["CON_SR"],
+    "CON_TR": SPEC_BASE["CON_TR"],
+    "AGE45_DA": SPEC_BASE["AGE45_DA"],
+    "AGE45_TR": SPEC_BASE["AGE45_TR"],
+    "IVTT": SPEC_BASE["IVTT"],
+    "OVTT_seg1": SPEC_BASE["OVTT"],
+    "OVTT_seg2": SPEC_BASE["OVTT"],
+    "COST": SPEC_BASE["COST"],
+}
+
 
 def _make_model(spec, nseg, ranvars, travelmode_path, **ctrl_kwargs):
     ctrl = MNPControl(
@@ -314,3 +339,81 @@ def test_table2_model_d_legacy_naming_still_passes(travelmode_path):
         f"new LL={res_new.ll_total:.6f}, legacy LL={res_legacy.ll_total:.6f}, "
         f"delta={res_new.ll_total - res_legacy.ll_total:+.4f}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — _strip_segment_suffix tightening (MNP-006 pre-merge fixes)
+# ---------------------------------------------------------------------------
+
+
+class TestStripSegmentSuffixFix:
+    """Verify that _strip_segment_suffix no longer mishandles ``"AGE45"``."""
+
+    def test_strip_suffix_does_not_affect_age45(self, travelmode_path):
+        """``ranvars=["AGE45"]`` must resolve to the AGE45 column index.
+
+        Bug: the old implementation stripped any trailing digit, so
+        ``"AGE45"`` → ``"AGE4"``.  With the fix, the strip is only applied
+        when the base (``"AGE4"``) also appears in var_names — which it
+        doesn't here — so ``"AGE45"`` is resolved directly.
+        """
+        # SPEC_WITH_AGE45_KEY has "AGE45" as a var_name, NOT "AGE4".
+        m = _make_model(
+            SPEC_WITH_AGE45_KEY, nseg=1,
+            ranvars=["AGE45"],
+            travelmode_path=travelmode_path,
+        )
+        assert m.ranvar_indices is not None
+        assert len(m.ranvar_indices) == 1
+        resolved_name = m.var_names[m.ranvar_indices[0]]
+        assert resolved_name == "AGE45", (
+            f"Expected 'AGE45' but got {resolved_name!r} — "
+            "digit strip is too permissive."
+        )
+
+    def test_strip_suffix_age45_not_in_var_names_raises(self, travelmode_path):
+        """If ``"AGE45"`` is absent from spec and spec has no ``"AGE4"``
+        either, a ``ValueError`` must be raised — not a silent wrong-variable
+        resolution.
+        """
+        # SPEC_BASE has "AGE45_DA" / "AGE45_TR" as keys, NOT "AGE45".
+        with pytest.raises(ValueError, match="not found"):
+            _make_model(
+                SPEC_BASE, nseg=2,
+                ranvars=["AGE45"],
+                travelmode_path=travelmode_path,
+            )
+
+    def test_strip_suffix_recognizes_seg_form(self, travelmode_path):
+        """``ranvars=["OVTT_seg1", "OVTT_seg2"]`` must resolve to the two
+        explicit per-segment OVTT spec entries when SPEC_SEG_SUFFIX is used.
+        """
+        m = _make_model(
+            SPEC_SEG_SUFFIX, nseg=2,
+            ranvars=["OVTT_seg1", "OVTT_seg2"],
+            travelmode_path=travelmode_path,
+        )
+        assert m.ranvar_indices is not None
+        assert len(m.ranvar_indices) == 2
+        names = [m.var_names[ri] for ri in m.ranvar_indices]
+        assert "OVTT_seg1" in names, f"Expected OVTT_seg1 in {names}"
+        assert "OVTT_seg2" in names, f"Expected OVTT_seg2 in {names}"
+
+    def test_strip_suffix_legacy_ovtt1_form_still_works(self, travelmode_path):
+        """``ranvars=["OVTT1", "OVTT2"]`` with both names literally in
+        var_names must resolve to the OVTT1 and OVTT2 column indices
+        (no auto-expansion, no strip).
+
+        Reference: GAUSS ``ranvars = { OVTT1 OVTT2 }`` from
+        ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``.
+        """
+        m = _make_model(
+            SPEC_LEGACY_OVTT_SPLIT, nseg=2,
+            ranvars=["OVTT1", "OVTT2"],
+            travelmode_path=travelmode_path,
+        )
+        assert m.ranvar_indices is not None
+        assert len(m.ranvar_indices) == 2
+        names = [m.var_names[ri] for ri in m.ranvar_indices]
+        assert "OVTT1" in names, f"Expected OVTT1 in {names}"
+        assert "OVTT2" in names, f"Expected OVTT2 in {names}"

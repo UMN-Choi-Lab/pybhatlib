@@ -6,6 +6,7 @@ Provides a Pythonic API matching BHATLIB's mnpFit procedure.
 from __future__ import annotations
 
 import os
+import re
 import time
 
 import numpy as np
@@ -199,16 +200,23 @@ class MNPModel(BaseModel):
         is_base: list[bool] = []
 
         for rv in ranvars:
-            base = self._strip_segment_suffix(rv)
+            base = self._strip_segment_suffix(rv, var_names=self.var_names)
             looks_segment_suffixed = base is not None
 
             if rv in self.var_names:
                 resolved.append(self.var_names.index(rv))
-                # A literal var_names entry that LOOKS like
-                # "BASE<digit>" or "BASE_s<digit>" (e.g. legacy
-                # ``OVTT1``) is treated as segment-suffixed, not base —
-                # so expansion does not duplicate it.
-                is_base.append(not looks_segment_suffixed)
+                # A name qualifies as a "base" for per-segment auto-expansion
+                # only when it carries NO segment suffix (explicit or legacy).
+                # Names that end in digits but are not recognised as a legacy
+                # segment form (e.g. ``"AGE45"`` when ``"AGE4"`` is absent
+                # from spec) are treated as literal variable names, NOT bases
+                # — even though ``_strip_segment_suffix`` returns None for them.
+                # We detect the "ends-in-digits but not a recognised suffix"
+                # case by checking whether the raw name ends in a digit.
+                ends_in_digit = rv[-1].isdigit() if rv else False
+                # Treat as base only when no suffix at all (no trailing digits,
+                # no explicit _seg/_s form).
+                is_base.append(not looks_segment_suffixed and not ends_in_digit)
                 continue
 
             # Not literally in var_names — try base lookup (only
@@ -238,27 +246,63 @@ class MNPModel(BaseModel):
 
         return resolved
 
-    @staticmethod
-    def _strip_segment_suffix(name: str) -> str | None:
-        """Strip a trailing positive integer from ``name``.
+    # Regex for explicit segment-suffix forms: ``name_seg<N>`` or ``name_s<N>``.
+    # Matches ``OVTT_seg1``, ``OVTT_s2``, etc. but NOT ``AGE45`` or ``AGE4``.
+    # Reference: ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``
+    # (GAUSS ``ranvars = { OVTT1 OVTT2 }`` pattern).
+    _EXPLICIT_SEG_RE = re.compile(r"^(.+?)_(?:seg|s)(\d+)$")
 
-        Returns the base portion (e.g. ``"OVTT1"`` → ``"OVTT"``,
-        ``"OVTT_s2"`` → ``"OVTT"``) or ``None`` if no digit suffix
-        is present. Used by ranvar auto-expansion to map GAUSS-style
-        segment-suffixed names back to the base spec entry.
+    @staticmethod
+    def _strip_segment_suffix(
+        name: str,
+        var_names: list[str] | None = None,
+    ) -> str | None:
+        """Return the base name when ``name`` carries a recognised segment suffix.
+
+        Recognised forms
+        ----------------
+        1. **Explicit suffix** — ``name_seg<N>`` or ``name_s<N>``
+           (e.g. ``"OVTT_seg1"``, ``"OVTT_s2"``).  Always recognised,
+           regardless of ``var_names``.
+
+        2. **Legacy GAUSS form** — plain trailing digits
+           (e.g. ``"OVTT1"``, ``"OVTT2"``).  Only recognised when *both*
+           the full name (``"OVTT1"``) **and** the base (``"OVTT"``)
+           appear in ``var_names``.  This prevents ``"AGE45"`` from being
+           silently stripped to ``"AGE4"`` when ``"AGE4"`` happens to be in
+           the spec.
+
+        Reference: ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``.
+
+        Parameters
+        ----------
+        name : str
+            Candidate ranvar name.
+        var_names : list of str, optional
+            Spec variable names known to the model.  Required for legacy-form
+            detection; if omitted the legacy form is **not** recognised.
+
+        Returns
+        -------
+        str or None
+            Base name if a suffix was stripped, else ``None``.
         """
-        # Handle the explicit ``_sN`` form first (matches the
-        # ``_spec_parser`` segment-duplication suffix).
-        if "_s" in name:
-            base, _, tail = name.rpartition("_s")
-            if tail.isdigit() and base:
-                return base
-        # Plain trailing digits (e.g. ``OVTT1``, ``OVTT2``).
-        i = len(name)
-        while i > 0 and name[i - 1].isdigit():
-            i -= 1
-        if i < len(name) and i > 0:
-            return name[:i]
+        # 1. Explicit ``_seg<N>`` / ``_s<N>`` form.
+        m = MNPModel._EXPLICIT_SEG_RE.match(name)
+        if m:
+            return m.group(1)
+
+        # 2. Legacy plain-digit form — only when BOTH name and base are in
+        #    var_names.  Prevents AGE45 → AGE4 false-strip.
+        if var_names is not None:
+            i = len(name)
+            while i > 0 and name[i - 1].isdigit():
+                i -= 1
+            if i < len(name) and i > 0:
+                base = name[:i]
+                if name in var_names and base in var_names:
+                    return base
+
         return None
 
     def fit(self) -> MNPResults:
