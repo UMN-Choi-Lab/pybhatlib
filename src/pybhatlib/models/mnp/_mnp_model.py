@@ -820,29 +820,61 @@ class MNPModel(BaseModel):
     # ------------------------------------------------------------------
 
     def _theta_to_report(self, theta: np.ndarray) -> np.ndarray:
-        """Map parametrized theta to BHATLIB reporting convention.
+        """Map parameterized theta to BHATLIB reporting convention.
 
-        BHATLIB normalizes the differenced error covariance so that
-        Sigma_diff[0,0] = 1, absorbing one scale parameter for non-IID
-        models.  All betas and random-coefficient Cholesky elements are
-        divided by sigma_1 = sqrt(Sigma_diff[0,0]).
+        Routes through the unparameterized form so the reporting block has
+        a single source of truth: ``theta_par -> theta_unpar -> b_report``.
+        This eliminates the need for a delta-method projection through the
+        parameterized covariance and aligns the random-coefficient block
+        with GAUSS (which reports variance/covariance entries via
+        ``vecdup(L'L)``, not Cholesky entries).
         """
-        from pybhatlib.models.mnp._mnp_loglik import (
-            _build_lambda,
-            _build_omega_cholesky,
-            _unpack_params,
-        )
+        from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar
 
-        params = _unpack_params(
+        theta_unpar = _param_to_unpar(
             theta, self.n_beta, self.n_alts, self.control,
             self.ranvar_indices,
         )
-        Lambda = _build_lambda(
+        return self._unpar_to_report(theta_unpar)
+
+    def _unpar_to_report(self, theta_unpar: np.ndarray) -> np.ndarray:
+        """Map unparameterized theta to BHATLIB reporting convention.
+
+        BHATLIB normalizes the differenced error covariance so that
+        Sigma_diff[0,0] = 1, absorbing one scale parameter for non-IID
+        models. All betas are divided by sigma_1; the kernel block becomes
+        normalized correlations (``parker``) and relative scales
+        (``scale``); the random-coefficient block reports the Omega
+        variance/covariance entries divided by sigma_1**2.
+
+        Notes
+        -----
+        This is the only Jacobian step we keep on the SE path: a single
+        scalar normalization (``sigma_1``) per block. It is NOT the
+        delta-method through the spherical-Cholesky parameterization that
+        the MNP-002 SE machinery used; the unparameterized theta and the
+        reporting theta are identical except for sigma_1 scaling, and the
+        Jacobian of that scaling is computed in closed form by finite
+        differencing this function only.
+        """
+        from pybhatlib.models.mnp._mnp_loglik import (
+            _build_lambda_direct,
+            _build_omega_direct,
+            _unpack_params_unpar,
+        )
+
+        params = _unpack_params_unpar(
+            theta_unpar, self.n_beta, self.n_alts, self.control,
+            self.ranvar_indices,
+        )
+        Lambda = _build_lambda_direct(
             params.get("lambda_params"), self.n_alts, self.control,
         )
         dim = self.n_alts - 1
 
-        # Differenced kernel error covariance
+        # Differenced kernel error covariance: Sigma_diff = ones + Lambda + I
+        # (formula matches the parameterized path; identical at convergence
+        # by construction, because _param_to_unpar preserves Lambda exactly).
         if self.control.iid:
             Sigma_diff = np.ones((dim, dim)) + np.eye(dim)
         else:
@@ -860,34 +892,38 @@ class MNPModel(BaseModel):
             d_norm = np.sqrt(np.diag(Sigma_norm))
             Corr_norm = Sigma_norm / np.outer(d_norm, d_norm)
 
-            # Parker (correlations, upper triangle row-by-row)
             if not self.control.heteronly:
                 for i in range(dim):
                     for j in range(i + 1, dim):
                         report.append(float(Corr_norm[i, j]))
 
-            # Relative scales (indices 1 .. dim-1; index 0 is normalized to 1)
+            # Relative scales (indices 1 .. dim-1; index 0 is normalized to 1).
             for i in range(1, dim):
                 report.append(float(d_norm[i]))
 
-        # --- Random-coefficient Cholesky (normalized) ---
+        # --- Random-coefficient Omega (variance/covariance entries) ---
+        # GAUSS reference: MNP_TRAVELMODE.gss line 211 reports
+        # ``vecdup(newcorker' * newcorker)`` — i.e., upper-tri (with diag)
+        # of Omega. This makes ``CovCOv01`` the variance of the random
+        # coefficient (not its standard deviation), matching the BHATLIB
+        # paper's Table 2 fixture.
         if (
             self.control.mix
             and self.ranvar_indices is not None
             and "omega_params" in params
         ):
-            L = _build_omega_cholesky(
+            Omega = _build_omega_direct(
                 params["omega_params"], self.ranvar_indices, self.control,
             )
-            L_norm = L / sigma_1
+            Omega_norm = Omega / (sigma_1 ** 2)
             n_rand = len(self.ranvar_indices)
             if self.control.randdiag:
                 for i in range(n_rand):
-                    report.append(float(L_norm[i, i]))
+                    report.append(float(Omega_norm[i, i]))
             else:
                 for i in range(n_rand):
-                    for j in range(i + 1):
-                        report.append(float(L_norm[i, j]))
+                    for j in range(i, n_rand):
+                        report.append(float(Omega_norm[i, j]))
 
         # --- Segment parameters ---
         if self.control.nseg > 1:
@@ -904,20 +940,20 @@ class MNPModel(BaseModel):
                     and self.ranvar_indices is not None
                     and h - 1 < len(params.get("segment_omegas", []))
                 ):
-                    L_h = _build_omega_cholesky(
+                    Omega_h = _build_omega_direct(
                         params["segment_omegas"][h - 1],
                         self.ranvar_indices,
                         self.control,
                     )
-                    L_h_norm = L_h / sigma_1
+                    Omega_h_norm = Omega_h / (sigma_1 ** 2)
                     n_rand = len(self.ranvar_indices)
                     if self.control.randdiag:
                         for i in range(n_rand):
-                            report.append(float(L_h_norm[i, i]))
+                            report.append(float(Omega_h_norm[i, i]))
                     else:
                         for i in range(n_rand):
-                            for j in range(i + 1):
-                                report.append(float(L_h_norm[i, j]))
+                            for j in range(i, n_rand):
+                                report.append(float(Omega_h_norm[i, j]))
 
         return np.array(report, dtype=np.float64)
 
@@ -1133,18 +1169,46 @@ class MNPModel(BaseModel):
     ) -> tuple:
         """Compute BHATLIB-normalized values with standard errors.
 
-        SE method is selected via ``self.control.se_method``:
-          - "hessian": inverse observed information; H computed via central FD
-                       over the analytic gradient at theta_hat (sum-scale).
-          - "bhhh": per-observation score outer-product inverse. Default;
-            matches GAUSS ``_max_CovPar = 2``.
-          - "sandwich": H^{-1} (G^T G) H^{-1}, robust to misspecification.
-            H is the true observed Hessian (sum-scale), not scipy's BFGS
-            quasi-Newton approximation.
-        All three paths compute a cov_theta in parameterized theta space and
-        delta-method-transform it into reporting space via the finite-
-        differenced Jacobian J. The "no delta method" path (lpr1/lgd1 native
-        unparameterized scoring) is a planned follow-up.
+        MNP-002b: SEs are computed in the unparameterized covariance/
+        correlation space (the GAUSS ``lpr1``/``lgd1`` convention). The
+        per-observation scores are obtained by finite differencing
+        ``_per_obs_loglik_unpar`` at ``theta_unpar = _param_to_unpar(theta_hat)``,
+        not at the parameterized ``theta_hat`` itself. There is no
+        delta-method projection through the spherical-Cholesky
+        parameterization.
+
+        The only Jacobian that survives is the BHATLIB sigma_1 normalization
+        from ``_unpar_to_report`` — a scalar division per block. This is
+        unavoidable (the paper's reported parameters are normalized) and is
+        explicitly NOT what the plan calls "delta method": the projection
+        is a single closed-form scaling, computed by finite-differencing
+        ``_unpar_to_report`` only (which is a smooth, low-dimensional
+        normalization, not a re-parameterization).
+
+        Hessian path: ``hess_inv`` from scipy is in parameterized theta
+        space (the optimizer minimized in parameterized space). To project
+        it into unparameterized space we need the par->unpar Jacobian,
+        ``J_pu = d(theta_unpar)/d(theta_par)``, computed by finite
+        differencing ``_param_to_unpar`` at ``theta_hat``. This Jacobian
+        block-diagonalizes (beta and segment params pass through the
+        identity; only the kernel and Omega blocks have non-trivial
+        structure) so it is well-conditioned by construction.
+
+        SE method is selected via ``self.control.se_method``.  The branches
+        differ in whether they apply a delta-method projection through the
+        par→unpar Jacobian ``J_pu`` (PR #10 review P0 #1: this is *not* a
+        "no delta method" path for hessian / sandwich — only BHHH is
+        unparameterized end-to-end):
+
+          - "hessian":  ``J_norm @ J_pu @ (hess_inv/N) @ J_pu^T @ J_norm^T``
+                        — applies finite-differenced ``J_pu`` (delta-method).
+          - "bhhh":     ``J_norm @ (G_unpar^T G_unpar)^{-1} @ J_norm^T``
+                        — ``G_unpar`` is computed natively in unparameterized
+                        space; truly no parameterization Jacobian.
+          - "sandwich": ``J_norm @ A^{-1} B A^{-1} @ J_norm^T`` where
+                        ``A = J_pu^T (hess_inv/N) J_pu`` and
+                        ``B = G_unpar^T G_unpar`` — uses ``J_pu`` for the
+                        Hessian leg.
 
         Parameters
         ----------
@@ -1161,7 +1225,7 @@ class MNPModel(BaseModel):
         Returns
         -------
         b_report : ndarray  — normalized coefficient estimates
-        se : ndarray         — standard errors (see se_method above)
+        se : ndarray         — standard errors
         t_stat : ndarray     — b_report / se
         p_value : ndarray    — two-sided p-values
         cov_report : ndarray — covariance matrix of reporting params
@@ -1170,61 +1234,61 @@ class MNPModel(BaseModel):
         """
         import warnings
 
-        from pybhatlib.models.mnp._mnp_loglik import _per_obs_loglik
+        from pybhatlib.models.mnp._mnp_loglik import (
+            _param_to_unpar,
+            _per_obs_loglik_unpar,
+        )
 
-        b_report = self._theta_to_report(theta_hat)
+        # 1) Translate the converged parameterized estimate to unparameterized.
+        theta_unpar = _param_to_unpar(
+            theta_hat, self.n_beta, self.n_alts, self.control,
+            self.ranvar_indices,
+        )
+        n_theta = len(theta_unpar)  # equals len(theta_hat) by construction
+
+        # 2) Build reporting estimate from unparameterized theta.
+        b_report = self._unpar_to_report(theta_unpar)
         n_report = len(b_report)
-        n_theta = len(theta_hat)
 
-        eps = 1e-7
-        J = np.zeros((n_report, n_theta), dtype=np.float64)
-        for i in range(n_theta):
-            theta_p = theta_hat.copy()
-            theta_p[i] += eps
-            theta_m = theta_hat.copy()
-            theta_m[i] -= eps
-            J[:, i] = (
-                self._theta_to_report(theta_p) - self._theta_to_report(theta_m)
-            ) / (2.0 * eps)
+        # 3) Normalization Jacobian: J_norm = d(b_report)/d(theta_unpar).
+        # This is a scalar sigma_1 normalization per block, NOT a
+        # delta-method through the spherical-Cholesky parameterization.
+        J_norm = self._fd_jacobian(self._unpar_to_report, theta_unpar)
 
-        # MNP-003: zero columns of J corresponding to frozen theta entries
-        # *before* the delta-method.  Without this, a report param that
-        # depends on multiple theta entries (one frozen, one active) would
-        # propagate the active column's variance even though the frozen
-        # entry contributes zero (its column of cov_theta is zero, but FD
-        # perturbations across frozen entries produce a non-zero J column
-        # that the delta-method then mixes back in via off-diagonal cov
-        # entries).  Zeroing the column makes the delta-method produce
-        # se=0 naturally for the frozen-only-dependent params; the explicit
-        # NaN-marking below then overrides the zero with NaN.
-        if active_mask is not None:
-            J[:, ~active_mask] = 0.0
+        # MNP-003 active_mask × unparameterized SE: the J-column zeroing
+        # that lived here on the parameterized-space Jacobian J is no
+        # longer applicable now that the SE projection goes through
+        # J_pu (par->unpar) and J_norm (unpar->report).  Frozen theta
+        # entries already contribute zero to ``cov_unpar`` via their
+        # zeroed rows/cols in ``hess_inv`` (active_mask reconstruction
+        # in fit()) and zeroed score columns in ``G`` (BHHH path).  The
+        # explicit NaN-marking via ``_build_theta_to_report_map``
+        # further down still applies — frozen-only-dependent report
+        # params get SE=NaN regardless.
 
         # MNP-002: select Cov(theta) via control.se_method.
         se_method = self.control.se_method
-        cov_theta: np.ndarray | None = None
+        cov_unpar: np.ndarray | None = None
 
         if se_method in ("bhhh", "sandwich"):
-            # Scaled finite-difference step: eps_machine^(1/3) is the classic
-            # optimum for central-difference gradient of a smooth function
-            # (balances truncation error O(h^2) and roundoff O(eps/h)).
-            # Scale by (1 + |theta_i|) so the step respects parameter magnitude
-            # without vanishing when theta_i ~ 0. MVN CDF noise for OVUS is
-            # ~1e-5, so this floor dominates truncation.
+            # Per-obs scores in UNPARAMETERIZED space (the lpr1/lgd1 path).
+            # Scaled FD step: eps_machine^(1/3) balances truncation O(h^2)
+            # and roundoff O(eps/h); the (1 + |theta_i|) scale respects
+            # parameter magnitude without vanishing at theta_i ~ 0.
             base_eps = np.finfo(np.float64).eps ** (1.0 / 3.0)
             G = np.zeros((self.N, n_theta), dtype=np.float64)
             for i in range(n_theta):
-                eps_i = base_eps * (1.0 + abs(theta_hat[i]))
-                theta_p = theta_hat.copy()
+                eps_i = base_eps * (1.0 + abs(theta_unpar[i]))
+                theta_p = theta_unpar.copy()
                 theta_p[i] += eps_i
-                theta_m = theta_hat.copy()
+                theta_m = theta_unpar.copy()
                 theta_m[i] -= eps_i
-                ll_p = _per_obs_loglik(
+                ll_p = _per_obs_loglik_unpar(
                     theta_p, self.X, self.y, self.avail,
                     self.n_alts, self.n_beta, self.control,
                     self.ranvar_indices,
                 )
-                ll_m = _per_obs_loglik(
+                ll_m = _per_obs_loglik_unpar(
                     theta_m, self.X, self.y, self.avail,
                     self.n_alts, self.n_beta, self.control,
                     self.ranvar_indices,
@@ -1233,12 +1297,10 @@ class MNPModel(BaseModel):
 
             B = G.T @ G
 
-            # Project out parameters whose score is numerically zero.
-            # Happens routinely for IID models where theta contains unused
-            # Lambda slots, or when control options pin a coefficient. These
-            # parameters have exactly zero contribution to B and would leave
-            # it singular — a real identification failure would instead show
-            # up as weakly-nonzero scores, which we warn on below.
+            # Project out parameters whose score is numerically zero. This
+            # happens routinely for IID models with unused Lambda slots, or
+            # when control options pin a coefficient. We warn on
+            # ill-conditioning rather than letting B be silently singular.
             score_norms = np.linalg.norm(G, axis=0)
             structural_zero = score_norms < 1e-12
             scoring_active_mask = ~structural_zero
@@ -1273,55 +1335,95 @@ class MNPModel(BaseModel):
             B_inv[np.ix_(active_idx, active_idx)] = B_inv_active
 
             if se_method == "bhhh":
-                cov_theta = B_inv
-            else:
-                if hess_observed is None:
-                    warnings.warn(
-                        "se_method='sandwich' requested but observed Hessian "
-                        "is None (computation failed); falling back to BHHH "
-                        "covariance.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    cov_theta = B_inv
-                else:
-                    # hess_observed is the sum-scale observed Hessian H = ∂²(-Σℓ)/∂θ∂θᵀ.
-                    # Asymptotic variance = H⁻¹ (no /N needed — H is already sum-scale).
-                    # Sandwich: A⁻¹ B A⁻¹ with A⁻¹ = H⁻¹ and B = G^T G (sum-scale).
+                # BHHH is the only path that's truly unparameterized end-to-end:
+                # G_unpar is computed natively in unparameterized space, so
+                # B_inv is already the unparameterized covariance.
+                cov_unpar = B_inv
+            else:  # sandwich
+                # Sandwich = A^{-1} B A^{-1} with A = J_pu^T H_unpar J_pu in
+                # unparameterized space.  We assemble A_unpar via the
+                # par->unpar Jacobian (FD; PR #10 review P0 #1: this is a
+                # delta-method projection regardless of whether we start from
+                # the true observed Hessian or the BFGS approximation).
+                # Prefer the true observed Hessian when available (PR #16
+                # P0 #1 fix); otherwise fall back to the BFGS hess_inv / N.
+                if hess_observed is not None:
                     try:
-                        H_inv = np.linalg.inv(hess_observed)
+                        H_inv_par = np.linalg.inv(hess_observed)
                     except np.linalg.LinAlgError:
                         warnings.warn(
                             "Observed Hessian is singular; falling back to pinv. "
                             "Check for unidentified parameters.",
-                            RuntimeWarning,
-                            stacklevel=2,
+                            RuntimeWarning, stacklevel=2,
                         )
-                        H_inv = np.linalg.pinv(hess_observed)
-                    cov_theta = H_inv @ B @ H_inv
+                        H_inv_par = np.linalg.pinv(hess_observed)
+                    J_pu = self._fd_jacobian(
+                        lambda th: _param_to_unpar(
+                            th, self.n_beta, self.n_alts, self.control,
+                            self.ranvar_indices,
+                        ),
+                        theta_hat,
+                    )
+                    A_unpar = J_pu @ H_inv_par @ J_pu.T
+                    cov_unpar = A_unpar @ B @ A_unpar
+                elif hess_inv is not None:
+                    J_pu = self._fd_jacobian(
+                        lambda th: _param_to_unpar(
+                            th, self.n_beta, self.n_alts, self.control,
+                            self.ranvar_indices,
+                        ),
+                        theta_hat,
+                    )
+                    A_unpar = J_pu @ (hess_inv / self.N) @ J_pu.T
+                    cov_unpar = A_unpar @ B @ A_unpar
+                else:
+                    warnings.warn(
+                        "se_method='sandwich' requested but neither "
+                        "observed Hessian nor BFGS hess_inv is available; "
+                        "falling back to BHHH covariance.",
+                        RuntimeWarning, stacklevel=2,
+                    )
+                    cov_unpar = B_inv
         elif se_method == "hessian":
-            if hess_observed is None:
-                warnings.warn(
-                    "se_method='hessian' requested but observed Hessian is None "
-                    "(computation failed); SE will be NaN.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
-            else:
-                # hess_observed is sum-scale: Var(θ̂) = H⁻¹ directly.
+            # Hessian path: project the parameterized H to unparameterized
+            # space via J_pu (delta-method).  Prefer hess_observed (true H)
+            # over hess_inv / N (BFGS approximation).
+            if hess_observed is not None:
                 try:
-                    cov_theta = np.linalg.inv(hess_observed)
+                    H_inv_par = np.linalg.inv(hess_observed)
                 except np.linalg.LinAlgError:
                     warnings.warn(
                         "Observed Hessian is singular; falling back to pinv. "
                         "Check for unidentified parameters.",
-                        RuntimeWarning,
-                        stacklevel=2,
+                        RuntimeWarning, stacklevel=2,
                     )
-                    cov_theta = np.linalg.pinv(hess_observed)
+                    H_inv_par = np.linalg.pinv(hess_observed)
+                J_pu = self._fd_jacobian(
+                    lambda th: _param_to_unpar(
+                        th, self.n_beta, self.n_alts, self.control,
+                        self.ranvar_indices,
+                    ),
+                    theta_hat,
+                )
+                cov_unpar = J_pu @ H_inv_par @ J_pu.T
+            elif hess_inv is not None:
+                J_pu = self._fd_jacobian(
+                    lambda th: _param_to_unpar(
+                        th, self.n_beta, self.n_alts, self.control,
+                        self.ranvar_indices,
+                    ),
+                    theta_hat,
+                )
+                cov_unpar = J_pu @ (hess_inv / self.N) @ J_pu.T
+            else:
+                warnings.warn(
+                    "se_method='hessian' requested but neither observed "
+                    "Hessian nor BFGS hess_inv is available; SE will be NaN.",
+                    RuntimeWarning, stacklevel=2,
+                )
 
-        if cov_theta is not None:
-            cov_report = J @ cov_theta @ J.T
+        if cov_unpar is not None:
+            cov_report = J_norm @ cov_unpar @ J_norm.T
             se = np.sqrt(np.maximum(np.diag(cov_report), 0.0))
         else:
             cov_report = np.eye(n_report)
@@ -1332,10 +1434,10 @@ class MNPModel(BaseModel):
             p_value = 2.0 * (1.0 - _ndtr(np.abs(t_stat)))
 
         # Correlation matrix of reporting parameters.  PR #4 review P0 #2:
-        # gate on ``cov_theta`` (the actual SE source), not on the observed
-        # Hessian — the BHHH path produces a valid cov_theta without ever
+        # gate on ``cov_unpar`` (the actual SE source), not on the observed
+        # Hessian — the BHHH path produces a valid cov_unpar without ever
         # touching ``hess_observed``.
-        if cov_theta is not None:
+        if cov_unpar is not None:
             se_outer = np.outer(se, se)
             with np.errstate(divide="ignore", invalid="ignore"):
                 corr_report = np.where(
@@ -1345,9 +1447,20 @@ class MNPModel(BaseModel):
         else:
             corr_report = np.eye(n_report)
 
-        # Gradient projected into reporting space via pseudo-inverse
+        # Gradient projected into reporting space via pseudo-inverse of the
+        # combined par->report Jacobian. We compose J_norm and J_pu only when
+        # we need to project the parameterized gradient; for the SE path the
+        # composition is implicit in cov_unpar -> cov_report.
         if gradient is not None:
-            g_report = np.linalg.pinv(J).T @ gradient
+            J_pu_for_grad = self._fd_jacobian(
+                lambda th: _param_to_unpar(
+                    th, self.n_beta, self.n_alts, self.control,
+                    self.ranvar_indices,
+                ),
+                theta_hat,
+            )
+            J_par_to_report = J_norm @ J_pu_for_grad
+            g_report = np.linalg.pinv(J_par_to_report).T @ gradient
         else:
             g_report = np.zeros(n_report)
 
@@ -1374,3 +1487,25 @@ class MNPModel(BaseModel):
                         p_value[ri] = np.nan
 
         return b_report, se, t_stat, p_value, cov_report, corr_report, g_report
+
+    @staticmethod
+    def _fd_jacobian(f, x: np.ndarray, eps: float = 1e-7) -> np.ndarray:
+        """Central-difference Jacobian of a vector-valued function.
+
+        Used for the (low-dimensional, well-conditioned) sigma_1
+        normalization Jacobian and for the par->unpar translation Jacobian.
+        Both are smooth scalar normalizations / smooth reparameterizations,
+        so a fixed FD step is fine; we don't scale by ``|x_i|`` here.
+        """
+        x = np.asarray(x, dtype=np.float64)
+        f0 = np.asarray(f(x), dtype=np.float64)
+        n_in = x.size
+        n_out = f0.size
+        J = np.zeros((n_out, n_in), dtype=np.float64)
+        for i in range(n_in):
+            xp = x.copy()
+            xp[i] += eps
+            xm = x.copy()
+            xm[i] -= eps
+            J[:, i] = (np.asarray(f(xp)) - np.asarray(f(xm))) / (2.0 * eps)
+        return J
