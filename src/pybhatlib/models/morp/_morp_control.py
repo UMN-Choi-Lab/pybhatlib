@@ -40,6 +40,11 @@ class MORPControl:
         Random seed for reproducibility.
     startb : NDArray or None
         User-supplied starting values.
+    analytic_grad : bool
+        If True (default), use the analytic log-likelihood gradient when
+        ``method`` is one of ``{"me", "ovus"}``. Otherwise, or when
+        ``method`` selects an unsupported MVNCD approximation, fall back
+        silently to central finite differences.
 
     Notes
     -----
@@ -66,6 +71,7 @@ class MORPControl:
         verbose: int = 1,
         seed: int | None = None,
         startb: NDArray | None = None,
+        analytic_grad: bool = True,
         *,
         # Deprecated alias — must be keyword-only to avoid position conflicts
         indep: bool | None = None,
@@ -89,6 +95,7 @@ class MORPControl:
         self.verbose = verbose
         self.seed = seed
         self.startb = startb
+        self.analytic_grad = analytic_grad
 
     # ------------------------------------------------------------------
     # Backward-compat property for ctrl.indep / ctrl.indep = v
@@ -123,5 +130,5 @@ class MORPControl:
             f"method={self.method!r}, spherical={self.spherical!r}, "
             f"maxiter={self.maxiter!r}, tol={self.tol!r}, "
             f"optimizer={self.optimizer!r}, verbose={self.verbose!r}, "
-            f"seed={self.seed!r})"
+            f"seed={self.seed!r}, analytic_grad={self.analytic_grad!r})"
         )
