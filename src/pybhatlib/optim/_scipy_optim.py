@@ -93,6 +93,11 @@ def minimize_scipy(
     iteration_count = [0]
     start_time = time.time()
 
+    # Cache the last (x, f, g) evaluated by the objective wrapper so the
+    # callback can read it without re-calling func (which would double the
+    # per-iteration cost at verbose >= 2).
+    last_eval: dict = {"x": None, "f": None, "g": None}
+
     def _get_fval_grad(xk):
         """Return (fval, grad) regardless of jac mode."""
         if jac:
@@ -103,11 +108,11 @@ def minimize_scipy(
 
     def _print_param_table(xk, fval, grad):
         """Print per-iteration parameter/gradient/rel-gradient table (verbose=3)."""
-        # Build labels: use param_names if available, else θ[k]
+        # Build labels: use param_names if available, else theta[k]
         if param_names is not None and len(param_names) == len(xk):
             labels = param_names
         else:
-            labels = [f"θ[{k}]" for k in range(len(xk))]
+            labels = [f"theta[{k}]" for k in range(len(xk))]
 
         # Relative gradient: |g_k| / max(|x_k|, 1)
         rel_grad = np.abs(grad) / np.maximum(np.abs(xk), 1.0)
@@ -129,22 +134,43 @@ def minimize_scipy(
         iteration_count[0] += 1
         if verbose >= 3:
             elapsed = time.time() - start_time
-            fval, grad = _get_fval_grad(xk)
+            # Use cached (f, g) when xk matches the last objective evaluation.
+            # This avoids re-calling the (expensive) objective just for printing.
+            if (
+                last_eval["x"] is not None
+                and np.allclose(xk, last_eval["x"])
+                and last_eval["f"] is not None
+            ):
+                fval = last_eval["f"]
+                grad = last_eval["g"] if last_eval["g"] is not None else np.zeros_like(xk)
+            else:
+                # Fallback: rare case (e.g. first callback before any cached eval)
+                fval, grad = _get_fval_grad(xk)
             print(f"  Iter {iteration_count[0]:4d}: f = {fval:.6f}  ({elapsed:.1f}s)")
             _print_param_table(xk, fval, grad)
         elif verbose >= 2:
             elapsed = time.time() - start_time
-            if jac:
-                fval, _ = func(xk)
+            # Use cached f when available, avoiding a redundant func call
+            if (
+                last_eval["x"] is not None
+                and np.allclose(xk, last_eval["x"])
+                and last_eval["f"] is not None
+            ):
+                fval = last_eval["f"]
             else:
-                fval = func(xk)
+                fval, _ = _get_fval_grad(xk)
             print(f"  Iter {iteration_count[0]:4d}: f = {fval:.6f}  ({elapsed:.1f}s)")
 
     if jac:
-        # func returns (f, grad) — need to wrap for scipy
+        # func returns (f, grad) — wrap for scipy and populate last_eval cache
         def scipy_func(x):
             f, g = func(x)
-            return float(f), np.asarray(g, dtype=np.float64)
+            f_val = float(f)
+            g_arr = np.asarray(g, dtype=np.float64)
+            last_eval["x"] = x.copy()
+            last_eval["f"] = f_val
+            last_eval["g"] = g_arr.copy()
+            return f_val, g_arr
 
         result = minimize(
             scipy_func,
@@ -156,8 +182,17 @@ def minimize_scipy(
             callback=callback,
         )
     else:
+        # jac=False: wrap func to populate last_eval cache (f only, no grad)
+        def scipy_func_nojac(x):
+            f = func(x)
+            f_val = float(f)
+            last_eval["x"] = x.copy()
+            last_eval["f"] = f_val
+            last_eval["g"] = None
+            return f_val
+
         result = minimize(
-            func,
+            scipy_func_nojac,
             x0,
             method=method,
             options={"maxiter": maxiter, "gtol": tol, "disp": False},
