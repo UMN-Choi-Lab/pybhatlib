@@ -54,6 +54,7 @@ def minimize_scipy(
     verbose: int = 1,
     jac: bool = True,
     bounds=None,
+    param_names: list[str] | None = None,
 ) -> OptimResult:
     """Minimize a scalar function using scipy.optimize.minimize.
 
@@ -71,24 +72,67 @@ def minimize_scipy(
     tol : float
         Gradient tolerance.
     verbose : int
-        0=silent, 1=summary, 2=per-iteration.
+        0=silent, 1=summary, 2=per-iteration NLL,
+        3=per-iteration NLL + parameter/gradient/rel-gradient table.
     jac : bool
         Whether func returns (f, grad) tuple.
     bounds : list of tuples or None
         Parameter bounds for L-BFGS-B.
+    param_names : list of str or None
+        Parameter names for verbose=3 display.  When None, labels fall back
+        to ``θ[k]`` placeholders.  These are the *theta-space* names, so
+        they may differ from the reporting-space names in MNPResults.
 
     Returns
     -------
     result : OptimResult
     """
     x0 = np.asarray(x0, dtype=np.float64)
+    n_params = len(x0)
 
     iteration_count = [0]
     start_time = time.time()
 
+    def _get_fval_grad(xk):
+        """Return (fval, grad) regardless of jac mode."""
+        if jac:
+            fval, g = func(xk)
+            return float(fval), np.asarray(g, dtype=np.float64)
+        else:
+            return float(func(xk)), np.zeros_like(xk)
+
+    def _print_param_table(xk, fval, grad):
+        """Print per-iteration parameter/gradient/rel-gradient table (verbose=3)."""
+        # Build labels: use param_names if available, else θ[k]
+        if param_names is not None and len(param_names) == len(xk):
+            labels = param_names
+        else:
+            labels = [f"θ[{k}]" for k in range(len(xk))]
+
+        # Relative gradient: |g_k| / max(|x_k|, 1)
+        rel_grad = np.abs(grad) / np.maximum(np.abs(xk), 1.0)
+
+        col_w_name = max(14, max(len(lb) for lb in labels) + 2)
+        header = (
+            f"  {'param':<{col_w_name}s}  {'val':>14s}  {'grad':>14s}  "
+            f"{'rel_grad':>14s}"
+        )
+        print(f"  iter={iteration_count[0]}  f={fval:+.6f}")
+        print(header)
+        print("  " + "-" * (col_w_name + 3 * 16 + 4))
+        for k, (lb, v, g, rg) in enumerate(zip(labels, xk, grad, rel_grad)):
+            print(
+                f"  {lb:<{col_w_name}s}  {v:>+14.6f}  {g:>+14.6f}  {rg:>14.6f}"
+            )
+
     def callback(xk):
         iteration_count[0] += 1
-        if verbose >= 2:
+        if verbose >= 3:
+            elapsed = time.time() - start_time
+            fval, grad = _get_fval_grad(xk)
+            print(f"  Iter {iteration_count[0]:4d}: f = {fval:.6f}  ({elapsed:.1f}s)")
+            _print_param_table(xk, fval, grad)
+        elif verbose >= 2:
             elapsed = time.time() - start_time
             if jac:
                 fval, _ = func(xk)
