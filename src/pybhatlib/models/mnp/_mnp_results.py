@@ -98,6 +98,7 @@ class MNPResults:
     segment_covs: list[NDArray] | None = None
     control: MNPControl | None = None
     data_path: str = ""
+    ranvar_indices: list[int] | None = None
 
     def summary(self) -> str:
         """Print formatted estimation results (like BHATLIB Figure 10).

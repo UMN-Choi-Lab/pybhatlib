@@ -328,6 +328,7 @@ class MNPModel(BaseModel):
             segment_probs=segment_probs,
             control=self.control,
             data_path=self.data_path,
+            ranvar_indices=self.ranvar_indices,
         )
 
     def _default_start_values(self) -> np.ndarray:
