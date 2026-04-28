@@ -773,6 +773,16 @@ class MNPModel(BaseModel):
                 )
                 G[:, i] = (ll_p - ll_m) / (2.0 * eps_i)
 
+            # Zero out columns for frozen (inactive) parameters from PR #6
+            # active_mask (MNPControl attribute).  This prevents inactive
+            # directions from contaminating the score covariance with random
+            # gradient noise.  The guard makes this a no-op until PR #6 lands.
+            if (
+                hasattr(self.control, "active_mask")
+                and self.control.active_mask is not None
+            ):
+                G[:, ~self.control.active_mask] = 0.0
+
             B = G.T @ G
 
             # Project out parameters whose score is numerically zero. This
