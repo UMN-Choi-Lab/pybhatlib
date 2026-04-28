@@ -386,7 +386,9 @@ def _per_obs_loglik(
     """Return per-observation log-likelihood contributions (length N).
 
     Used by BHHH and sandwich SE computation: per-obs scores are obtained by
-    numerical differencing of this function.
+    numerical differencing of this function. Parameterized theta layout
+    (legacy path; preserved for callers that still rely on parameterized
+    scoring).
     """
     if xp is None:
         xp = get_backend("numpy")
@@ -610,6 +612,315 @@ def _build_omega_cholesky(
             idx += 1
 
     return L
+
+
+# ---------------------------------------------------------------------------
+# MNP-002b: Unparameterized covariance constructors (lpr1/lgd1 layout)
+# ---------------------------------------------------------------------------
+#
+# These mirror _build_lambda / _build_omega_cholesky but consume direct
+# covariance/correlation entries instead of the unconstrained spherical
+# Cholesky parameterization. Used by mnp_loglik_unpar (the Python analog of
+# GAUSS lpr1) to compute SEs in the unparameterized space without delta-method
+# projection. GAUSS reference:
+#   matgradient.src   "newcholparmscaled"     lines 1319-1322
+#   matgradient.src   "cholspherparmunconstscaled" lines 1875-1878
+#   vecup.src         "matndupdiagonefull"    lines 396-415
+#   vecup.src         "matdupfull"            lines 157-177
+
+def _build_lambda_direct(
+    lambda_params_unpar: np.ndarray | None,
+    n_alts: int,
+    control: MNPControl,
+) -> np.ndarray:
+    """Build the (I-1) x (I-1) kernel error covariance from direct entries.
+
+    Layout of ``lambda_params_unpar``:
+      - first ``dim`` entries are the kernel standard deviations (positive)
+      - remaining entries are the strict upper-triangle correlations of the
+        (I-1)-dimensional correlation matrix (row-by-row, including only
+        elements with column > row).
+
+    Parameters
+    ----------
+    lambda_params_unpar : ndarray or None
+        Direct (unparameterized) lambda entries. None for IID models.
+    n_alts : int
+        Number of alternatives ``I``.
+    control : MNPControl
+
+    Returns
+    -------
+    Lambda : ndarray, shape (I-1, I-1)
+        Differenced kernel error covariance. Same return contract as
+        ``_build_lambda``.
+
+    Notes
+    -----
+    GAUSS reference: ``matndupdiagonefull`` (vecup.src line 396) constructs
+    the correlation matrix from a strict upper-triangle vector and adds
+    unit diagonal. GAUSS ``lpr1`` then forms ``omegaker = w1*omegastar*w1``
+    where ``w1 = diag(1, scales)`` and ``omegastar = matndupdiagonefull(xker)``.
+    """
+    I = n_alts
+    dim = I - 1
+
+    if control.iid or lambda_params_unpar is None:
+        return np.eye(dim, dtype=np.float64)
+
+    if control.heteronly:
+        # Heteroscedastic only: lambda_params_unpar = [scale_1, ..., scale_dim]
+        scales = lambda_params_unpar[:dim]
+        return np.diag(scales ** 2)
+
+    # Full: scales (length dim) + strict-upper correlations (length n_corr).
+    n_scale = dim
+    scales = lambda_params_unpar[:n_scale]
+
+    n_corr = dim * (dim - 1) // 2
+    if n_corr > 0 and len(lambda_params_unpar) > n_scale:
+        corrs_upper = lambda_params_unpar[n_scale: n_scale + n_corr]
+        corr = _matndupdiagonefull(corrs_upper, dim)
+    else:
+        corr = np.eye(dim)
+
+    D = np.diag(scales)
+    return D @ corr @ D
+
+
+def _matndupdiagonefull(corrs_upper: np.ndarray, p: int) -> np.ndarray:
+    """Build a p x p correlation matrix from its strict upper-triangle vector.
+
+    Mirrors GAUSS ``matndupdiagonefull`` (vecup.src line 396): diagonal is 1,
+    off-diagonals fill in row-by-row from ``corrs_upper`` and are mirrored
+    across the diagonal.
+    """
+    if corrs_upper.size != p * (p - 1) // 2:
+        raise ValueError(
+            f"corrs_upper has length {corrs_upper.size}, expected {p*(p-1)//2}"
+        )
+    M = np.eye(p, dtype=np.float64)
+    sk = 0
+    for c in range(p - 1):
+        # Row c, columns c+1..p-1
+        n_row = p - c - 1
+        M[c, c + 1:] = corrs_upper[sk: sk + n_row]
+        M[c + 1:, c] = corrs_upper[sk: sk + n_row]
+        sk += n_row
+    return M
+
+
+def _vecndup(matrix: np.ndarray) -> np.ndarray:
+    """Strict-upper-triangle vectorization, row-by-row.
+
+    Mirrors GAUSS ``vecndup`` (vecup.src line 73): for a p x p matrix, returns
+    a length-(p*(p-1)/2) vector of off-diagonal entries with column > row,
+    in row-major order.
+    """
+    p = matrix.shape[0]
+    out = np.empty(p * (p - 1) // 2, dtype=np.float64)
+    sk = 0
+    for c in range(p - 1):
+        n_row = p - c - 1
+        out[sk: sk + n_row] = matrix[c, c + 1:]
+        sk += n_row
+    return out
+
+
+def _build_omega_direct(
+    omega_params_unpar: np.ndarray,
+    ranvar_indices: list[int],
+    control: MNPControl,
+) -> np.ndarray:
+    """Build the random-coefficient covariance Omega from direct entries.
+
+    Layout of ``omega_params_unpar`` (full case):
+      length n_rand*(n_rand+1)/2, upper-triangle (including diagonal) row-by-row.
+    Layout (diagonal case):
+      length n_rand, the variances on the diagonal.
+
+    GAUSS reference: ``matdupfull`` (vecup.src line 157) reconstructs a full
+    symmetric matrix from its upper-triangle (with diagonal) vector. This is
+    what ``lpr1`` calls (MNP_TRAVELMODE.gss line 423; Table 2 c.gss line 575).
+
+    Returns
+    -------
+    Omega : ndarray, shape (n_rand, n_rand)
+        Random-coefficient covariance. Used directly (NOT a Cholesky factor).
+    """
+    n_rand = len(ranvar_indices)
+
+    if control.randdiag:
+        # Diagonal: omega_params_unpar = variances directly.
+        return np.diag(omega_params_unpar[:n_rand])
+
+    if omega_params_unpar.size != n_rand * (n_rand + 1) // 2:
+        raise ValueError(
+            f"omega_params_unpar has length {omega_params_unpar.size}, "
+            f"expected {n_rand * (n_rand + 1) // 2}"
+        )
+
+    # matdupfull: upper-triangle (with diag) row-by-row -> full symmetric.
+    M = np.zeros((n_rand, n_rand), dtype=np.float64)
+    sk = 0
+    for c in range(n_rand):
+        n_row = n_rand - c
+        M[c, c:] = omega_params_unpar[sk: sk + n_row]
+        sk += n_row
+    diag = np.diag(M).copy()
+    M = M + M.T
+    np.fill_diagonal(M, diag)
+    return M
+
+
+def _vecdup(matrix: np.ndarray) -> np.ndarray:
+    """Upper-triangle (with diagonal) vectorization, row-by-row.
+
+    Mirrors GAUSS ``vecdup`` (vecup.src line 37). Inverse of ``matdupfull``.
+    """
+    p = matrix.shape[0]
+    out = np.empty(p * (p + 1) // 2, dtype=np.float64)
+    sk = 0
+    for c in range(p):
+        n_row = p - c
+        out[sk: sk + n_row] = matrix[c, c:]
+        sk += n_row
+    return out
+
+
+def _param_to_unpar(
+    theta_par: np.ndarray,
+    n_beta: int,
+    n_alts: int,
+    control: MNPControl,
+    ranvar_indices: list[int] | None,
+) -> np.ndarray:
+    """Translate a parameterized theta vector to its unparameterized form.
+
+    Parameterized theta uses unconstrained spherical Cholesky factors for
+    correlation matrices and lower-triangular Cholesky factors for random-
+    coefficient covariances. The unparameterized form uses direct entries:
+    correlations in [-1, 1] and covariances with positive variances.
+
+    Round-trip property: ``mnp_loglik(theta_par) == mnp_loglik_unpar(theta_unpar)``
+    to within ~1e-10.
+
+    GAUSS reference: ``MNP_TRAVELMODE.gss`` lines 199-214 perform the same
+    conversion via ``cholker' * cholker`` -> ``vecndup`` for the kernel block
+    and ``newcovcoef1' * newcovcoef1`` -> ``vecdup`` for each segment Omega.
+
+    Parameters
+    ----------
+    theta_par : ndarray
+        Parameterized parameter vector.
+    n_beta, n_alts : int
+    control : MNPControl
+    ranvar_indices : list[int] or None
+
+    Returns
+    -------
+    theta_unpar : ndarray
+        Unparameterized parameter vector with the same length as ``theta_par``
+        and identical block layout. Beta and segment-mixing parameters pass
+        through unchanged.
+    """
+    theta_par = np.asarray(theta_par, dtype=np.float64)
+    params = _unpack_params(theta_par, n_beta, n_alts, control, ranvar_indices)
+    out: list[np.ndarray] = []
+
+    # Beta is identical in both parameterizations.
+    out.append(params["beta"].copy())
+
+    # Lambda block: parameterized [log_scales, angle_thetas]
+    # -> unparameterized [scales, corrs_strict_upper]
+    if not control.iid:
+        lam = params.get("lambda_params")
+        out.append(_lambda_par_to_unpar(lam, n_alts, control))
+
+    # Omega (segment 1): parameterized lower-tri Cholesky entries
+    # -> unparameterized upper-tri (incl diagonal) Omega entries.
+    if control.mix and ranvar_indices is not None and "omega_params" in params:
+        out.append(_omega_par_to_unpar(
+            params["omega_params"], ranvar_indices, control,
+        ))
+
+    # Segment-mixing parameters (softmax raw scores) pass through unchanged.
+    if control.nseg > 1:
+        out.append(params.get("segment_params", np.array([])))
+
+        for h in range(1, control.nseg):
+            if h - 1 < len(params.get("segment_betas", [])):
+                out.append(params["segment_betas"][h - 1].copy())
+            if (
+                control.mix
+                and ranvar_indices is not None
+                and h - 1 < len(params.get("segment_omegas", []))
+            ):
+                out.append(_omega_par_to_unpar(
+                    params["segment_omegas"][h - 1], ranvar_indices, control,
+                ))
+
+    return np.concatenate(out) if out else theta_par.copy()
+
+
+def _lambda_par_to_unpar(
+    lambda_params: np.ndarray | None,
+    n_alts: int,
+    control: MNPControl,
+) -> np.ndarray:
+    """Convert parameterized lambda block to direct [scales, corrs_upper]."""
+    I = n_alts
+    dim = I - 1
+    if lambda_params is None or lambda_params.size == 0:
+        return np.zeros(0, dtype=np.float64)
+
+    if control.heteronly:
+        scales = np.exp(lambda_params[:dim])
+        return scales
+
+    # Full: log-scales + angle-thetas -> scales + corrs.
+    n_scale = dim
+    scales = np.exp(lambda_params[:n_scale])
+
+    n_corr = dim * (dim - 1) // 2
+    if n_corr > 0 and len(lambda_params) > n_scale:
+        corr_theta = lambda_params[n_scale: n_scale + n_corr]
+        corr = theta_to_corr(corr_theta, dim)
+        corrs_upper = _vecndup(corr)
+    else:
+        corrs_upper = np.zeros(0, dtype=np.float64)
+
+    return np.concatenate([scales, corrs_upper])
+
+
+def _omega_par_to_unpar(
+    omega_params: np.ndarray,
+    ranvar_indices: list[int],
+    control: MNPControl,
+) -> np.ndarray:
+    """Convert parameterized omega block (Cholesky) to direct Omega entries."""
+    n_rand = len(ranvar_indices)
+    if control.randdiag:
+        # Diagonal: par stores log(stddev), unpar stores variance.
+        return np.exp(2.0 * omega_params[:n_rand])
+
+    L = _build_omega_cholesky(omega_params, ranvar_indices, control)
+    Omega = L @ L.T
+    return _vecdup(Omega)
+
+
+def count_params_unpar(
+    n_beta: int,
+    n_alts: int,
+    control: MNPControl,
+    ranvar_indices: list[int] | None = None,
+) -> int:
+    """Count parameters in the unparameterized layout.
+
+    Equal to ``count_params`` (parameterized): the two layouts have the same
+    number of free parameters; only the encoding differs.
+    """
+    return count_params(n_beta, n_alts, control, ranvar_indices)
 
 
 def _compute_choice_prob(
@@ -874,6 +1185,378 @@ def _numerical_gradient(
 
         grad[i] = (f_plus - f_minus) / (2.0 * eps)
 
+    return grad
+
+
+# ---------------------------------------------------------------------------
+# MNP-002b: Unparameterized log-likelihood (Python analog of GAUSS lpr1)
+# ---------------------------------------------------------------------------
+
+def mnp_loglik_unpar(
+    theta_unpar: np.ndarray,
+    X: np.ndarray,
+    y: np.ndarray,
+    avail: np.ndarray | None,
+    n_alts: int,
+    n_beta: int,
+    control: MNPControl,
+    ranvar_indices: list[int] | None = None,
+    *,
+    return_gradient: bool = False,
+    xp=None,
+) -> float | tuple[float, np.ndarray]:
+    """Negative mean log-likelihood at unparameterized theta.
+
+    The unparameterized layout encodes correlation/covariance entries
+    DIRECTLY (correlations in [-1, 1], covariances with positive variances)
+    rather than through the unconstrained spherical Cholesky used by
+    ``mnp_loglik``. This matches the GAUSS ``lpr1`` procedure
+    (MNP_TRAVELMODE.gss line 408; MNP Table2 c.gss line 549) and is used
+    for SE computation at the converged estimate to avoid the delta-method
+    projection through the parameterized space.
+
+    Parameters
+    ----------
+    theta_unpar : ndarray
+        Unparameterized parameter vector. See ``_param_to_unpar`` for layout.
+    X, y, avail, n_alts, n_beta, control, ranvar_indices :
+        Same as ``mnp_loglik``.
+    return_gradient : bool
+        If True, return numerical gradient as well. There is no analytic
+        gradient path for the unparameterized form; we always finite-difference.
+    xp : backend, optional
+
+    Returns
+    -------
+    nll : float
+        Negative mean log-likelihood. Round-trips to within ~1e-10 of
+        ``mnp_loglik(theta_par)`` when ``theta_unpar = _param_to_unpar(theta_par)``.
+
+    Notes
+    -----
+    Unlike the parameterized form, this function performs no analytic
+    Cholesky factorization of the random-coefficient Omega; it consumes
+    the direct entries and uses ``np.linalg.cholesky`` on the resulting
+    covariance for downstream MVNCD evaluation. If Omega is non-PD (which
+    can happen mid-finite-difference but not at the optimum), a small
+    diagonal jitter is added.
+    """
+    if xp is None:
+        xp = get_backend("numpy")
+
+    theta_np = np.asarray(theta_unpar, dtype=np.float64)
+    X_np = np.asarray(X, dtype=np.float64)
+    y_np = np.asarray(y, dtype=np.int64)
+    N = X_np.shape[0]
+    I = n_alts
+
+    params = _unpack_params_unpar(theta_np, n_beta, I, control, ranvar_indices)
+    beta = params["beta"]
+    Lambda = _build_lambda_direct(params.get("lambda_params"), I, control)
+
+    Omega_L = None
+    if control.mix and ranvar_indices is not None and "omega_params" in params:
+        Omega = _build_omega_direct(
+            params["omega_params"], ranvar_indices, control,
+        )
+        Omega_L = _safe_cholesky(Omega)
+
+    if control.nseg <= 1:
+        total_ll = _sequential_loglik_single_segment(
+            X_np, y_np, avail, beta, Lambda, Omega_L,
+            ranvar_indices, control, I, N, xp,
+        )
+    else:
+        total_ll = _sequential_loglik_mixture_unpar(
+            X_np, y_np, avail, params, Lambda,
+            ranvar_indices, control, I, N, xp,
+        )
+
+    mean_ll = total_ll / N
+    nll = -mean_ll
+
+    if return_gradient:
+        grad = _numerical_gradient_unpar(
+            theta_np, X_np, y_np, avail, n_alts, n_beta,
+            control, ranvar_indices, xp,
+        )
+        return nll, grad
+    return nll
+
+
+def _per_obs_loglik_unpar(
+    theta_unpar: np.ndarray,
+    X: np.ndarray,
+    y: np.ndarray,
+    avail: np.ndarray | None,
+    n_alts: int,
+    n_beta: int,
+    control: MNPControl,
+    ranvar_indices: list[int] | None = None,
+    xp=None,
+) -> np.ndarray:
+    """Return per-observation log-likelihood contributions in unparameterized space.
+
+    Used by BHHH/sandwich SE computation in the unparameterized form (the
+    Python analog of GAUSS ``lgd1``). Per-obs scores are obtained by
+    finite-differencing this function.
+    """
+    if xp is None:
+        xp = get_backend("numpy")
+    theta_np = np.asarray(theta_unpar, dtype=np.float64)
+    X_np = np.asarray(X, dtype=np.float64)
+    y_np = np.asarray(y, dtype=np.int64)
+    N = X_np.shape[0]
+    I = n_alts
+
+    params = _unpack_params_unpar(theta_np, n_beta, I, control, ranvar_indices)
+    beta = params["beta"]
+    Lambda = _build_lambda_direct(params.get("lambda_params"), I, control)
+    Omega_L = None
+    if control.mix and ranvar_indices is not None and "omega_params" in params:
+        Omega = _build_omega_direct(
+            params["omega_params"], ranvar_indices, control,
+        )
+        Omega_L = _safe_cholesky(Omega)
+
+    ll_per_obs = np.zeros(N, dtype=np.float64)
+    for q in range(N):
+        avail_q = avail[q] if avail is not None else np.ones(I)
+        chosen = int(y_np[q])
+        if control.nseg > 1:
+            prob_q = _compute_mixture_prob_unpar(
+                X_np[q], params, chosen, avail_q, Lambda,
+                ranvar_indices, control, xp,
+            )
+        else:
+            prob_q = _compute_choice_prob(
+                X_np[q], beta, chosen, avail_q, Lambda, Omega_L,
+                ranvar_indices, control, xp,
+            )
+        ll_per_obs[q] = np.log(max(prob_q, 1e-300))
+    return ll_per_obs
+
+
+def _unpack_params_unpar(
+    theta: np.ndarray,
+    n_beta: int,
+    n_alts: int,
+    control: MNPControl,
+    ranvar_indices: list[int] | None,
+) -> dict:
+    """Unpack flat unparameterized theta vector into structured components.
+
+    Same block layout and lengths as ``_unpack_params`` (parameterized): the
+    two layouts have the same number of free parameters; the encoding inside
+    each block differs.
+    """
+    params: dict = {}
+    idx = 0
+    I = n_alts
+
+    params["beta"] = theta[idx: idx + n_beta]
+    idx += n_beta
+
+    if not control.iid:
+        if control.heteronly:
+            n_lambda = I - 1
+        else:
+            n_scale = I - 1
+            n_corr = (I - 1) * (I - 2) // 2
+            n_lambda = n_scale + n_corr
+        params["lambda_params"] = theta[idx: idx + n_lambda]
+        idx += n_lambda
+
+    if control.mix and ranvar_indices is not None:
+        n_rand = len(ranvar_indices)
+        if control.randdiag:
+            n_omega = n_rand
+        else:
+            n_omega = n_rand * (n_rand + 1) // 2
+        params["omega_params"] = theta[idx: idx + n_omega]
+        idx += n_omega
+
+    if control.nseg > 1:
+        n_seg_params = control.nseg - 1
+        params["segment_params"] = theta[idx: idx + n_seg_params]
+        idx += n_seg_params
+
+        params["segment_betas"] = []
+        params["segment_omegas"] = []
+        for _h in range(1, control.nseg):
+            seg_beta = theta[idx: idx + n_beta]
+            idx += n_beta
+            params["segment_betas"].append(seg_beta)
+
+            if control.mix and ranvar_indices is not None:
+                n_rand = len(ranvar_indices)
+                if control.randdiag:
+                    n_omega = n_rand
+                else:
+                    n_omega = n_rand * (n_rand + 1) // 2
+                seg_omega = theta[idx: idx + n_omega]
+                idx += n_omega
+                params["segment_omegas"].append(seg_omega)
+
+    return params
+
+
+def _safe_cholesky(M: np.ndarray, jitter: float = 1e-12) -> np.ndarray:
+    """Cholesky with jitter fallback for near-PSD matrices.
+
+    The unparameterized form may produce slightly non-PD covariance matrices
+    during finite differencing (perturbing direct entries can violate PD
+    constraints that the parameterization enforces by construction). Adds a
+    small diagonal jitter on failure.
+    """
+    M = 0.5 * (M + M.T)
+    try:
+        return np.linalg.cholesky(M)
+    except np.linalg.LinAlgError:
+        n = M.shape[0]
+        for k in range(8):
+            try:
+                return np.linalg.cholesky(M + (jitter * 10 ** k) * np.eye(n))
+            except np.linalg.LinAlgError:
+                continue
+        # Last resort: eigendecomposition with floor.
+        w, V = np.linalg.eigh(M)
+        w_floor = np.maximum(w, 1e-10)
+        return np.linalg.cholesky(V @ np.diag(w_floor) @ V.T)
+
+
+def _sequential_loglik_mixture_unpar(
+    X_np: np.ndarray,
+    y_np: np.ndarray,
+    avail: np.ndarray | None,
+    params: dict,
+    Lambda: np.ndarray,
+    ranvar_indices: list[int] | None,
+    control: MNPControl,
+    I: int,
+    N: int,
+    xp,
+) -> float:
+    """Per-observation mixture log-likelihood for unparameterized theta."""
+    total_ll = 0.0
+    for q in range(N):
+        avail_q = avail[q] if avail is not None else np.ones(I)
+        chosen = int(y_np[q])
+        prob_q = _compute_mixture_prob_unpar(
+            X_np[q], params, chosen, avail_q, Lambda,
+            ranvar_indices, control, xp,
+        )
+        total_ll += np.log(max(prob_q, 1e-300))
+    return total_ll
+
+
+def _compute_mixture_prob_unpar(
+    X_q: np.ndarray,
+    params: dict,
+    chosen: int,
+    avail_q: np.ndarray,
+    Lambda: np.ndarray,
+    ranvar_indices: list[int] | None,
+    control: MNPControl,
+    xp,
+) -> float:
+    """Mixture probability with unparameterized Omega entries.
+
+    Mirrors ``_compute_mixture_prob`` but uses ``_build_omega_direct`` (and
+    a safe Cholesky thereof) instead of ``_build_omega_cholesky``.
+    """
+    nseg = control.nseg
+    seg_params = params.get("segment_params", np.array([]))
+
+    if len(seg_params) == 0:
+        pi_h = np.array([1.0])
+    else:
+        raw = np.concatenate([[0.0], seg_params])
+        raw_max = raw.max()
+        exp_raw = np.exp(raw - raw_max)
+        pi_h = exp_raw / exp_raw.sum()
+
+    # Segment 1
+    beta_1 = params["beta"]
+    Omega_L_1 = None
+    if control.mix and ranvar_indices is not None and "omega_params" in params:
+        Omega_1 = _build_omega_direct(
+            params["omega_params"], ranvar_indices, control,
+        )
+        Omega_L_1 = _safe_cholesky(Omega_1)
+
+    if control.mix and Omega_L_1 is not None:
+        V_1 = X_q @ beta_1
+        prob = pi_h[0] * _compute_mixed_choice_prob(
+            X_q, V_1, chosen, avail_q, Lambda, Omega_L_1,
+            ranvar_indices, control, xp,
+        )
+    else:
+        prob = pi_h[0] * _compute_choice_prob(
+            X_q, beta_1, chosen, avail_q, Lambda, None, None, control, xp,
+        )
+
+    for h in range(1, nseg):
+        beta_h = (
+            params["segment_betas"][h - 1]
+            if h - 1 < len(params.get("segment_betas", []))
+            else beta_1
+        )
+        Omega_L_h = None
+        if control.mix and ranvar_indices is not None:
+            if h - 1 < len(params.get("segment_omegas", [])):
+                Omega_h = _build_omega_direct(
+                    params["segment_omegas"][h - 1],
+                    ranvar_indices,
+                    control,
+                )
+                Omega_L_h = _safe_cholesky(Omega_h)
+
+        if h < len(pi_h):
+            V_h = X_q @ beta_h
+            if control.mix and Omega_L_h is not None:
+                p_h = _compute_mixed_choice_prob(
+                    X_q, V_h, chosen, avail_q, Lambda, Omega_L_h,
+                    ranvar_indices, control, xp,
+                )
+            else:
+                p_h = _compute_choice_prob(
+                    X_q, beta_h, chosen, avail_q, Lambda, None, None,
+                    control, xp,
+                )
+            prob += pi_h[h] * p_h
+
+    return max(prob, 1e-300)
+
+
+def _numerical_gradient_unpar(
+    theta_unpar: np.ndarray,
+    X: np.ndarray,
+    y: np.ndarray,
+    avail: np.ndarray | None,
+    n_alts: int,
+    n_beta: int,
+    control: MNPControl,
+    ranvar_indices: list[int] | None,
+    xp,
+) -> np.ndarray:
+    """Numerical central-difference gradient of mnp_loglik_unpar."""
+    base_eps = np.finfo(np.float64).eps ** (1.0 / 3.0)
+    n = len(theta_unpar)
+    grad = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        eps_i = base_eps * (1.0 + abs(theta_unpar[i]))
+        theta_p = theta_unpar.copy()
+        theta_p[i] += eps_i
+        theta_m = theta_unpar.copy()
+        theta_m[i] -= eps_i
+        f_p = mnp_loglik_unpar(
+            theta_p, X, y, avail, n_alts, n_beta, control, ranvar_indices, xp=xp,
+        )
+        f_m = mnp_loglik_unpar(
+            theta_m, X, y, avail, n_alts, n_beta, control, ranvar_indices, xp=xp,
+        )
+        grad[i] = (f_p - f_m) / (2.0 * eps_i)
     return grad
 
 
