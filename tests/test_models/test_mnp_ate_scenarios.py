@@ -302,6 +302,26 @@ def test_comparison_method(travelmode_path):
 
 
 # ---------------------------------------------------------------------------
+# Test 8a: comparison() returns NaN (not inf) when a base share is zero
+# ---------------------------------------------------------------------------
+def test_comparison_nan_on_zero_base():
+    """comparison() returns NaN (not inf) when a base share is zero."""
+    import numpy as np
+    from pybhatlib.models.mnp._mnp_ate import ATEResult
+    res = ATEResult(
+        n_obs=10,
+        predicted_shares=np.array([0.5, 0.5]),
+        shares_per_scenario={
+            "base": np.array([0.0, 1.0]),
+            "treat": np.array([0.5, 0.5]),
+        },
+    )
+    pct = res.comparison("base", "treat")
+    assert np.isnan(pct[0]), f"expected NaN for zero-base alt, got {pct[0]}"
+    assert np.isfinite(pct[1])
+
+
+# ---------------------------------------------------------------------------
 # Test 8: mixed MNP (random coefficients) scenario path
 # ---------------------------------------------------------------------------
 @pytest.mark.slow

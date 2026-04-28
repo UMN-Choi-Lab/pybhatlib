@@ -96,7 +96,8 @@ class ATEResult:
 
         b = self.shares_per_scenario[base]
         t = self.shares_per_scenario[treatment]
-        return 100.0 * (t - b) / b
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(b > 0, 100.0 * (t - b) / b, np.nan)
 
 
 def _apply_scenario_overrides(
