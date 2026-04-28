@@ -18,8 +18,12 @@ import pandas as pd
 np.set_printoptions(precision=4, suppress=True)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "src"))
 
-from pybhatlib.models.mnp import MNPModel, MNPControl
-from pybhatlib.models.mnp._mnp_forecast import mnp_predict, mnp_predict_choice
+from pybhatlib.models.mnp import (
+    MNPControl,
+    MNPModel,
+    mnp_predict,
+    mnp_predict_choice,
+)
 from pybhatlib.io import parse_spec
 
 data_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "TRAVELMODE.csv")
