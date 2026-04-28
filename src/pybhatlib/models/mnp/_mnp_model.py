@@ -116,20 +116,24 @@ class MNPModel(BaseModel):
 
         self.n_beta = len(self.var_names)
 
-        # Parse random variables
+        # Parse random variables.
+        #
+        # MNP-006 (M1) ergonomic auto-expansion across mixture segments:
+        # when ``control.nseg > 1`` and the user supplies a base ranvar
+        # name (e.g. ``"OVTT"``) that is not segment-suffixed in the
+        # spec, the index is repeated ``nseg`` times so each segment
+        # gets its own random-coefficient slot — mirroring the GAUSS
+        # user-facing pattern ``ranvars = { OVTT1 OVTT2 }`` from
+        # ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``.
+        #
+        # Legacy segment-suffixed input (``ranvars=["OVTT1", "OVTT2"]``
+        # with separate spec entries) continues to work unchanged.
         if isinstance(ranvars, str):
             ranvars = [ranvars]
 
         if ranvars is not None and len(ranvars) > 0:
             self.control.mix = True
-            self.ranvar_indices = []
-            for rv in ranvars:
-                if rv in self.var_names:
-                    self.ranvar_indices.append(self.var_names.index(rv))
-                else:
-                    raise ValueError(
-                        f"Random variable '{rv}' not found in var_names: {self.var_names}"
-                    )
+            self.ranvar_indices = self._resolve_ranvar_indices(ranvars)
         else:
             self.ranvar_indices = None
 
@@ -146,6 +150,116 @@ class MNPModel(BaseModel):
         choice_data = self.data[self.alternatives].values.astype(np.float64)
         self.y = np.argmax(choice_data, axis=1).astype(np.int64)
         self.N = len(self.y)
+
+    def _resolve_ranvar_indices(self, ranvars: list[str]) -> list[int]:
+        """Resolve user-supplied ranvar names into indices in ``var_names``.
+
+        Implements the MNP-006 (M1) auto-expansion ergonomic fix.
+        Mirrors the GAUSS pattern ``ranvars = { OVTT1 OVTT2 }`` from
+        ``MNP Table2 d.gss:113`` — with ``control.nseg > 1`` the user
+        may write ``ranvars=["OVTT"]`` (base name) and the index is
+        replicated across segments automatically.
+
+        Resolution rules
+        ----------------
+        Each user-supplied name ``rv`` is classified as:
+
+        - **base** — appears in ``var_names`` and does NOT end with a
+          positive integer / segment suffix (e.g. ``"OVTT"``).
+          Auto-expanded to one slot per segment when ``nseg > 1``.
+        - **segment-suffixed (literal)** — appears in ``var_names`` and
+          ends with a digit or ``_sN`` suffix (e.g. ``"OVTT1"``,
+          ``"OVTT_s2"``). Used as-is, no expansion.
+        - **segment-suffixed (inferred)** — does not appear in
+          ``var_names``, but stripping a trailing digit or ``_sN``
+          yields a base that does (e.g. ``"OVTT1"`` → ``"OVTT"``).
+          Used as-is for that base index, no expansion.
+        - Otherwise → ``ValueError``.
+
+        Parameters
+        ----------
+        ranvars : list of str
+            User-supplied random-coefficient variable names.
+
+        Returns
+        -------
+        list of int
+            Resolved indices into ``self.var_names``. When auto-expansion
+            fires, length is ``n_unique_base_names * nseg``; otherwise
+            ``len(ranvars)``.
+
+        Raises
+        ------
+        ValueError
+            When a name (or its inferred base) is not in ``var_names``.
+        """
+        nseg = self.control.nseg
+        resolved: list[int] = []
+        # Classify per-name so we know which to auto-expand.
+        is_base: list[bool] = []
+
+        for rv in ranvars:
+            base = self._strip_segment_suffix(rv)
+            looks_segment_suffixed = base is not None
+
+            if rv in self.var_names:
+                resolved.append(self.var_names.index(rv))
+                # A literal var_names entry that LOOKS like
+                # "BASE<digit>" or "BASE_s<digit>" (e.g. legacy
+                # ``OVTT1``) is treated as segment-suffixed, not base —
+                # so expansion does not duplicate it.
+                is_base.append(not looks_segment_suffixed)
+                continue
+
+            # Not literally in var_names — try base lookup (only
+            # meaningful when nseg > 1; for nseg == 1 the segment
+            # suffix has no semantic meaning).
+            if nseg > 1 and looks_segment_suffixed and base in self.var_names:
+                resolved.append(self.var_names.index(base))
+                is_base.append(False)  # explicit segment form
+                continue
+
+            raise ValueError(
+                f"Random variable '{rv}' not found in var_names: "
+                f"{self.var_names}"
+            )
+
+        # Auto-expand base names when nseg > 1: replicate each base
+        # index ``nseg`` times so that every mixture segment receives
+        # its own random-coefficient slot.
+        if nseg > 1 and any(is_base):
+            expanded: list[int] = []
+            for idx, base_flag in zip(resolved, is_base):
+                if base_flag:
+                    expanded.extend([idx] * nseg)
+                else:
+                    expanded.append(idx)
+            resolved = expanded
+
+        return resolved
+
+    @staticmethod
+    def _strip_segment_suffix(name: str) -> str | None:
+        """Strip a trailing positive integer from ``name``.
+
+        Returns the base portion (e.g. ``"OVTT1"`` → ``"OVTT"``,
+        ``"OVTT_s2"`` → ``"OVTT"``) or ``None`` if no digit suffix
+        is present. Used by ranvar auto-expansion to map GAUSS-style
+        segment-suffixed names back to the base spec entry.
+        """
+        # Handle the explicit ``_sN`` form first (matches the
+        # ``_spec_parser`` segment-duplication suffix).
+        if "_s" in name:
+            base, _, tail = name.rpartition("_s")
+            if tail.isdigit() and base:
+                return base
+        # Plain trailing digits (e.g. ``OVTT1``, ``OVTT2``).
+        i = len(name)
+        while i > 0 and name[i - 1].isdigit():
+            i -= 1
+        if i < len(name) and i > 0:
+            return name[:i]
+        return None
 
     def fit(self) -> MNPResults:
         """Estimate the MNP model.
