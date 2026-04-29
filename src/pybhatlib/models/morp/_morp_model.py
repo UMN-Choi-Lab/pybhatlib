@@ -16,6 +16,7 @@ from scipy.special import ndtr as _ndtr, ndtri as _ndtri
 
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.io._data_loader import load_data
+from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models._base import BaseModel
 from pybhatlib.models.morp._morp_control import MORPControl
 from pybhatlib.models.morp._morp_loglik import (
@@ -128,32 +129,17 @@ class MORPModel(BaseModel):
                         f"'{outcome_key}' which is not in dep_vars={dep_vars!r}"
                     )
 
-        # Build design matrix X: (N, D, n_coefs)
+        # Build design matrix X: (N, D, n_coefs).  Routed through the shared
+        # ``parse_spec`` helper (used by MNP) instead of an inline copy — this
+        # picks up the ``sero`` / ``uno`` keyword handling, integer-literal
+        # support, and consistent error messages.  The shared helper does not
+        # care about the *meaning* of the second-dim labels (it works with
+        # ``alternatives`` for MNP and with ``dep_vars`` for MORP).
         self.N = len(self.data)
-        coef_names = list(spec.keys())
-        self.n_beta = len(coef_names)
-
-        self.X = np.zeros(
-            (self.N, self.n_dims, self.n_beta), dtype=np.float64
+        self.X, self.var_names = parse_spec(
+            spec, self.data, dep_vars, nseg=1
         )
-
-        for v_idx, coef_name in enumerate(coef_names):
-            outcome_map = spec[coef_name]
-            for d_idx, dep_var in enumerate(dep_vars):
-                col_or_kw = outcome_map.get(dep_var, "sero")
-                col_str = col_or_kw.strip()
-                if col_str.lower() == "sero":
-                    # Zero column — already zeroed
-                    pass
-                elif col_str in self.data.columns:
-                    self.X[:, d_idx, v_idx] = (
-                        self.data[col_str].values.astype(np.float64)
-                    )
-                else:
-                    raise ValueError(
-                        f"Column '{col_str}' not found in data for "
-                        f"coefficient '{coef_name}', outcome '{dep_var}'"
-                    )
+        self.n_beta = len(self.var_names)
 
         # Extract ordinal outcomes: (N, D)
         self.y = np.zeros((self.N, self.n_dims), dtype=np.int64)
@@ -314,7 +300,7 @@ class MORPModel(BaseModel):
 
     def _build_param_names(self) -> list[str]:
         """Build descriptive parameter names."""
-        names = list(self.spec.keys())
+        names = list(self.var_names)
 
         for d in range(self.n_dims):
             n_thresh = self.n_categories[d] - 1

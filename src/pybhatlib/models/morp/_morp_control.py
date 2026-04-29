@@ -15,6 +15,12 @@ from numpy.typing import NDArray
 __all__ = ["MORPControl", "morp_control_replace", "morp_control_asdict"]
 
 # Canonical field names for MORPControl (used by shims below).
+#
+# IMPORTANT — when adding/removing a field on ``MORPControl.__init__``,
+# update this tuple in lock-step.  A missed update is *silent*:
+# ``morp_control_replace`` will reject the field as "unknown" while
+# ``morp_control_asdict`` will simply omit it, which may then surface as
+# a NotImplementedError or a missing attribute deep inside ``morp_loglik``.
 _MORP_CONTROL_FIELDS = (
     "iid",
     "correst",

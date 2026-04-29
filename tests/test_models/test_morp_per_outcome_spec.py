@@ -295,6 +295,21 @@ class TestPathInputDispatch:
         )
         assert isinstance(model.data, pd.DataFrame)
 
+    def test_missing_path_raises(self, tmp_path: "pathlib.Path"):
+        """A non-existent CSV path must raise ``FileNotFoundError`` (matching
+        MNP's behaviour via ``load_data``).  Pre-fix this was untested,
+        leaving regressions to slip through if ``load_data``'s error type
+        ever changed (PR #7 review P2)."""
+        spec = _make_spec(["y1", "y2"])
+        with pytest.raises(FileNotFoundError):
+            MORPModel(
+                data=str(tmp_path / "does_not_exist.csv"),
+                dep_vars=["y1", "y2"],
+                spec=spec,
+                n_categories=[3, 4],
+                control=MORPControl(iid=True, verbose=0),
+            )
+
 
 # ---------------------------------------------------------------------------
 # (4) Smoke test with MORP Dining dataset

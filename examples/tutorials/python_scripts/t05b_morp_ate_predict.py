@@ -174,7 +174,7 @@ print(f"""
     2 = high (above second threshold)
 
   The MORP model jointly predicts ordinal outcomes across dimensions.
-  When error correlation is nonzero (indep=False), predictions in one
+  When error correlation is nonzero (iid=False), predictions in one
   dimension are informed by the other dimension.
 """)
 
