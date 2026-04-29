@@ -213,6 +213,73 @@ def test_unknown_column_string_raises(travelmode_path):
         )
 
 
+def test_unknown_target_column_raises(travelmode_path):
+    """Misspelled override target column (key) must raise ValueError.
+
+    Pre-fix, ``{"AGEE45": 0}`` would silently add a new column to the
+    modified DataFrame and ``parse_spec`` would keep using the original
+    ``AGE45``, producing baseline shares with no warning (PR-review P1).
+    """
+    from pybhatlib.models.mnp import MNPControl, MNPModel
+
+    data = pd.read_csv(travelmode_path)
+    ctrl = MNPControl(maxiter=5, verbose=0, seed=42, iid=True)
+    model = MNPModel(
+        data=travelmode_path,
+        alternatives=ALTERNATIVES,
+        availability="none",
+        spec=SPEC_WITH_AGE45,
+        control=ctrl,
+        ranvars=None,
+    )
+    results = model.fit()
+
+    with pytest.raises(ValueError, match="not a column"):
+        mnp_ate(
+            results,
+            data=data,
+            spec=SPEC_WITH_AGE45,
+            alternatives=ALTERNATIVES,
+            scenarios={"oops": {"AGEE45": 0}},  # typo: AGEE45 instead of AGE45
+        )
+
+
+def test_legacy_path_predicted_shares_equals_base_shares(travelmode_path):
+    """Legacy ``changevar``/``changeval`` path: ``predicted_shares`` must
+    reflect the unmodified-data shares, not the treatment-data shares.
+
+    Pre-fix, ``predicted_shares=treatment_shares`` was a silent semantic
+    regression (PR-review P1).
+    """
+    from pybhatlib.models.mnp import MNPControl, MNPModel
+
+    data = pd.read_csv(travelmode_path)
+    ctrl = MNPControl(maxiter=5, verbose=0, seed=42, iid=True)
+    model = MNPModel(
+        data=travelmode_path,
+        alternatives=ALTERNATIVES,
+        availability="none",
+        spec=SPEC_WITH_AGE45,
+        control=ctrl,
+        ranvars=None,
+    )
+    results = model.fit()
+
+    out = mnp_ate(
+        results,
+        data=data,
+        spec=SPEC_WITH_AGE45,
+        alternatives=ALTERNATIVES,
+        changevar="AGE45",
+        changeval=1.0,
+    )
+    # The legacy path still populates treatment_shares + pct_ate, but
+    # ``predicted_shares`` must reflect the *unmodified*-data shares.
+    assert out.base_shares is not None
+    assert out.treatment_shares is not None
+    np.testing.assert_allclose(out.predicted_shares, out.base_shares, atol=1e-12)
+
+
 # ---------------------------------------------------------------------------
 # Test 5: legacy changevar/changeval path still works
 # ---------------------------------------------------------------------------

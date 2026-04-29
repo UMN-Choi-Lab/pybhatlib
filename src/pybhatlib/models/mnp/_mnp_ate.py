@@ -10,14 +10,15 @@ can be evaluated in a single call.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Union
+from dataclasses import dataclass
+from typing import Union
 
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
 from pybhatlib.backend._array_api import get_backend
+from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models.mnp._mnp_loglik import (
     _build_lambda,
     _build_omega_cholesky,
@@ -128,6 +129,17 @@ def _apply_scenario_overrides(
     """
     data_mod = data.copy()
     for col, val in overrides.items():
+        # Validate the override target column exists (PR-review P1).  Without
+        # this guard a typo (e.g. ``{"AGEE45": 0}``) silently adds a new
+        # column to ``data_mod`` and ``parse_spec`` keeps the original column
+        # — producing baseline shares with no warning.
+        if col not in data.columns:
+            raise ValueError(
+                f"Scenario override target '{col}' is not a column in data. "
+                f"Available columns: {sorted(data.columns)[:20]}..."
+                if len(data.columns) > 20
+                else f"Available columns: {list(data.columns)}"
+            )
         if isinstance(val, str):
             # String value is interpreted as a source column name — no label mode.
             if val not in data.columns:
@@ -337,7 +349,6 @@ def mnp_ate(
             raise ValueError(
                 "Either X must be provided, or data+spec+alternatives for reconstruction"
             )
-        from pybhatlib.io._spec_parser import parse_spec
         X_base, _ = parse_spec(spec, data, alternatives, nseg=1)
     else:
         X_base = X
@@ -354,7 +365,6 @@ def mnp_ate(
             raise ValueError(
                 "data, spec, and alternatives are required when using scenarios"
             )
-        from pybhatlib.io._spec_parser import parse_spec
 
         # Compute baseline predicted shares (from unmodified data)
         baseline_shares = _compute_predicted_shares(
@@ -384,7 +394,6 @@ def mnp_ate(
             raise ValueError(
                 "data, spec, and alternatives are required for changevar/changeval ATE"
             )
-        from pybhatlib.io._spec_parser import parse_spec
 
         # Base shares: from unmodified data
         base_shares = _compute_predicted_shares(
@@ -410,9 +419,13 @@ def mnp_ate(
                 np.nan,
             )
 
+        # ``predicted_shares`` historically reflected the unconditional /
+        # unmodified-data shares, NOT the treatment-data shares.  Aliasing it
+        # to ``treatment_shares`` would silently change semantics for callers
+        # that read ``result.predicted_shares`` (PR-review P1).
         return ATEResult(
             n_obs=N,
-            predicted_shares=treatment_shares,
+            predicted_shares=base_shares,
             base_shares=base_shares,
             treatment_shares=treatment_shares,
             pct_ate=pct_ate,
