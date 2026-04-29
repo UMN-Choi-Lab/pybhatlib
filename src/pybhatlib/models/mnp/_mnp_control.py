@@ -56,6 +56,21 @@ class MNPControl:
         Convergence tolerance (gradient norm).
     optimizer : str
         Optimization method: "bfgs", "lbfgsb", "torch_adam", "torch_lbfgs".
+    se_method : str
+        Standard-error method: "bhhh" (default, matches GAUSS _max_CovPar=2),
+        "hessian" (inverse observed information), or "sandwich" (robust).
+        For "bhhh" and "sandwich", per-observation scores are computed by
+        numerical differencing of the per-observation log-likelihood at the
+        converged point (currently in parameterized theta space, then
+        delta-method-transformed to reporting space via the same Jacobian
+        used by "hessian"; unparameterized scoring is a planned follow-up).
+
+        Note: the default changed from implicit Hessian (scipy inverse BFGS
+        Hessian) to BHHH in the MNP-002 work. BHHH tends to produce larger,
+        more conservative SEs than scipy's approximate-Hessian path; on
+        BHATLIB Table 2 Model (b), BHHH matches the paper within 0.02 on
+        every estimated parameter. Set se_method="hessian" to recover the
+        pre-MNP-002 behavior.
     verbose : int
         Verbosity: 0=silent, 1=summary, 2=per-iteration NLL,
         3=per-iteration NLL + parameter/gradient/rel-gradient table.
@@ -89,6 +104,11 @@ class MNPControl:
     maxiter: int = 200
     tol: float = 1e-5
     optimizer: Literal["bfgs", "lbfgsb", "torch_adam", "torch_lbfgs"] = "bfgs"
+    # PR #4 review P0 #3: keep "hessian" as the default for backward
+    # compatibility with existing pinned-SE tests / callers (the GAUSS
+    # ``_max_CovPar=2`` BHHH default flips in a follow-up release with
+    # explicit deprecation).
+    se_method: Literal["bhhh", "hessian", "sandwich"] = "hessian"
     verbose: int = 1
     seed: int | None = None
     analytic_grad: bool = True

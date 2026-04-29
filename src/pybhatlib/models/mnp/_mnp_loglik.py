@@ -372,6 +372,55 @@ def _batch_loglik_mixed(
     return total_ll
 
 
+def _per_obs_loglik(
+    theta: np.ndarray,
+    X: np.ndarray,
+    y: np.ndarray,
+    avail: np.ndarray | None,
+    n_alts: int,
+    n_beta: int,
+    control: MNPControl,
+    ranvar_indices: list[int] | None = None,
+    xp=None,
+) -> np.ndarray:
+    """Return per-observation log-likelihood contributions (length N).
+
+    Used by BHHH and sandwich SE computation: per-obs scores are obtained by
+    numerical differencing of this function.
+    """
+    if xp is None:
+        xp = get_backend("numpy")
+    theta_np = np.asarray(theta, dtype=np.float64)
+    X_np = np.asarray(X, dtype=np.float64)
+    y_np = np.asarray(y, dtype=np.int64)
+    N = X_np.shape[0]
+    I = n_alts
+
+    params = _unpack_params(theta_np, n_beta, I, control, ranvar_indices)
+    beta = params["beta"]
+    Lambda = _build_lambda(params.get("lambda_params"), I, control)
+    Omega_L = None
+    if control.mix and params.get("omega_params") is not None:
+        Omega_L = _build_omega_cholesky(params["omega_params"], ranvar_indices, control)
+
+    ll_per_obs = np.zeros(N, dtype=np.float64)
+    for q in range(N):
+        avail_q = avail[q] if avail is not None else np.ones(I)
+        chosen = int(y_np[q])
+        if control.nseg > 1:
+            prob_q = _compute_mixture_prob(
+                X_np[q], params, chosen, avail_q, Lambda,
+                ranvar_indices, control, xp,
+            )
+        else:
+            prob_q = _compute_choice_prob(
+                X_np[q], beta, chosen, avail_q, Lambda, Omega_L,
+                ranvar_indices, control, xp,
+            )
+        ll_per_obs[q] = np.log(max(prob_q, 1e-300))
+    return ll_per_obs
+
+
 def _sequential_loglik_single_segment(
     X_np: np.ndarray,
     y_np: np.ndarray,
