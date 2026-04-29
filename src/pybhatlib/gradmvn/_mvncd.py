@@ -588,6 +588,28 @@ def mvncd(
     if K == 0:
         return 1.0
 
+    # --- Guard: handle non-finite upper bounds ----------------------------------
+    # P(X <= a) where a[k] = +inf means X_k is unconstrained; the K-dim integral
+    # reduces to the marginal over the finite-bound dimensions.  GAUSS handles
+    # this implicitly (cdfn(+inf) = 1), but Python IEEE 754 produces
+    # lambda_h * (w_h - lambda_h) = (-0.0) * (+inf) = NaN in the ME kernel.
+    # We replicate the GAUSS behaviour by dropping +inf dims before dispatch.
+    #
+    # a[k] = -inf means X_k <= -inf is impossible, so the joint CDF is 0
+    # regardless of the other dimensions. (Plain ``np.isfinite`` would conflate
+    # this with +inf and silently drop the dim, returning a positive value —
+    # see PR #9 review punch list, P0.)
+    if np.any(np.isneginf(a_np)):
+        return 0.0
+    if np.any(np.isposinf(a_np)):
+        a_np, sigma_np, all_inf = _drop_inf_dims(a_np, sigma_np)
+        if all_inf:
+            return 1.0
+        K = len(a_np)
+        if K == 0:
+            return 1.0
+    # ----------------------------------------------------------------------------
+
     if K == 1:
         return float(
             _scipy_mvn.cdf(a_np[0], mean=0.0, cov=float(sigma_np[0, 0]))
@@ -819,6 +841,54 @@ def _mvncd_scipy(a: np.ndarray, sigma: np.ndarray) -> float:
         return max(0.0, min(1.0, float(result)))
     except Exception:
         return _mvncd_me(a, sigma)
+
+
+def _drop_inf_dims(a: np.ndarray, sigma: np.ndarray):
+    """Remove dimensions where a[k] = +inf before MVNCD evaluation.
+
+    When an upper limit a[k] = +inf, the event {X_k <= +inf} is certain
+    (probability 1) and carries no information about the remaining variables.
+    The K-dimensional integral therefore collapses to the (K - n_inf)-
+    dimensional marginal over the finite-bound dimensions.
+
+    Approach used in GAUSS BHATLIB: the GAUSS cdfn / cdfmvnanalytic
+    procedures return 1 for +inf bounds, which is equivalent to marginalizing
+    out those dimensions.  We replicate that behaviour by explicitly deleting
+    the +inf rows/cols from Sigma and the corresponding entries from a before
+    dispatch to any approximation kernel.  This avoids the IEEE 754
+    0 * inf = NaN that appears in the ME truncated-variance formula
+    lambda_h * (w_h - lambda_h) when w_h = +inf, lambda_h = -0.0.
+
+    GAUSS reference: UTAcode_0402/gradients mvn.src, proc cdrectmvnanl
+    (line 1189), which calls cdfmvnanalytic via rectcombs.
+
+    Parameters
+    ----------
+    a : ndarray, shape (K,)
+        Upper integration limits; may contain +inf.
+    sigma : ndarray, shape (K, K)
+        Covariance matrix.
+
+    Returns
+    -------
+    a_fin : ndarray, shape (K',)
+        Limits with +inf dimensions removed.
+    sigma_fin : ndarray, shape (K', K')
+        Covariance sub-matrix for finite dimensions.
+    all_inf : bool
+        True when every dimension was +inf (caller should return 1.0).
+    """
+    # Only collapse +inf dims.  -inf dims are NOT marginalized away — they
+    # make the joint CDF 0 (handled by the caller before invoking this helper).
+    fin_mask = ~np.isposinf(a)
+    if fin_mask.all():
+        return a, sigma, False
+    fin_idx = np.where(fin_mask)[0]
+    if len(fin_idx) == 0:
+        return a, sigma, True  # all +inf → P = 1
+    a_fin = a[fin_idx]
+    sigma_fin = sigma[np.ix_(fin_idx, fin_idx)]
+    return a_fin, sigma_fin, False
 
 
 def _bvn_cdf(a: np.ndarray, sigma: np.ndarray) -> float:
