@@ -1090,6 +1090,19 @@ class MNPModel(BaseModel):
                 self._theta_to_report(theta_p) - self._theta_to_report(theta_m)
             ) / (2.0 * eps)
 
+        # MNP-003: zero columns of J corresponding to frozen theta entries
+        # *before* the delta-method.  Without this, a report param that
+        # depends on multiple theta entries (one frozen, one active) would
+        # propagate the active column's variance even though the frozen
+        # entry contributes zero (its column of cov_theta is zero, but FD
+        # perturbations across frozen entries produce a non-zero J column
+        # that the delta-method then mixes back in via off-diagonal cov
+        # entries).  Zeroing the column makes the delta-method produce
+        # se=0 naturally for the frozen-only-dependent params; the explicit
+        # NaN-marking below then overrides the zero with NaN.
+        if active_mask is not None:
+            J[:, ~active_mask] = 0.0
+
         # Delta method:  Cov(report) = J @ Cov(theta) @ J^T
         if hess_inv is not None:
             cov_theta = hess_inv / self.N

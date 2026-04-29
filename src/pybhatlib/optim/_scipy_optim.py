@@ -146,7 +146,8 @@ def minimize_scipy(
             else:
                 # Fallback: rare case (e.g. first callback before any cached eval)
                 fval, grad = _get_fval_grad(xk)
-            print(f"  Iter {iteration_count[0]:4d}: f = {fval:.6f}  ({elapsed:.1f}s)")
+            # _print_param_table emits its own ``iter=N f=...`` header
+            # (line ~125), so don't double-print it here under verbose=3.
             _print_param_table(xk, fval, grad)
         elif verbose >= 2:
             elapsed = time.time() - start_time
