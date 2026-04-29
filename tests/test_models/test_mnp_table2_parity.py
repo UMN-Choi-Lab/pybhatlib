@@ -39,7 +39,7 @@ SPEC_BASE = {
 
 AGE45_ROWS = {
     "AGE45_DA": {"Alt1_ch": "AGE45", "Alt2_ch": "sero", "Alt3_ch": "sero"},
-    "AGE45_TR": {"Alt1_ch": "sero", "Alt2_ch": "AGE45", "Alt3_ch": "sero"},
+    "AGE45_SR": {"Alt1_ch": "sero", "Alt2_ch": "AGE45", "Alt3_ch": "sero"},
 }
 
 SPEC_WITH_AGE45 = {
