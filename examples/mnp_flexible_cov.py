@@ -39,7 +39,7 @@ results = model.fit()
 results.summary()
 
 print(f"\nTarget log-likelihood: -661.111")
-print(f"Achieved log-likelihood: {results.ll_total:.3f}")
+print(f"Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")
 
 if results.lambda_hat is not None:
     print(f"\nEstimated kernel error covariance (differenced):")

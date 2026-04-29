@@ -285,11 +285,11 @@ for H in H_VALUES:
 
     reference_results[H] = results
 
-    print(f"    LL = {results.ll_total:.3f}")
-    print(f"    Converged: {results.converged} ({results.n_iterations} iterations)")
+    print(f"    LL = {results.loglik * results.n_obs:.3f}")
+    print(f"    Converged: {results.converged} ({results.n_iter} iterations)")
     print(f"    Time: {elapsed:.1f}s")
     print(f"    Parameters: ", end="")
-    for name, val in zip(results.param_names, results.b):
+    for name, val in zip(results.param_names, results.params):
         print(f"{name}={val:.4f}  ", end="")
     print()
 
@@ -326,11 +326,11 @@ for H in H_VALUES:
 
     # Store reference in results dict
     all_results[H]["TVBS (ref)"] = {
-        "params": ref.b.copy(),
-        "ll": ref.ll_total,
+        "params": ref.params.copy(),
+        "ll": ref.loglik * ref.n_obs,
         "time": ref.convergence_time * 60.0,  # convert minutes to seconds
         "converged": ref.converged,
-        "n_iter": ref.n_iterations,
+        "n_iter": ref.n_iter,
     }
 
     for method in METHODS:
@@ -363,15 +363,15 @@ for H in H_VALUES:
                 elapsed = time.perf_counter() - t0
 
                 all_results[H][label] = {
-                    "params": results.b.copy(),
-                    "ll": results.ll_total,
+                    "params": results.params.copy(),
+                    "ll": results.loglik * results.n_obs,
                     "time": elapsed,
                     "converged": results.converged,
-                    "n_iter": results.n_iterations,
+                    "n_iter": results.n_iter,
                 }
 
-                print(f"  H={H}, {label}: LL={results.ll_total:.3f}, "
-                      f"{results.n_iterations} iter, {elapsed:.1f}s")
+                print(f"  H={H}, {label}: LL={results.loglik * results.n_obs:.3f}, "
+                      f"{results.n_iter} iter, {elapsed:.1f}s")
         else:
             label = method.upper()
             ctrl = MNPControl(
@@ -396,15 +396,15 @@ for H in H_VALUES:
             elapsed = time.perf_counter() - t0
 
             all_results[H][label] = {
-                "params": results.b.copy(),
-                "ll": results.ll_total,
+                "params": results.params.copy(),
+                "ll": results.loglik * results.n_obs,
                 "time": elapsed,
                 "converged": results.converged,
-                "n_iter": results.n_iterations,
+                "n_iter": results.n_iter,
             }
 
-            print(f"  H={H}, {label}: LL={results.ll_total:.3f}, "
-                  f"{results.n_iterations} iter, {elapsed:.1f}s")
+            print(f"  H={H}, {label}: LL={results.loglik * results.n_obs:.3f}, "
+                  f"{results.n_iter} iter, {elapsed:.1f}s")
 
 
 # ============================================================

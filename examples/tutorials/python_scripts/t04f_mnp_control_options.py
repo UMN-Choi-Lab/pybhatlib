@@ -91,7 +91,7 @@ for method in ["me", "ovus", "tvbs"]:
     )
     res = model.fit()
     elapsed = time.perf_counter() - t0
-    print(f"  {method:>8s} {res.ll_total:>12.3f} {elapsed:>10.1f}")
+    print(f"  {method:>8s} {res.loglik * res.n_obs:>12.3f} {elapsed:>10.1f}")
 
 print(f"\n  Note: For IID models, method choice has minimal impact since")
 print(f"  the utility differences are uncorrelated (K-1 = 2 dimensions).")
@@ -116,8 +116,8 @@ for sph in [True, False]:
     )
     res = model.fit()
     elapsed = time.perf_counter() - t0
-    print(f"\n  spherical={str(sph):<5s}: LL={res.ll_total:.3f}, "
-          f"n_params={len(res.b)}, time={elapsed:.1f}s")
+    print(f"\n  spherical={str(sph):<5s}: LL={res.loglik * res.n_obs:.3f}, "
+          f"n_params={len(res.params)}, time={elapsed:.1f}s")
 
 # ============================================================
 #  Step 4: IID_first — warm starting
@@ -139,7 +139,7 @@ for iid_first in [True, False]:
     )
     res = model.fit()
     elapsed = time.perf_counter() - t0
-    print(f"  IID_first={str(iid_first):<5s}: LL={res.ll_total:.3f}, time={elapsed:.1f}s")
+    print(f"  IID_first={str(iid_first):<5s}: LL={res.loglik * res.n_obs:.3f}, time={elapsed:.1f}s")
 
 # ============================================================
 #  Step 5: correst — Correlation restrictions
@@ -162,7 +162,7 @@ for label, cr in [("Full correlation", correst_full), ("Zero correlation", corre
         ),
     )
     res = model.fit()
-    print(f"\n  {label}: LL={res.ll_total:.3f}, n_params={len(res.b)}")
+    print(f"\n  {label}: LL={res.loglik * res.n_obs:.3f}, n_params={len(res.params)}")
 
 # ============================================================
 #  Step 6: Optimizer choice
@@ -181,7 +181,7 @@ for opt in ["bfgs", "lbfgsb"]:
     )
     res = model.fit()
     elapsed = time.perf_counter() - t0
-    print(f"  optimizer='{opt}': LL={res.ll_total:.3f}, time={elapsed:.1f}s")
+    print(f"  optimizer='{opt}': LL={res.loglik * res.n_obs:.3f}, time={elapsed:.1f}s")
 
 print(f"""
   BFGS: Full Hessian approximation, good for small-medium problems.

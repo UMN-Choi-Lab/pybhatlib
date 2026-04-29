@@ -113,8 +113,8 @@ model = MNPModel(
 results = model.fit()
 t_elapsed = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood : {results.ll_total:.3f}")
-print(f"  Parameters     : {len(results.b)}")
+print(f"\n  Log-likelihood : {results.loglik * results.n_obs:.3f}")
+print(f"  Parameters     : {len(results.params)}")
 print(f"  Estimation time: {t_elapsed:.1f}s  ({t_elapsed/60:.1f} min)")
 
 # ============================================================
@@ -126,7 +126,7 @@ print("=" * 60)
 
 print("\n  Estimated coefficients:")
 if hasattr(results, "param_names") and results.param_names is not None:
-    for name, val in zip(results.param_names, results.b):
+    for name, val in zip(results.param_names, results.params):
         print(f"    {name:<25s}  {val:>10.4f}")
 else:
     # Fallback: label by segment + variable name
@@ -137,12 +137,12 @@ else:
             seg_labels.append(f"seg{s}_{vname}")
     seg_labels.append("theta_seg2")   # 1 segment probability param
     # remaining are covariance params
-    for i, val in enumerate(results.b):
+    for i, val in enumerate(results.params):
         label = seg_labels[i] if i < len(seg_labels) else f"cov_param_{i - len(seg_labels)}"
         print(f"    {label:<25s}  {val:>10.4f}")
 
 print(f"\n  Target log-likelihood  : -634.975  (BHATLIB paper Table 1)")
-print(f"  Achieved log-likelihood: {results.ll_total:.3f}")
+print(f"  Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")
 
 print("""
   Note: With synthetic TRAVELMODE data, the optimizer may find a
@@ -186,7 +186,7 @@ print("""
           for seed in [42, 123, 456, 789]:
               ctrl = MNPControl(iid=False, nseg=2, seed=seed, maxiter=200)
               res  = MNPModel(..., control=ctrl).fit()
-              print(seed, res.ll_total)
+              print(seed, res.loglik * res.n_obs)
 
   Parameter count scaling:
     - nseg=2: 2 * n_beta + 1 segment param + n_cov  (doubles the betas)

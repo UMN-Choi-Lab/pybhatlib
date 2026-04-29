@@ -42,4 +42,4 @@ results = model.fit()
 results.summary()
 
 print(f"\nTarget log-likelihood: -659.285")
-print(f"Achieved log-likelihood: {results.ll_total:.3f}")
+print(f"Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")

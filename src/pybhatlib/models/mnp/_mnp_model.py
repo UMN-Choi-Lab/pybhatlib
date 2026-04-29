@@ -38,8 +38,8 @@ class MNPModel(BaseModel):
 
     Parameters
     ----------
-    data : str or pd.DataFrame
-        Path to data file or DataFrame.
+    data : pd.DataFrame, str, or os.PathLike
+        DataFrame, or path to a CSV/DAT/XLSX file.
     alternatives : list of str
         Column names for choice indicators (e.g., ["Alt1_ch", "Alt2_ch", "Alt3_ch"]).
     availability : str or list of str
@@ -78,7 +78,7 @@ class MNPModel(BaseModel):
 
     def __init__(
         self,
-        data: str | pd.DataFrame,
+        data: pd.DataFrame | str | os.PathLike,
         alternatives: list[str],
         availability: str | list[str] = "none",
         spec: dict | None = None,
@@ -93,13 +93,18 @@ class MNPModel(BaseModel):
         if mix:
             self.control.mix = True
 
-        # Load data
-        if isinstance(data, str):
-            self.data_path = data
-            self.data = load_data(data)
-        else:
+        # Load data: accept DataFrame, str path, or os.PathLike
+        if isinstance(data, pd.DataFrame):
             self.data_path = "<DataFrame>"
             self.data = data
+        elif isinstance(data, (str, os.PathLike)):
+            self.data_path = os.fspath(data)
+            self.data = load_data(data)
+        else:
+            raise TypeError(
+                f"data must be a pandas DataFrame, str, or os.PathLike; "
+                f"got {type(data).__name__}"
+            )
 
         self.alternatives = alternatives
         self.n_alts = len(alternatives)
@@ -530,19 +535,18 @@ class MNPModel(BaseModel):
                 segment_probs = np.exp(raw) / np.exp(raw).sum()
 
         return MNPResults(
-            b=theta_hat,
+            params=theta_hat,
             b_original=b_report,
             se=se,
             t_stat=t_stat,
             p_value=p_value,
             gradient=g_report,
-            ll=-result.fun,
-            ll_total=-result.fun * self.N,
+            loglik=-result.fun,
             n_obs=self.N,
             param_names=param_names,
             corr_matrix=corr_report,
             cov_matrix=cov_report,
-            n_iterations=result.n_iter,
+            n_iter=result.n_iter,
             convergence_time=elapsed,
             converged=result.converged,
             return_code=result.return_code,

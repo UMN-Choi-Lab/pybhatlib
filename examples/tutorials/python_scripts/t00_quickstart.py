@@ -103,9 +103,9 @@ print("\n" + "=" * 60)
 print("  Step 5: Interpret Results")
 print("=" * 60)
 
-print(f"\n  Log-likelihood: {results.ll_total:.3f}")
+print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
 print(f"  Number of observations: {results.n_obs}")
-print(f"  Number of parameters: {len(results.b)}")
+print(f"  Number of parameters: {len(results.params)}")
 print(f"  Converged: {results.converged}")
 
 print("\n  Key findings:")

@@ -126,8 +126,8 @@ model = MNPModel(
 results = model.fit()
 t_elapsed = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {results.ll_total:.3f}")
-print(f"  Parameters: {len(results.b)}")
+print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
+print(f"  Parameters: {len(results.params)}")
 print(f"  Estimation time: {t_elapsed:.1f}s")
 
 # ============================================================
@@ -139,18 +139,18 @@ print("=" * 60)
 
 print("\n  Estimated coefficients:")
 if hasattr(results, "param_names") and results.param_names is not None:
-    for name, val in zip(results.param_names, results.b):
+    for name, val in zip(results.param_names, results.params):
         print(f"    {name:<25s}  {val:>10.4f}")
 else:
     param_labels = list(spec.keys())
-    for i, val in enumerate(results.b):
+    for i, val in enumerate(results.params):
         label = param_labels[i] if i < len(param_labels) else f"param_{i}"
         print(f"    {label:<25s}  {val:>10.4f}")
 
 print(f"\n  Target log-likelihood : -635.871  (BHATLIB paper Table 1, Model c)")
-print(f"  Achieved log-likelihood: {results.ll_total:.3f}")
+print(f"  Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")
 
-diff = abs(results.ll_total - (-635.871))
+diff = abs(results.loglik * results.n_obs - (-635.871))
 print(f"  Absolute difference   : {diff:.4f}")
 if diff < 0.005:
     print("  Result matches the paper target to within 0.005 LL units.")

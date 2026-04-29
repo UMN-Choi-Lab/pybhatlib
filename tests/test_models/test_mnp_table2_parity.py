@@ -75,8 +75,8 @@ def _fit_model(spec, control_kwargs, ranvars, travelmode_path):
 def test_table2_model_ai_iid(table2_targets, travelmode_path):
     target = table2_targets["models"]["a_i_iid"]
     results = _fit_model(SPEC_BASE, {"iid": True}, None, travelmode_path)
-    assert abs(results.ll_total - target["ll"]) < 0.5, (
-        f"Model (a)(i) IID LL = {results.ll_total:.3f}, expected {target['ll']}"
+    assert abs(results.loglik * results.n_obs - target["ll"]) < 0.5, (
+        f"Model (a)(i) IID LL = {results.loglik * results.n_obs:.3f}, expected {target['ll']}"
     )
 
 
@@ -84,8 +84,8 @@ def test_table2_model_ai_iid(table2_targets, travelmode_path):
 def test_table2_model_aii_flexible(table2_targets, travelmode_path):
     target = table2_targets["models"]["a_ii_flexible"]
     results = _fit_model(SPEC_BASE, {"iid": False}, None, travelmode_path)
-    assert abs(results.ll_total - target["ll"]) < 0.5, (
-        f"Model (a)(ii) flexible LL = {results.ll_total:.3f}, expected {target['ll']}"
+    assert abs(results.loglik * results.n_obs - target["ll"]) < 0.5, (
+        f"Model (a)(ii) flexible LL = {results.loglik * results.n_obs:.3f}, expected {target['ll']}"
     )
 
 
@@ -93,8 +93,8 @@ def test_table2_model_aii_flexible(table2_targets, travelmode_path):
 def test_table2_model_b_age45(table2_targets, travelmode_path):
     target = table2_targets["models"]["b_age45"]
     results = _fit_model(SPEC_WITH_AGE45, {"iid": False}, None, travelmode_path)
-    assert abs(results.ll_total - target["ll"]) < 0.5, (
-        f"Model (b) +AGE45 LL = {results.ll_total:.3f}, expected {target['ll']}"
+    assert abs(results.loglik * results.n_obs - target["ll"]) < 0.5, (
+        f"Model (b) +AGE45 LL = {results.loglik * results.n_obs:.3f}, expected {target['ll']}"
     )
 
 
@@ -104,8 +104,8 @@ def test_table2_model_c_random_coef(table2_targets, travelmode_path):
     results = _fit_model(
         SPEC_WITH_AGE45, {"iid": False, "mix": True}, ["OVTT"], travelmode_path
     )
-    assert abs(results.ll_total - target["ll"]) < 1.0, (
-        f"Model (c) random coef LL = {results.ll_total:.3f}, expected {target['ll']}"
+    assert abs(results.loglik * results.n_obs - target["ll"]) < 1.0, (
+        f"Model (c) random coef LL = {results.loglik * results.n_obs:.3f}, expected {target['ll']}"
     )
 
 
@@ -142,8 +142,8 @@ def test_table2_model_d_mixture_paper_target(table2_targets, travelmode_path):
         ["OVTT"],
         travelmode_path,
     )
-    assert abs(results.ll_total - target["ll"]) < tol, (
-        f"Model (d) mixture LL = {results.ll_total:.3f}, expected {target['ll']} (tol={tol})"
+    assert abs(results.loglik * results.n_obs - target["ll"]) < tol, (
+        f"Model (d) mixture LL = {results.loglik * results.n_obs:.3f}, expected {target['ll']} (tol={tol})"
     )
 
 
@@ -188,7 +188,7 @@ def test_table2_model_d_mixture_baseline_no_regression(travelmode_path):
         ["OVTT"],
         travelmode_path,
     )
-    assert abs(results.ll_total - _MODEL_D_BASELINE_LL) < 0.5, (
-        f"Model (d) LL drifted from baseline: got {results.ll_total:.3f}, "
+    assert abs(results.loglik * results.n_obs - _MODEL_D_BASELINE_LL) < 0.5, (
+        f"Model (d) LL drifted from baseline: got {results.loglik * results.n_obs:.3f}, "
         f"baseline {_MODEL_D_BASELINE_LL}"
     )

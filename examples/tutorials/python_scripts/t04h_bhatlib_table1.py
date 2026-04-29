@@ -142,14 +142,14 @@ res_ai = model_ai.fit()
 t_ai = time.perf_counter() - t0
 
 print(f"  Parameters : {model_ai.n_params}")
-print(f"  LL achieved: {res_ai.ll_total:.3f}")
+print(f"  LL achieved: {res_ai.loglik * res_ai.n_obs:.3f}")
 print(f"  LL target  : -670.956")
 print(f"  Time       : {t_ai:.1f}s")
 
 all_results.append({
     "label": "(a)(i)  IID",
     "n_params": model_ai.n_params,
-    "ll": res_ai.ll_total,
+    "ll": res_ai.loglik * res_ai.n_obs,
     "target_ll": -670.956,
     "time_s": t_ai,
 })
@@ -184,14 +184,14 @@ res_aii = model_aii.fit()
 t_aii = time.perf_counter() - t0
 
 print(f"  Parameters : {model_aii.n_params}")
-print(f"  LL achieved: {res_aii.ll_total:.3f}")
+print(f"  LL achieved: {res_aii.loglik * res_aii.n_obs:.3f}")
 print(f"  LL target  : -661.111")
 print(f"  Time       : {t_aii:.1f}s")
 
 all_results.append({
     "label": "(a)(ii) Flexible",
     "n_params": model_aii.n_params,
-    "ll": res_aii.ll_total,
+    "ll": res_aii.loglik * res_aii.n_obs,
     "target_ll": -661.111,
     "time_s": t_aii,
 })
@@ -228,14 +228,14 @@ res_b = model_b.fit()
 t_b = time.perf_counter() - t0
 
 print(f"  Parameters : {model_b.n_params}")
-print(f"  LL achieved: {res_b.ll_total:.3f}")
+print(f"  LL achieved: {res_b.loglik * res_b.n_obs:.3f}")
 print(f"  LL target  : -659.285")
 print(f"  Time       : {t_b:.1f}s")
 
 all_results.append({
     "label": "(b)     +AGE45",
     "n_params": model_b.n_params,
-    "ll": res_b.ll_total,
+    "ll": res_b.loglik * res_b.n_obs,
     "target_ll": -659.285,
     "time_s": t_b,
 })
@@ -275,14 +275,14 @@ res_c = model_c.fit()
 t_c = time.perf_counter() - t0
 
 print(f"  Parameters : {model_c.n_params}")
-print(f"  LL achieved: {res_c.ll_total:.3f}")
+print(f"  LL achieved: {res_c.loglik * res_c.n_obs:.3f}")
 print(f"  LL target  : -635.871")
 print(f"  Time       : {t_c:.1f}s")
 
 all_results.append({
     "label": "(c)     +Rand OVTT",
     "n_params": model_c.n_params,
-    "ll": res_c.ll_total,
+    "ll": res_c.loglik * res_c.n_obs,
     "target_ll": -635.871,
     "time_s": t_c,
 })
@@ -324,14 +324,14 @@ res_d = model_d.fit()
 t_d = time.perf_counter() - t0
 
 print(f"  Parameters : {model_d.n_params}")
-print(f"  LL achieved: {res_d.ll_total:.3f}")
+print(f"  LL achieved: {res_d.loglik * res_d.n_obs:.3f}")
 print(f"  LL target  : -634.975")
 print(f"  Time       : {t_d:.1f}s")
 
 all_results.append({
     "label": "(d)     2-seg mix",
     "n_params": model_d.n_params,
-    "ll": res_d.ll_total,
+    "ll": res_d.loglik * res_d.n_obs,
     "target_ll": -634.975,
     "time_s": t_d,
 })

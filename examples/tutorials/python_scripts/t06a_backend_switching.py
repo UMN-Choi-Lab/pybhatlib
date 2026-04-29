@@ -285,7 +285,7 @@ for label, ctrl in models_to_test:
     )
     r = model.fit()
     t_est = time.perf_counter() - t0
-    print(f"  {label:<12s} {t_est:>10.1f} {r.ll_total:>12.3f}")
+    print(f"  {label:<12s} {t_est:>10.1f} {r.loglik * r.n_obs:>12.3f}")
 
 
 # ============================================================

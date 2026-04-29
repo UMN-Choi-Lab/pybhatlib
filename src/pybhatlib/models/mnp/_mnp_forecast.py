@@ -43,7 +43,7 @@ def mnp_predict(
     I = X_np.shape[1]
     n_vars = X_np.shape[2]
 
-    theta_hat = np.asarray(results.b, dtype=np.float64)
+    theta_hat = np.asarray(results.params, dtype=np.float64)
     control = results.control
 
     ranvar_indices = getattr(results, "ranvar_indices", None)

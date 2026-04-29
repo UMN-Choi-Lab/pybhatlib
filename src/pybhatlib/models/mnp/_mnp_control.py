@@ -24,8 +24,6 @@ class MNPControl:
         If False, estimate flexible covariance structure.
     mix : bool
         If True, include random coefficients (mixed MNP).
-    indep : bool
-        If True, assume independence across ordinal outcomes.
     correst : NDArray or None
         Correlation restriction matrix. Upper-diagonal matrix with 1s on
         diagonal, 1s in off-diagonal positions indicate active correlations.
@@ -68,7 +66,6 @@ class MNPControl:
 
     iid: bool = False
     mix: bool = False
-    indep: bool = False
     correst: NDArray | None = None
     heteronly: bool = False
     randdiag: bool = False

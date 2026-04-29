@@ -52,8 +52,8 @@ model_iid = MNPModel(
 res_iid = model_iid.fit()
 t_iid = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_iid.ll_total:.3f}")
-print(f"  Parameters:     {len(res_iid.b)}")
+print(f"\n  Log-likelihood: {res_iid.loglik * res_iid.n_obs:.3f}")
+print(f"  Parameters:     {len(res_iid.params)}")
 print(f"  Time:           {t_iid:.1f}s")
 
 # ============================================================
@@ -94,8 +94,8 @@ model_flex = MNPModel(
 res_flex = model_flex.fit()
 t_flex = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_flex.ll_total:.3f}  (target: -661.111)")
-print(f"  Parameters:     {len(res_flex.b)}")
+print(f"\n  Log-likelihood: {res_flex.loglik * res_flex.n_obs:.3f}  (target: -661.111)")
+print(f"  Parameters:     {len(res_flex.params)}")
 print(f"  Time:           {t_flex:.1f}s")
 
 # ============================================================
@@ -140,15 +140,15 @@ print("\n" + "=" * 60)
 print("  Step 4: Model Comparison")
 print("=" * 60)
 
-n_iid  = len(res_iid.b)
-n_flex = len(res_flex.b)
+n_iid  = len(res_iid.params)
+n_flex = len(res_flex.params)
 extra_params = n_flex - n_iid
-lr_stat = -2.0 * (res_iid.ll_total - res_flex.ll_total)
+lr_stat = -2.0 * (res_iid.loglik * res_iid.n_obs - res_flex.loglik * res_flex.n_obs)
 
 print(f"\n  {'Model':<15s} {'n_params':>10s} {'LL':>12s} {'Time(s)':>10s}")
 print(f"  {'-'*49}")
-print(f"  {'IID':<15s} {n_iid:>10d} {res_iid.ll_total:>12.3f} {t_iid:>10.1f}")
-print(f"  {'Flexible':<15s} {n_flex:>10d} {res_flex.ll_total:>12.3f} {t_flex:>10.1f}")
+print(f"  {'IID':<15s} {n_iid:>10d} {res_iid.loglik * res_iid.n_obs:>12.3f} {t_iid:>10.1f}")
+print(f"  {'Flexible':<15s} {n_flex:>10d} {res_flex.loglik * res_flex.n_obs:>12.3f} {t_flex:>10.1f}")
 
 print(f"""
   Likelihood Ratio Test:
