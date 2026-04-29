@@ -79,12 +79,20 @@ print("\n" + "=" * 60)
 print("  Step 2: Fit MORP Model (Independent Errors)")
 print("=" * 60)
 
+# Per-outcome spec: each coefficient maps outcome → column name (or "sero").
+# Here income/age/education enter both outcomes with the same column.
+spec = {
+    "income":    {"satisfaction": "income",    "recommendation": "income"},
+    "age":       {"satisfaction": "age",       "recommendation": "age"},
+    "education": {"satisfaction": "education", "recommendation": "education"},
+}
+
 model = MORPModel(
     data=df,
     dep_vars=["satisfaction", "recommendation"],
-    indep_vars=["income", "age", "education"],
+    spec=spec,
     n_categories=n_categories,
-    control=MORPControl(indep=True, maxiter=200, verbose=1, seed=42),
+    control=MORPControl(iid=True, maxiter=200, verbose=1, seed=42),
 )
 results = model.fit()
 print()
@@ -166,7 +174,7 @@ print(f"""
     2 = high (above second threshold)
 
   The MORP model jointly predicts ordinal outcomes across dimensions.
-  When error correlation is nonzero (indep=False), predictions in one
+  When error correlation is nonzero (iid=False), predictions in one
   dimension are informed by the other dimension.
 """)
 
