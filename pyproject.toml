@@ -55,6 +55,7 @@ packages = ["src/pybhatlib"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 markers = [
     "torch: tests requiring PyTorch backend",
     "slow: long-running integration tests",

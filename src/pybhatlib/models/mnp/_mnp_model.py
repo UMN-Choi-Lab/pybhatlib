@@ -376,8 +376,15 @@ class MNPModel(BaseModel):
 
         return None
 
-    def fit(self) -> MNPResults:
+    def fit(self, bounds=None) -> MNPResults:
         """Estimate the MNP model.
+
+        Parameters
+        ----------
+        bounds : list of (lower, upper) tuples or None
+            Parameter bounds forwarded to scipy (L-BFGS-B only).
+            Must have length ``n_params`` if provided; when ``active_mask``
+            is set, the bounds are automatically filtered to the active subset.
 
         Returns
         -------
@@ -407,6 +414,39 @@ class MNPModel(BaseModel):
             theta0 = self.control.startb.copy()
         else:
             theta0 = self._default_start_values()
+
+        # ------------------------------------------------------------------
+        # MNP-003: active_mask validation and setup
+        # ------------------------------------------------------------------
+        active_mask = self.control.active_mask
+        frozen_theta = None  # full theta with frozen values fixed
+
+        if active_mask is not None:
+            active_mask = np.asarray(active_mask, dtype=bool)
+            if len(active_mask) != self.n_params:
+                raise ValueError(
+                    f"active_mask length {len(active_mask)} does not match "
+                    f"n_params={self.n_params}"
+                )
+            n_active = int(active_mask.sum())
+            if n_active == 0:
+                raise ValueError(
+                    "active_mask has no True entries — nothing to optimize. "
+                    "Set at least one parameter to True, or pass active_mask=None "
+                    "to estimate all parameters."
+                )
+            # frozen_theta holds the full starting vector; active entries
+            # will be overwritten by the optimizer at each call.
+            frozen_theta = theta0.copy()
+
+        # ------------------------------------------------------------------
+        # Fix 2: filter bounds to active subset when active_mask is set.
+        # ``bounds`` has length n_params; the optimizer sees only active params.
+        # ------------------------------------------------------------------
+        if bounds is not None and active_mask is not None:
+            bounds_active = [bounds[i] for i, a in enumerate(active_mask) if a]
+        else:
+            bounds_active = bounds
 
         # Resolve device
         use_gpu = False
@@ -443,7 +483,7 @@ class MNPModel(BaseModel):
             if self.control.verbose >= 1:
                 print(f"  Device: {gpu_device} (GPU accelerated)")
 
-            def objective(theta):
+            def _full_objective(theta):
                 return mnp_gradient_gpu(
                     theta, X_gpu, y_gpu,
                     self.n_alts, self.n_beta, self.control,
@@ -451,12 +491,36 @@ class MNPModel(BaseModel):
                 )
         else:
             # Define objective function (CPU path)
-            def objective(theta):
+            def _full_objective(theta):
                 return mnp_loglik(
                     theta, self.X, self.y, self.avail,
                     self.n_alts, self.n_beta, self.control,
                     self.ranvar_indices, return_gradient=True, xp=xp,
                 )
+
+        # ------------------------------------------------------------------
+        # MNP-003: wrap objective for active_mask if needed
+        # ------------------------------------------------------------------
+        if active_mask is not None:
+            # Build reduced starting vector for the optimizer
+            theta0_active = theta0[active_mask]
+
+            def objective(theta_active):
+                """Reduced-space objective: reconstruct full theta before eval."""
+                theta_full = frozen_theta.copy()
+                theta_full[active_mask] = theta_active
+                f, g_full = _full_objective(theta_full)
+                g_active = g_full[active_mask]
+                return f, g_active
+
+            # Theta-space param names for verbose=3 (active params only)
+            theta_names_active = [
+                n for n, m in zip(self._build_param_names(), active_mask) if m
+            ]
+        else:
+            theta0_active = theta0
+            objective = _full_objective
+            theta_names_active = self._build_param_names()
 
         # Optimize
         start_time = time.time()
@@ -467,25 +531,50 @@ class MNPModel(BaseModel):
 
         result = minimize_scipy(
             objective,
-            theta0,
+            theta0_active,
             method=opt_method,
             maxiter=self.control.maxiter,
             tol=self.control.tol,
             verbose=self.control.verbose,
             jac=True,
+            bounds=bounds_active,
+            param_names=theta_names_active,
         )
 
         elapsed = (time.time() - start_time) / 60.0  # minutes
 
-        # Extract results
-        theta_hat = result.x
-        hess_inv = result.hess_inv
+        # ------------------------------------------------------------------
+        # MNP-003: reconstruct full theta_hat from active result
+        # ------------------------------------------------------------------
+        if active_mask is not None:
+            theta_hat = frozen_theta.copy()
+            theta_hat[active_mask] = result.x
+            # Expand grad and hess_inv back to full space
+            grad_full = np.zeros(self.n_params, dtype=np.float64)
+            grad_full[active_mask] = result.grad
+            # hess_inv is in active space; expand to full (frozen rows/cols = 0)
+            if result.hess_inv is not None:
+                hess_inv_active = result.hess_inv
+                hess_inv = np.zeros(
+                    (self.n_params, self.n_params), dtype=np.float64
+                )
+                active_idx = np.where(active_mask)[0]
+                for ai, i in enumerate(active_idx):
+                    for aj, j in enumerate(active_idx):
+                        hess_inv[i, j] = hess_inv_active[ai, aj]
+            else:
+                hess_inv = None
+        else:
+            theta_hat = result.x
+            hess_inv = result.hess_inv
+            grad_full = result.grad
 
         # BHATLIB-normalized reporting
         param_names = self._build_report_names()
         (b_report, se, t_stat, p_value,
          cov_report, corr_report, g_report) = self._normalize_for_reporting(
-            theta_hat, hess_inv, result.grad,
+            theta_hat, hess_inv, grad_full,
+            active_mask=active_mask,
         )
 
         # Extract normalized structural parameters
@@ -804,6 +893,100 @@ class MNPModel(BaseModel):
 
         return np.array(report, dtype=np.float64)
 
+    def _build_theta_to_report_map(self) -> dict[int, int | None]:
+        """Map theta-space parameter indices to report-space indices.
+
+        Returns a dict ``{theta_idx: report_idx}`` where ``report_idx`` is
+        ``None`` for theta params that are absorbed by the BHATLIB
+        normalization (i.e., scale01, the first scale parameter for non-IID
+        models).
+
+        Used by ``_normalize_for_reporting`` to mark SE=NaN for frozen params.
+        """
+        mapping: dict[int, int | None] = {}
+        theta_idx = 0
+        report_idx = 0
+
+        # --- Betas: 1:1 mapping ---
+        for _ in range(self.n_beta):
+            mapping[theta_idx] = report_idx
+            theta_idx += 1
+            report_idx += 1
+
+        if not self.control.iid:
+            dim = self.n_alts - 1
+
+            # --- Scale params in theta-space: scale01..scale0{dim} ---
+            # scale01 (theta[n_beta]) is absorbed → None.
+            # scale02..scale0{dim} (theta[n_beta+1..n_beta+dim-1]) map to
+            # report-space *after* all parker params, so we compute their
+            # report indices later.
+            n_scale = dim
+            scale_theta_start = theta_idx
+            theta_idx += n_scale  # advance past all scales
+
+            # --- Parker (correlations) in theta-space ---
+            n_corr = dim * (dim - 1) // 2 if not self.control.heteronly else 0
+            parker_theta_start = theta_idx
+            theta_idx += n_corr
+
+            # In report space: parkers come first (after betas),
+            # then scale[1..dim-1] (relative scales).
+            parker_report_start = report_idx
+            report_idx += n_corr  # advance past parkers in report space
+
+            scale_report_start = report_idx
+            report_idx += dim - 1  # dim-1 relative scales in report space
+
+            # Fill mapping for parkers: direct 1:1
+            for k in range(n_corr):
+                mapping[parker_theta_start + k] = parker_report_start + k
+
+            # Fill mapping for scales:
+            #   theta scale00 (index 0 among scales) → absorbed → None
+            #   theta scale{i} for i=1..dim-1 → report_scale{i-1}
+            mapping[scale_theta_start] = None  # absorbed (scale00)
+            for k in range(1, n_scale):
+                mapping[scale_theta_start + k] = scale_report_start + (k - 1)
+
+        # --- Random-coefficient Cholesky params ---
+        if self.control.mix and self.ranvar_indices is not None:
+            n_rand = len(self.ranvar_indices)
+            if self.control.randdiag:
+                n_omega = n_rand
+            else:
+                n_omega = n_rand * (n_rand + 1) // 2
+            for k in range(n_omega):
+                mapping[theta_idx] = report_idx
+                theta_idx += 1
+                report_idx += 1
+
+        # --- Mixture-of-normals segment params ---
+        if self.control.nseg > 1:
+            n_seg = self.control.nseg - 1
+            for k in range(n_seg):
+                mapping[theta_idx] = report_idx
+                theta_idx += 1
+                report_idx += 1
+            # Extra segment betas and omegas
+            for _ in range(1, self.control.nseg):
+                for k in range(self.n_beta):
+                    mapping[theta_idx] = report_idx
+                    theta_idx += 1
+                    report_idx += 1
+                if self.control.mix and self.ranvar_indices is not None:
+                    n_rand = len(self.ranvar_indices)
+                    if self.control.randdiag:
+                        n_omega = n_rand
+                    else:
+                        n_omega = n_rand * (n_rand + 1) // 2
+                    for k in range(n_omega):
+                        mapping[theta_idx] = report_idx
+                        theta_idx += 1
+                        report_idx += 1
+
+        return mapping
+
     def _build_report_names(self) -> list[str]:
         """Build parameter names for BHATLIB reporting convention.
 
@@ -865,8 +1048,21 @@ class MNPModel(BaseModel):
         theta_hat: np.ndarray,
         hess_inv: np.ndarray | None,
         gradient: np.ndarray | None,
+        active_mask: np.ndarray | None = None,
     ) -> tuple:
         """Compute BHATLIB-normalized values with delta-method standard errors.
+
+        Parameters
+        ----------
+        theta_hat : ndarray
+            Full parameter vector (theta-space), including frozen values.
+        hess_inv : ndarray or None
+            Full inverse Hessian in theta-space (frozen rows/cols are zero).
+        gradient : ndarray or None
+            Full gradient in theta-space.
+        active_mask : ndarray of bool or None
+            If provided, report-space params that depend *only* on frozen
+            theta entries get SE/t-stat/p-value set to ``np.nan``.
 
         Returns
         -------
@@ -893,6 +1089,19 @@ class MNPModel(BaseModel):
             J[:, i] = (
                 self._theta_to_report(theta_p) - self._theta_to_report(theta_m)
             ) / (2.0 * eps)
+
+        # MNP-003: zero columns of J corresponding to frozen theta entries
+        # *before* the delta-method.  Without this, a report param that
+        # depends on multiple theta entries (one frozen, one active) would
+        # propagate the active column's variance even though the frozen
+        # entry contributes zero (its column of cov_theta is zero, but FD
+        # perturbations across frozen entries produce a non-zero J column
+        # that the delta-method then mixes back in via off-diagonal cov
+        # entries).  Zeroing the column makes the delta-method produce
+        # se=0 naturally for the frozen-only-dependent params; the explicit
+        # NaN-marking below then overrides the zero with NaN.
+        if active_mask is not None:
+            J[:, ~active_mask] = 0.0
 
         # Delta method:  Cov(report) = J @ Cov(theta) @ J^T
         if hess_inv is not None:
@@ -923,5 +1132,27 @@ class MNPModel(BaseModel):
             g_report = np.linalg.pinv(J).T @ gradient
         else:
             g_report = np.zeros(n_report)
+
+        # ------------------------------------------------------------------
+        # MNP-003: mark SE/t-stat/p-value as NaN for frozen report params.
+        #
+        # We use the explicit theta→report index map from
+        # ``_build_theta_to_report_map`` to identify which report-space params
+        # are *directly* determined by frozen theta-space params.  A report
+        # param k is frozen if its corresponding theta param is frozen (i.e.,
+        # active_mask[theta_idx] is False).  Absorbed params (mapped to None)
+        # do not appear in report space, so they are skipped.
+        # ------------------------------------------------------------------
+        if active_mask is not None:
+            theta_to_report = self._build_theta_to_report_map()
+            for theta_idx, ri in theta_to_report.items():
+                if ri is None:
+                    continue  # absorbed param — no report slot
+                if theta_idx < len(active_mask) and not active_mask[theta_idx]:
+                    # This theta param is frozen → mark its report slot as NaN
+                    if ri < len(se):
+                        se[ri] = np.nan
+                        t_stat[ri] = np.nan
+                        p_value[ri] = np.nan
 
         return b_report, se, t_stat, p_value, cov_report, corr_report, g_report
