@@ -22,6 +22,7 @@ from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd_rect
 from pybhatlib.matgradient._spherical import theta_to_corr
 from pybhatlib.models.morp._morp_control import MORPControl
+from pybhatlib.models.morp._morp_grad_analytic import morp_analytic_gradient
 
 
 def morp_loglik(
@@ -72,6 +73,18 @@ def morp_loglik(
     y_np = np.asarray(y, dtype=np.int64)
     N = X_np.shape[0]
 
+    # Analytic gradient computes both nll and grad in one pass when the
+    # MVNCD method has an analytic-gradient implementation. Fall through to
+    # the forward-only path + numerical FD otherwise.
+    if (
+        return_gradient
+        and getattr(control, "analytic_grad", False)
+        and control.method in ("me", "ovus")
+    ):
+        return morp_analytic_gradient(
+            theta_np, X_np, y_np, n_dims, n_categories, n_beta, control,
+        )
+
     # Unpack parameters
     beta, thresholds, sigma = _unpack_morp_params(
         theta_np, n_beta, n_dims, n_categories, control
@@ -101,13 +114,13 @@ def morp_loglik(
             else:
                 upper[d] = tau_d[j] - mu_q[d]
 
-        # P(lower <= eps <= upper) where eps ~ MVN(0, sigma)
-        # Convert to standard form: P(lower/sd <= Z <= upper/sd)
-        # with correlation matrix
-        prob_q = mvncd_rect(
-            xp.array(lower), xp.array(upper), xp.array(sigma),
-            method=control.method, xp=xp,
-        )
+        # P(lower <= eps <= upper) where eps ~ MVN(0, sigma).
+        # We collapse +inf/-inf bounds out of the integration before
+        # passing to mvncd_rect to avoid the NaN that mvncd produces for
+        # +inf entries when sigma is non-diagonal (the rectangle CDF on
+        # the surviving "alive" sub-block of sigma is mathematically
+        # equivalent to the original integral).
+        prob_q = _rect_prob_finite_only(lower, upper, sigma, control, xp)
 
         prob_q = max(prob_q, 1e-300)
         total_ll += np.log(prob_q)
@@ -220,6 +233,65 @@ def count_morp_params(
     return n
 
 
+def _rect_prob_finite_only(
+    lower: np.ndarray,
+    upper: np.ndarray,
+    sigma: np.ndarray,
+    control: MORPControl,
+    xp,
+) -> float:
+    """Compute ``P(lower <= eps <= upper)`` while tolerating ``+/-inf`` bounds.
+
+    Since PR #9 ``mvncd_rect`` natively collapses ``+inf`` upper-bound
+    dimensions via the ``_drop_inf_dims`` guard inside ``mvncd``.  We
+    therefore drop fully-open dims (``[-inf, +inf]``) here for the cheap
+    case, short-circuit on empty intervals, and delegate everything else
+    directly to ``mvncd_rect`` — which now uses the *same* marginalize-
+    via-submatrix approach as the analytic path
+    (``_morp_grad_analytic._rect_prob_and_grad``).  This eliminates the
+    silent forward/analytic asymmetry under approximate MVNCD methods
+    (ME / OVUS) that the previous sign-flip implementation introduced.
+
+    See PR #8 review (Opus, P0): the prior sign-flip + sub-Sigma was
+    individually correct under exact MVN-CDF but produced numerically
+    different ``P`` values from the analytic path under ME/OVUS, since
+    the two paths used different K-dimensional kernels.
+    """
+    K = len(lower)
+    keep = []
+    new_lower = []
+    new_upper = []
+    for d in range(K):
+        u_d = upper[d]
+        l_d = lower[d]
+        if np.isposinf(u_d) and np.isneginf(l_d):
+            # Whole real line for this dim: integrates to 1, drop it.
+            continue
+        if np.isposinf(l_d) or np.isneginf(u_d):
+            # Empty interval: probability is exactly 0.
+            return 0.0
+        keep.append(d)
+        new_lower.append(l_d)
+        new_upper.append(u_d)
+
+    if len(keep) == 0:
+        return 1.0
+
+    sub_idx = np.array(keep, dtype=np.int64)
+    sigma_sub = sigma[np.ix_(sub_idx, sub_idx)].copy()
+    lower_a = np.asarray(new_lower, dtype=np.float64)
+    upper_a = np.asarray(new_upper, dtype=np.float64)
+
+    # ``mvncd_rect`` handles any remaining ``+inf`` upper bound natively
+    # (via ``mvncd``'s ``_drop_inf_dims`` guard) — same path the analytic
+    # gradient takes — so the forward and analytic K-D evaluations now
+    # share kernels regardless of method.
+    return mvncd_rect(
+        xp.array(lower_a), xp.array(upper_a), xp.array(sigma_sub),
+        method=control.method, xp=xp,
+    )
+
+
 def _numerical_gradient_morp(
     theta: np.ndarray,
     X: np.ndarray,
@@ -234,8 +306,6 @@ def _numerical_gradient_morp(
     eps = 1e-6
     n = len(theta)
     grad = np.zeros(n, dtype=np.float64)
-
-    f0 = morp_loglik(theta, X, y, n_dims, n_categories, n_beta, control, xp=xp)
 
     for i in range(n):
         theta_plus = theta.copy()
