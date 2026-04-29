@@ -24,7 +24,7 @@ SPEC_BASE = {
     "CON_SR": {"Alt1_ch": "sero", "Alt2_ch": "uno", "Alt3_ch": "sero"},
     "CON_TR": {"Alt1_ch": "sero", "Alt2_ch": "sero", "Alt3_ch": "uno"},
     "AGE45_DA": {"Alt1_ch": "AGE45", "Alt2_ch": "sero", "Alt3_ch": "sero"},
-    "AGE45_TR": {"Alt1_ch": "sero", "Alt2_ch": "AGE45", "Alt3_ch": "sero"},
+    "AGE45_SR": {"Alt1_ch": "sero", "Alt2_ch": "AGE45", "Alt3_ch": "sero"},
     "IVTT": {"Alt1_ch": "IVTT_DA", "Alt2_ch": "IVTT_SR", "Alt3_ch": "IVTT_TR"},
     "OVTT": {"Alt1_ch": "OVTT_DA", "Alt2_ch": "OVTT_SR", "Alt3_ch": "OVTT_TR"},
     "COST": {"Alt1_ch": "COST_DA", "Alt2_ch": "COST_SR", "Alt3_ch": "COST_TR"},
@@ -38,7 +38,7 @@ SPEC_LEGACY_OVTT_SPLIT = {
     "CON_SR": SPEC_BASE["CON_SR"],
     "CON_TR": SPEC_BASE["CON_TR"],
     "AGE45_DA": SPEC_BASE["AGE45_DA"],
-    "AGE45_TR": SPEC_BASE["AGE45_TR"],
+    "AGE45_SR": SPEC_BASE["AGE45_SR"],
     "IVTT": SPEC_BASE["IVTT"],
     "OVTT1": SPEC_BASE["OVTT"],
     "OVTT2": SPEC_BASE["OVTT"],
@@ -63,7 +63,7 @@ SPEC_SEG_SUFFIX = {
     "CON_SR": SPEC_BASE["CON_SR"],
     "CON_TR": SPEC_BASE["CON_TR"],
     "AGE45_DA": SPEC_BASE["AGE45_DA"],
-    "AGE45_TR": SPEC_BASE["AGE45_TR"],
+    "AGE45_SR": SPEC_BASE["AGE45_SR"],
     "IVTT": SPEC_BASE["IVTT"],
     "OVTT_seg1": SPEC_BASE["OVTT"],
     "OVTT_seg2": SPEC_BASE["OVTT"],
@@ -378,7 +378,7 @@ class TestStripSegmentSuffixFix:
         either, a ``ValueError`` must be raised — not a silent wrong-variable
         resolution.
         """
-        # SPEC_BASE has "AGE45_DA" / "AGE45_TR" as keys, NOT "AGE45".
+        # SPEC_BASE has "AGE45_DA" / "AGE45_SR" as keys, NOT "AGE45".
         with pytest.raises(ValueError, match="not found"):
             _make_model(
                 SPEC_BASE, nseg=2,
