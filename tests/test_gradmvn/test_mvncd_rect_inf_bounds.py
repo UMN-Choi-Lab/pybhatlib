@@ -275,3 +275,126 @@ class TestMvncdDirectInfBounds:
                 p, 1.0, atol=1e-10,
                 err_msg=f"All-inf bound should return 1, got {p} for {method}",
             )
+
+
+# ---------------------------------------------------------------------------
+# Post-review additions (PR #9 review punch list):
+# - P0:  -inf direct calls into mvncd must return 0, not silently drop the
+#        -inf dimension (the np.isfinite-vs-np.isposinf bug).
+# - P1:  multiple simultaneous +inf bounds + monotone-convergence test.
+# - P0:  numeric oracle assertion on TestInfUpperFullCovFinite.
+# ---------------------------------------------------------------------------
+
+
+class TestMvncdNegInfDirect:
+    """Regression: ``mvncd`` with any ``a[k] = -inf`` must return 0.
+
+    Pre-fix, ``np.isfinite(a)`` collapsed both -inf and +inf dims, so a
+    direct call ``mvncd([-inf, 1.0], sigma)`` silently dropped dim 0 and
+    returned ``Phi(1.0) ≈ 0.84`` instead of the correct ``0.0``.
+    """
+
+    def test_mvncd_single_neg_inf_returns_zero(self, sigma3_offdiag):
+        a = np.array([-np.inf, 0.5, 0.5])
+        p = mvncd(a, sigma3_offdiag, method="ovus")
+        assert p == 0.0, f"Expected 0 for any -inf bound, got {p}"
+
+    def test_mvncd_neg_inf_iid_returns_zero(self):
+        # 2-D IID — would have returned Phi(1.0) ≈ 0.84 under the old code.
+        a = np.array([-np.inf, 1.0])
+        p = mvncd(a, np.eye(2), method="ovus")
+        assert p == 0.0, f"Expected 0 for [-inf,1.0] under IID, got {p}"
+
+    @pytest.mark.parametrize("method", ["me", "ovus", "bme", "tvbs"])
+    def test_mvncd_neg_inf_all_methods(self, sigma3_offdiag, method):
+        a = np.array([0.5, -np.inf, 1.0])
+        p = mvncd(a, sigma3_offdiag, method=method)
+        assert p == 0.0, f"method={method!r} returned {p}, expected 0"
+
+
+class TestMvncdMultipleInfDims:
+    """Multiple simultaneous +inf upper bounds — exercise K' = 1 reduction."""
+
+    @pytest.mark.parametrize("method", ["me", "ovus", "bme", "tvbs"])
+    def test_two_inf_dims_collapses_to_1d(self, sigma3_offdiag, method):
+        # upper = [0.7, +inf, +inf]; expected = Phi(0.7 / sqrt(sigma[0,0]))
+        a = np.array([0.7, np.inf, np.inf])
+        p = mvncd(a, sigma3_offdiag, method=method)
+        sd = float(np.sqrt(sigma3_offdiag[0, 0]))
+        expected = float(ndtr(a[0] / sd))
+        np.testing.assert_allclose(p, expected, atol=1e-10)
+
+
+def _scipy_rect_inf_safe(lower, upper, sigma):
+    """Reference oracle: rectangle CDF with +inf upper bounds replaced by
+    a very large finite cap before scipy inclusion-exclusion.
+
+    The existing ``_scipy_rect`` helper skips any vertex with non-finite
+    bounds (line 51 of this file) and is therefore unsuitable when
+    ``upper[k] = +inf``.  This oracle substitutes ``1e8`` (≈ +inf for
+    standard normal margins) and then runs the full 2^K inclusion-
+    exclusion against ``scipy.stats.multivariate_normal``.
+    """
+    from scipy.stats import multivariate_normal as _mvn
+
+    K = len(lower)
+    upper_safe = np.where(np.isposinf(upper), 1e8, upper)
+    prob = 0.0
+    for s in range(1 << K):
+        c = np.zeros(K)
+        sign = 1
+        for i in range(K):
+            if s & (1 << i):
+                c[i] = lower[i]
+                sign *= -1
+            else:
+                c[i] = upper_safe[i]
+        if np.any(np.isneginf(c)):
+            continue
+        prob += sign * float(_mvn.cdf(c, mean=np.zeros(K), cov=sigma))
+    return max(0.0, min(1.0, prob))
+
+
+class TestMvncdRectMonotoneConvergence:
+    """Large finite upper ≈ +inf for off-diagonal Sigma.
+
+    With approximate methods (ME, OVUS) the K-dim integral and the (K-1)-dim
+    marginal use *different* approximation kernels, so exact agreement is
+    not expected.  Tolerance reflects each method's known error envelope.
+    """
+
+    def test_finite_1e8_matches_inf_scipy(self, sigma3_offdiag):
+        # method="scipy" uses exact MVN-CDF for every vertex; after the +inf
+        # collapse, the result must agree tightly with the 1e8 substitution.
+        lower = np.array([-0.5, -1.0, 0.0])
+        upper_inf = np.array([1.5, 0.8, np.inf])
+        upper_big = np.array([1.5, 0.8, 1e8])
+
+        p_inf = mvncd_rect(lower, upper_inf, sigma3_offdiag, method="scipy")
+        p_big = mvncd_rect(lower, upper_big, sigma3_offdiag, method="scipy")
+        np.testing.assert_allclose(p_inf, p_big, atol=1e-4)
+
+
+class TestInfUpperFullCovFiniteWithOracle:
+    """Numeric oracle for the +inf collapse path (P0 from PR #9 review).
+
+    Reference comes from ``_scipy_rect_inf_safe`` (above) which replaces
+    ``+inf`` with ``1e8`` and runs the full 2^K inclusion-exclusion against
+    scipy — a mathematically correct oracle for ``mvncd_rect`` that the
+    existing ``_scipy_rect`` helper cannot provide.
+    """
+
+    @pytest.mark.parametrize("k_inf", [0, 1, 2])
+    def test_scipy_value_matches_inf_safe_oracle(self, sigma3_offdiag, k_inf):
+        lower = np.array([-0.5, -1.0, 0.0], dtype=np.float64)
+        upper = np.array([1.5, 0.8, 2.0], dtype=np.float64)
+        upper[k_inf] = np.inf
+
+        p = mvncd_rect(lower, upper, sigma3_offdiag, method="scipy")
+        expected = _scipy_rect_inf_safe(lower, upper, sigma3_offdiag)
+
+        # atol=1e-4: scipy's underlying mvn.cdf (Genz QMC) carries ~1e-5
+        # numerical noise; the residual diff between the +inf-collapsed path
+        # and the 1e8 substitution path is dominated by that noise, not by
+        # the +inf logic.
+        np.testing.assert_allclose(p, expected, atol=1e-4)

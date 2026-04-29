@@ -588,13 +588,20 @@ def mvncd(
     if K == 0:
         return 1.0
 
-    # --- Guard: collapse +inf dimensions ----------------------------------------
+    # --- Guard: handle non-finite upper bounds ----------------------------------
     # P(X <= a) where a[k] = +inf means X_k is unconstrained; the K-dim integral
     # reduces to the marginal over the finite-bound dimensions.  GAUSS handles
     # this implicitly (cdfn(+inf) = 1), but Python IEEE 754 produces
     # lambda_h * (w_h - lambda_h) = (-0.0) * (+inf) = NaN in the ME kernel.
     # We replicate the GAUSS behaviour by dropping +inf dims before dispatch.
-    if not np.all(np.isfinite(a_np)):
+    #
+    # a[k] = -inf means X_k <= -inf is impossible, so the joint CDF is 0
+    # regardless of the other dimensions. (Plain ``np.isfinite`` would conflate
+    # this with +inf and silently drop the dim, returning a positive value —
+    # see PR #9 review punch list, P0.)
+    if np.any(np.isneginf(a_np)):
+        return 0.0
+    if np.any(np.isposinf(a_np)):
         a_np, sigma_np, all_inf = _drop_inf_dims(a_np, sigma_np)
         if all_inf:
             return 1.0
@@ -871,7 +878,9 @@ def _drop_inf_dims(a: np.ndarray, sigma: np.ndarray):
     all_inf : bool
         True when every dimension was +inf (caller should return 1.0).
     """
-    fin_mask = np.isfinite(a)
+    # Only collapse +inf dims.  -inf dims are NOT marginalized away — they
+    # make the joint CDF 0 (handled by the caller before invoking this helper).
+    fin_mask = ~np.isposinf(a)
     if fin_mask.all():
         return a, sigma, False
     fin_idx = np.where(fin_mask)[0]
