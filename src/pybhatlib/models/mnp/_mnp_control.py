@@ -104,7 +104,11 @@ class MNPControl:
     maxiter: int = 200
     tol: float = 1e-5
     optimizer: Literal["bfgs", "lbfgsb", "torch_adam", "torch_lbfgs"] = "bfgs"
-    se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh"
+    # PR #4 review P0 #3: keep "hessian" as the default for backward
+    # compatibility with existing pinned-SE tests / callers (the GAUSS
+    # ``_max_CovPar=2`` BHHH default flips in a follow-up release with
+    # explicit deprecation).
+    se_method: Literal["bhhh", "hessian", "sandwich"] = "hessian"
     verbose: int = 1
     seed: int | None = None
     analytic_grad: bool = True
