@@ -52,9 +52,9 @@ class MNPResults:
     loglik : float
         Mean log-likelihood (per observation).  (Previously named
         ``ll``; the old attribute is still available as a deprecated
-        alias.  ``ll_total`` is also a deprecated alias of
-        ``loglik`` even though they referred to different quantities
-        previously — see Notes.)
+        alias.  Reading the deprecated ``ll_total`` attribute returns
+        ``loglik * n_obs`` (preserving its old total-LL semantics) — see
+        Notes.)
     n_obs : int
         Number of observations.
     param_names : list[str]

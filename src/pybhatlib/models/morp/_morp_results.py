@@ -15,6 +15,12 @@ from numpy.typing import NDArray
 from pybhatlib.models.morp._morp_control import MORPControl
 
 
+# Asymmetric with ``MNPResults`` (which is ``@dataclass(init=False)`` with a
+# legacy-kwarg shim): MORPResults uses a plain ``@dataclass`` because MORP has
+# no historical field renames to migrate — the canonical names are the
+# original names, so the deprecation-shim infrastructure is unnecessary.
+
+
 @dataclass
 class MORPResults:
     """Results from MORP model estimation.

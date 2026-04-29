@@ -50,8 +50,8 @@ model_iid = MNPModel(
 res_iid = model_iid.fit()
 t_iid = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_iid.ll_total:.3f}")
-print(f"  Parameters: {len(res_iid.b)}")
+print(f"\n  Log-likelihood: {res_iid.loglik * res_iid.n_obs:.3f}")
+print(f"  Parameters: {len(res_iid.params)}")
 print(f"  Time: {t_iid:.1f}s")
 
 # ============================================================
@@ -78,8 +78,8 @@ model_het = MNPModel(
 res_het = model_het.fit()
 t_het = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_het.ll_total:.3f}")
-print(f"  Parameters: {len(res_het.b)}")
+print(f"\n  Log-likelihood: {res_het.loglik * res_het.n_obs:.3f}")
+print(f"  Parameters: {len(res_het.params)}")
 print(f"  Time: {t_het:.1f}s")
 
 # ============================================================
@@ -106,8 +106,8 @@ model_full = MNPModel(
 res_full = model_full.fit()
 t_full = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_full.ll_total:.3f}")
-print(f"  Parameters: {len(res_full.b)}")
+print(f"\n  Log-likelihood: {res_full.loglik * res_full.n_obs:.3f}")
+print(f"  Parameters: {len(res_full.params)}")
 print(f"  Time: {t_full:.1f}s")
 
 # ============================================================
@@ -119,9 +119,9 @@ print("=" * 60)
 
 print(f"\n  {'Model':<15s} {'n_params':>10s} {'LL':>12s} {'Time(s)':>10s}")
 print(f"  {'-'*49}")
-print(f"  {'IID':<15s} {len(res_iid.b):>10d} {res_iid.ll_total:>12.3f} {t_iid:>10.1f}")
-print(f"  {'Heteronly':<15s} {len(res_het.b):>10d} {res_het.ll_total:>12.3f} {t_het:>10.1f}")
-print(f"  {'Full Cov':<15s} {len(res_full.b):>10d} {res_full.ll_total:>12.3f} {t_full:>10.1f}")
+print(f"  {'IID':<15s} {len(res_iid.params):>10d} {res_iid.loglik * res_iid.n_obs:>12.3f} {t_iid:>10.1f}")
+print(f"  {'Heteronly':<15s} {len(res_het.params):>10d} {res_het.loglik * res_het.n_obs:>12.3f} {t_het:>10.1f}")
+print(f"  {'Full Cov':<15s} {len(res_full.params):>10d} {res_full.loglik * res_full.n_obs:>12.3f} {t_full:>10.1f}")
 
 # ============================================================
 #  Step 5: When to use each

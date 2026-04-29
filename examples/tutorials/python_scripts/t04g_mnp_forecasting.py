@@ -49,8 +49,8 @@ model = MNPModel(
     control=MNPControl(iid=True, maxiter=100, verbose=1, seed=42),
 )
 results = model.fit()
-print(f"\n  Log-likelihood: {results.ll_total:.3f}")
-print(f"  Estimated beta: {results.b}")
+print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
+print(f"  Estimated beta: {results.params}")
 
 # ============================================================
 #  Step 2: Build X_new manually

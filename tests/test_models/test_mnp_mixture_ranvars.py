@@ -272,8 +272,8 @@ def test_table2_model_d_with_auto_ranvars_lower_LL(travelmode_path):
     # Do NOT widen this tolerance to make it pass — if the LL doesn't
     # reach this range, the residual is reported as evidence the
     # remaining gap is structural.
-    assert -636.0 <= results.ll_total <= -633.0, (
-        f"Model (d) auto-ranvars LL = {results.ll_total:.3f}, "
+    assert -636.0 <= results.loglik * results.n_obs <= -633.0, (
+        f"Model (d) auto-ranvars LL = {results.loglik * results.n_obs:.3f}, "
         f"expected within [-636, -633] (paper target -634.975)"
     )
 
@@ -337,9 +337,9 @@ def test_table2_model_d_legacy_naming_still_passes(travelmode_path):
     # LL parity — the two paths target the same global optimum but
     # may stop at slightly different local optima due to the legacy
     # form's extra (redundant) betas.
-    assert abs(res_new.ll_total - res_legacy.ll_total) < 1.5, (
-        f"new LL={res_new.ll_total:.6f}, legacy LL={res_legacy.ll_total:.6f}, "
-        f"delta={res_new.ll_total - res_legacy.ll_total:+.4f}"
+    assert abs(res_new.loglik * res_new.n_obs - res_legacy.loglik * res_legacy.n_obs) < 1.5, (
+        f"new LL={res_new.loglik * res_new.n_obs:.6f}, legacy LL={res_legacy.loglik * res_legacy.n_obs:.6f}, "
+        f"delta={res_new.loglik * res_new.n_obs - res_legacy.loglik * res_legacy.n_obs:+.4f}"
     )
 
 
