@@ -12,8 +12,9 @@ to work and produces an identical fit.
 
 from __future__ import annotations
 
-import pytest
 import warnings
+
+import pytest
 
 from pybhatlib.models.mnp import MNPControl, MNPModel
 
@@ -70,10 +71,10 @@ SPEC_SEG_SUFFIX = {
 }
 
 
-def _make_model(spec, nseg, ranvars, travelmode_path, **ctrl_kwargs):
+def _make_model(spec, nseg, ranvars, travelmode_path, mix=True, **ctrl_kwargs):
     ctrl = MNPControl(
         iid=False,
-        mix=True,
+        mix=mix,
         nseg=nseg,
         maxiter=10,
         verbose=0,
@@ -428,5 +429,134 @@ class TestStripSegmentSuffixFix:
             _make_model(
                 SPEC_BASE, nseg=2,
                 ranvars=["OVTT"],
+                travelmode_path=travelmode_path,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Pre-merge polish (post-Opus-review): warning attribution, edge-case tests,
+# direct _strip_segment_suffix coverage, mix-flag normalization.
+# ---------------------------------------------------------------------------
+
+
+class TestStripSegmentSuffixDirect:
+    """Direct unit tests for the static ``_strip_segment_suffix`` method.
+
+    Covers the docstring guarantee that legacy plain-digit form is **not**
+    recognised when ``var_names=None`` — the static method is reachable
+    without instantiating an MNPModel.
+    """
+
+    def test_explicit_seg_form_recognised_without_var_names(self):
+        assert MNPModel._strip_segment_suffix("OVTT_seg1") == "OVTT"
+        assert MNPModel._strip_segment_suffix("OVTT_s2") == "OVTT"
+
+    def test_legacy_digit_form_not_recognised_without_var_names(self):
+        # Without var_names, the digit-strip must NOT fire — even for
+        # cases where there is no false-strip risk like AGE45.
+        assert MNPModel._strip_segment_suffix("OVTT1") is None
+        assert MNPModel._strip_segment_suffix("AGE45") is None
+
+    def test_legacy_digit_form_with_var_names_requires_both(self):
+        # Strip fires only when BOTH name and base appear in var_names.
+        assert (
+            MNPModel._strip_segment_suffix("OVTT1", var_names=["OVTT", "OVTT1"])
+            == "OVTT"
+        )
+        # Base missing — no strip.
+        assert (
+            MNPModel._strip_segment_suffix("OVTT1", var_names=["OVTT1"])
+            is None
+        )
+        # Name missing from var_names — no strip (prevents AGE45→AGE4 case).
+        assert (
+            MNPModel._strip_segment_suffix("AGE45", var_names=["AGE4"])
+            is None
+        )
+
+    def test_no_match_returns_none(self):
+        assert MNPModel._strip_segment_suffix("OVTT") is None
+        assert MNPModel._strip_segment_suffix("") is None
+
+
+class TestMixFlagNormalization:
+    """Regression tests for the ``mix=True, ranvar_indices=None`` normalization."""
+
+    def test_mix_true_with_none_ranvars_normalizes_mix_to_false(
+        self, travelmode_path
+    ):
+        """``MNPControl(mix=True)`` with ``ranvars=None`` should not leave
+        the model in the meaningless ``mix=True, ranvar_indices=None``
+        state — ``self.control.mix`` is normalized to ``False``.
+        """
+        m = _make_model(
+            SPEC_BASE, nseg=1, ranvars=None,
+            travelmode_path=travelmode_path,
+        )
+        assert m.ranvar_indices is None
+        assert m.control.mix is False
+
+    def test_mix_true_with_empty_ranvars_normalizes_mix_to_false(
+        self, travelmode_path
+    ):
+        """Same normalization for ``ranvars=[]`` (empty list)."""
+        m = _make_model(
+            SPEC_BASE, nseg=1, ranvars=[],
+            travelmode_path=travelmode_path,
+        )
+        assert m.ranvar_indices is None
+        assert m.control.mix is False
+
+
+class TestDuplicateWarningAttribution:
+    """The auto-expansion warning must fire ONLY when expansion actually ran.
+
+    User-supplied literal duplicates (``ranvars=["OVTT", "OVTT"]`` with
+    ``nseg=1``) are a deliberate choice and must not be misattributed
+    to auto-expansion.
+    """
+
+    def test_user_duplicates_nseg1_no_warning(self, travelmode_path):
+        # No nseg>1 trigger and no auto-expansion → no warning,
+        # even though resolved indices contain duplicates.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            m = _make_model(
+                SPEC_BASE, nseg=1,
+                ranvars=["OVTT", "OVTT"],
+                travelmode_path=travelmode_path,
+            )
+        assert m.ranvar_indices == [
+            m.var_names.index("OVTT"),
+            m.var_names.index("OVTT"),
+        ]
+
+    def test_auto_expansion_duplicates_still_warns(self, travelmode_path):
+        # The original auto-expansion path still emits the warning.
+        with pytest.warns(RuntimeWarning, match="auto-expansion produced"):
+            _make_model(
+                SPEC_BASE, nseg=2,
+                ranvars=["OVTT"],
+                travelmode_path=travelmode_path,
+            )
+
+
+class TestNseg1ExplicitSuffixHelpfulError:
+    """Pre-merge UX fix: nseg=1 + explicit ``_seg``/``_s`` suffix gives a
+    targeted hint pointing at the nseg=1 limitation.
+
+    Note: the legacy plain-digit form (e.g. ``"OVTT1"``) only triggers
+    ``_strip_segment_suffix`` when both ``"OVTT1"`` and ``"OVTT"`` appear
+    in ``var_names``; with nseg=1 + SPEC_BASE that condition cannot be
+    met, so the hint is reachable only via the explicit form.
+    """
+
+    def test_nseg1_explicit_seg_suffix_error_mentions_nseg(self, travelmode_path):
+        # ``ranvars=["OVTT_seg1"]`` with nseg=1 and only "OVTT" in var_names —
+        # the error should hint at the nseg=1 limitation.
+        with pytest.raises(ValueError, match="nseg=1"):
+            _make_model(
+                SPEC_BASE, nseg=1,
+                ranvars=["OVTT_seg1"],
                 travelmode_path=travelmode_path,
             )

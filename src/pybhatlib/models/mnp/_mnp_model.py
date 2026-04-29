@@ -23,6 +23,12 @@ from pybhatlib.models.mnp._mnp_control import MNPControl
 from pybhatlib.models.mnp._mnp_loglik import count_params, mnp_loglik
 from pybhatlib.models.mnp._mnp_results import MNPResults
 
+# Regex for explicit segment-suffix forms: ``name_seg<N>`` or ``name_s<N>``.
+# Matches ``OVTT_seg1``, ``OVTT_s2``, etc. but NOT ``AGE45`` or ``AGE4``.
+# Reference: ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``
+# (GAUSS ``ranvars = { OVTT1 OVTT2 }`` pattern).
+_EXPLICIT_SEG_RE = re.compile(r"^(.+?)_(?:seg|s)\d+$")
+
 
 class MNPModel(BaseModel):
     """Multinomial Probit model.
@@ -133,18 +139,30 @@ class MNPModel(BaseModel):
         if isinstance(ranvars, str):
             ranvars = [ranvars]
 
+        ranvars_expanded = False
         if ranvars is not None and len(ranvars) > 0:
             self.control.mix = True
-            self.ranvar_indices = self._resolve_ranvar_indices(ranvars)
+            self.ranvar_indices, ranvars_expanded = self._resolve_ranvar_indices(
+                ranvars
+            )
         else:
             self.ranvar_indices = None
 
-        # Warn when auto-expansion produced duplicate column indices, which
-        # makes the random-coefficient Omega rank-deficient.  This happens
-        # when a base name (e.g. "OVTT") is expanded across ``nseg`` segments
-        # but all segments share the same column in the design matrix.
-        if self.ranvar_indices and len(set(self.ranvar_indices)) < len(
-            self.ranvar_indices
+        # Normalize mix flag so downstream display/branching never sees
+        # the meaningless ``mix=True, ranvar_indices=None`` combination
+        # (e.g. when the user sets ``mix=True`` on the control but passes
+        # ``ranvars=None`` or ``ranvars=[]``).
+        if self.ranvar_indices is None:
+            self.control.mix = False
+
+        # Warn only when auto-expansion produced duplicate column indices,
+        # which makes the random-coefficient Omega rank-deficient. User-
+        # supplied duplicate names (e.g. ``ranvars=["OVTT", "OVTT"]``) are a
+        # deliberate choice and not flagged here.
+        if (
+            ranvars_expanded
+            and self.ranvar_indices
+            and len(set(self.ranvar_indices)) < len(self.ranvar_indices)
         ):
             warnings.warn(
                 "Mixture ranvars auto-expansion produced duplicate column indices "
@@ -172,7 +190,9 @@ class MNPModel(BaseModel):
         self.y = np.argmax(choice_data, axis=1).astype(np.int64)
         self.N = len(self.y)
 
-    def _resolve_ranvar_indices(self, ranvars: list[str]) -> list[int]:
+    def _resolve_ranvar_indices(
+        self, ranvars: list[str]
+    ) -> tuple[list[int], bool]:
         """Resolve user-supplied ranvar names into indices in ``var_names``.
 
         Implements the MNP-006 (M1) auto-expansion ergonomic fix.
@@ -186,7 +206,7 @@ class MNPModel(BaseModel):
         Each user-supplied name ``rv`` is classified as:
 
         - **base** — appears in ``var_names`` and does NOT end with a
-          positive integer / segment suffix (e.g. ``"OVTT"``).
+          digit or an explicit ``_seg``/``_s`` suffix (e.g. ``"OVTT"``).
           Auto-expanded to one slot per segment when ``nseg > 1``.
         - **segment-suffixed (literal)** — appears in ``var_names`` and
           ends with a digit or ``_sN`` suffix (e.g. ``"OVTT1"``,
@@ -197,6 +217,19 @@ class MNPModel(BaseModel):
           Used as-is for that base index, no expansion.
         - Otherwise → ``ValueError``.
 
+        is_base heuristic limitation
+        ----------------------------
+        A name is treated as a "base" eligible for auto-expansion only
+        when it neither matches the explicit ``_seg``/``_s`` regex nor
+        ends in a digit. This means a name like ``"AGE45"`` (ends in
+        digit) is **never** auto-expanded — even when the user might
+        want a per-segment AGE45 random coefficient. Conversely, a name
+        like ``"X1Y"`` (does not end in digit) **is** auto-expanded if
+        ``nseg > 1``, even when the user only wanted a single column.
+        If you need the non-default behavior, list explicit segment
+        names (e.g. ``"AGE45_seg1"``, ``"AGE45_seg2"``) in spec and
+        pass them in ``ranvars`` directly.
+
         Parameters
         ----------
         ranvars : list of str
@@ -204,10 +237,14 @@ class MNPModel(BaseModel):
 
         Returns
         -------
-        list of int
+        indices : list of int
             Resolved indices into ``self.var_names``. When auto-expansion
-            fires, length is ``n_unique_base_names * nseg``; otherwise
-            ``len(ranvars)``.
+            fires, length is ``n_base_names * nseg + n_non_base_names``
+            (no dedup of input names); otherwise ``len(ranvars)``.
+        expanded : bool
+            ``True`` iff auto-expansion replicated at least one base
+            index across segments. Used by ``__init__`` to attribute
+            duplicate-index warnings correctly.
 
         Raises
         ------
@@ -247,6 +284,19 @@ class MNPModel(BaseModel):
                 is_base.append(False)  # explicit segment form
                 continue
 
+            # Targeted hint when the failure is the nseg=1 + legacy-suffix
+            # case (e.g. user passes ranvars=["OVTT1"] with nseg=1 and only
+            # "OVTT" in var_names): with nseg=1 the segment suffix has no
+            # semantic meaning, so we don't auto-strip it.
+            if nseg == 1 and looks_segment_suffixed and base in self.var_names:
+                raise ValueError(
+                    f"Random variable '{rv}' not found in var_names "
+                    f"(with nseg=1, segment suffixes are not auto-stripped). "
+                    f"Use the literal var_name '{base}' instead, or set "
+                    f"nseg > 1 to enable suffix resolution. "
+                    f"var_names: {self.var_names}"
+                )
+
             raise ValueError(
                 f"Random variable '{rv}' not found in var_names: "
                 f"{self.var_names}"
@@ -255,22 +305,18 @@ class MNPModel(BaseModel):
         # Auto-expand base names when nseg > 1: replicate each base
         # index ``nseg`` times so that every mixture segment receives
         # its own random-coefficient slot.
+        expanded = False
         if nseg > 1 and any(is_base):
-            expanded: list[int] = []
+            expanded = True
+            replicated: list[int] = []
             for idx, base_flag in zip(resolved, is_base):
                 if base_flag:
-                    expanded.extend([idx] * nseg)
+                    replicated.extend([idx] * nseg)
                 else:
-                    expanded.append(idx)
-            resolved = expanded
+                    replicated.append(idx)
+            resolved = replicated
 
-        return resolved
-
-    # Regex for explicit segment-suffix forms: ``name_seg<N>`` or ``name_s<N>``.
-    # Matches ``OVTT_seg1``, ``OVTT_s2``, etc. but NOT ``AGE45`` or ``AGE4``.
-    # Reference: ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``
-    # (GAUSS ``ranvars = { OVTT1 OVTT2 }`` pattern).
-    _EXPLICIT_SEG_RE = re.compile(r"^(.+?)_(?:seg|s)(\d+)$")
+        return resolved, expanded
 
     @staticmethod
     def _strip_segment_suffix(
@@ -308,7 +354,7 @@ class MNPModel(BaseModel):
             Base name if a suffix was stripped, else ``None``.
         """
         # 1. Explicit ``_seg<N>`` / ``_s<N>`` form.
-        m = MNPModel._EXPLICIT_SEG_RE.match(name)
+        m = _EXPLICIT_SEG_RE.match(name)
         if m:
             return m.group(1)
 
