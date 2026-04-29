@@ -449,6 +449,13 @@ def _rect_prob_and_grad(
 
         # Full-K vertex: all dims have finite limits in this combination.
         prob_v, ga_v, gv_v = grad_kernel(c, sigma)
+        # Short-circuit denormal / underflowed vertices: ga_v from ME/OVUS
+        # at deep tails can be subnormal noise that contaminates the
+        # accumulated dP_dlower/dP_dupper without contributing to prob.
+        # Mirrors the early-return in _grad_me_adjoint at line 380
+        # (PR #8 review P1).
+        if prob_v < 1e-300:
+            continue
         prob += sign * prob_v
         for d in range(K):
             if lower_mask[d]:

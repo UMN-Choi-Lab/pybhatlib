@@ -242,17 +242,20 @@ def _rect_prob_finite_only(
 ) -> float:
     """Compute ``P(lower <= eps <= upper)`` while tolerating ``+/-inf`` bounds.
 
-    The shipped ``mvncd_rect`` skips inclusion-exclusion vertices that
-    select a ``-inf`` lower bound but does not collapse ``+inf`` upper
-    bounds; the underlying ``mvncd`` returns ``NaN`` when the limit
-    vector contains ``+inf`` and ``sigma`` has off-diagonal mass, which
-    silently corrupts the MORP forward log-likelihood.
+    Since PR #9 ``mvncd_rect`` natively collapses ``+inf`` upper-bound
+    dimensions via the ``_drop_inf_dims`` guard inside ``mvncd``.  We
+    therefore drop fully-open dims (``[-inf, +inf]``) here for the cheap
+    case, short-circuit on empty intervals, and delegate everything else
+    directly to ``mvncd_rect`` — which now uses the *same* marginalize-
+    via-submatrix approach as the analytic path
+    (``_morp_grad_analytic._rect_prob_and_grad``).  This eliminates the
+    silent forward/analytic asymmetry under approximate MVNCD methods
+    (ME / OVUS) that the previous sign-flip implementation introduced.
 
-    This helper marginalizes any dimension whose upper bound is
-    ``+inf`` (and sets the integration to 0 if its lower is also
-    ``+inf``), then delegates to ``mvncd_rect`` on the surviving
-    sub-block. The marginal of an MVN over ``Sigma`` is the MVN with
-    the corresponding sub-block of ``Sigma``.
+    See PR #8 review (Opus, P0): the prior sign-flip + sub-Sigma was
+    individually correct under exact MVN-CDF but produced numerically
+    different ``P`` values from the analytic path under ME/OVUS, since
+    the two paths used different K-dimensional kernels.
     """
     K = len(lower)
     keep = []
@@ -267,48 +270,22 @@ def _rect_prob_finite_only(
         if np.isposinf(l_d) or np.isneginf(u_d):
             # Empty interval: probability is exactly 0.
             return 0.0
-        if np.isposinf(u_d):
-            # One-sided lower truncation: split into 1 - P(eps <= l).
-            # Easier: keep dim, but mvncd_rect can't take +inf upper.
-            # We rewrite via P(lower <= eps) = 1 - P(eps < lower); but
-            # the multi-dim case is messier. Use sign flip: replace
-            # eps_d -> -eps_d (flip sigma's row/col d signs), which
-            # turns the half-line [l, inf) into (-inf, -l]. We avoid
-            # this complexity for now by collapsing only fully-open
-            # dims; for half-open with finite lower we need a fix.
-            keep.append(d)
-            new_lower.append(l_d)
-            new_upper.append(u_d)
-        else:
-            keep.append(d)
-            new_lower.append(l_d)
-            new_upper.append(u_d)
+        keep.append(d)
+        new_lower.append(l_d)
+        new_upper.append(u_d)
 
     if len(keep) == 0:
         return 1.0
 
-    # Convert (-inf, +inf) cases on a per-dim basis using sign flip:
-    # If a dim has +inf upper but finite lower, flip eps_d -> -eps_d so
-    # the integration becomes (-inf, -lower]. This requires flipping the
-    # sign of row/col d in sigma but preserves the MVN structure.
-    K_a = len(keep)
     sub_idx = np.array(keep, dtype=np.int64)
     sigma_sub = sigma[np.ix_(sub_idx, sub_idx)].copy()
     lower_a = np.asarray(new_lower, dtype=np.float64)
     upper_a = np.asarray(new_upper, dtype=np.float64)
 
-    flip = np.isposinf(upper_a)
-    if np.any(flip):
-        # Apply -1 to flipped rows/cols of sigma_sub; the (i,i) double
-        # flip cancels, so diagonal entries are unaffected.
-        sign_vec = np.where(flip, -1.0, 1.0)
-        sigma_sub = sigma_sub * np.outer(sign_vec, sign_vec)
-        # Swap and negate bounds where flipped: new_lower = -inf,
-        # new_upper = -old_lower.
-        new_upper_arr = np.where(flip, -lower_a, upper_a)
-        new_lower_arr = np.where(flip, -np.inf, lower_a)
-        lower_a, upper_a = new_lower_arr, new_upper_arr
-
+    # ``mvncd_rect`` handles any remaining ``+inf`` upper bound natively
+    # (via ``mvncd``'s ``_drop_inf_dims`` guard) — same path the analytic
+    # gradient takes — so the forward and analytic K-D evaluations now
+    # share kernels regardless of method.
     return mvncd_rect(
         xp.array(lower_a), xp.array(upper_a), xp.array(sigma_sub),
         method=control.method, xp=xp,
@@ -329,8 +306,6 @@ def _numerical_gradient_morp(
     eps = 1e-6
     n = len(theta)
     grad = np.zeros(n, dtype=np.float64)
-
-    f0 = morp_loglik(theta, X, y, n_dims, n_categories, n_beta, control, xp=xp)
 
     for i in range(n):
         theta_plus = theta.copy()

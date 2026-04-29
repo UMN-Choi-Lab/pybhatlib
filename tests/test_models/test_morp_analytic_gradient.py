@@ -195,6 +195,53 @@ def test_analytic_grad_matches_fd_synthetic_flexible(seed):
 
 
 # ---------------------------------------------------------------------------
+# (2b) K=3 synthetic — exercises the +inf-collapse path and inclusion-exclusion
+# fan-out across multiple boundary categories (PR #8 review P1).
+# ---------------------------------------------------------------------------
+
+
+def test_analytic_grad_matches_fd_synthetic_k3_mixed_boundaries():
+    """K=3 synthetic FD-vs-analytic with mixed boundary categories.
+
+    Pre-fix, the K=3 branch of ``_rect_prob_and_grad`` (where the +inf
+    collapse runs across multiple dims and ``_collapsed_vertex_grad`` is
+    actually exercised) was only verified by the slow DINING test.  This
+    fast test triggers the same code paths with synthetic data so a
+    regression is caught in CI.
+    """
+    xp = get_backend("numpy")
+    n_beta = 2
+    n_dims = 3
+    # Mixed J_d ensures some y_d hit the bottom category (lower=-inf) and
+    # some hit the top (upper=+inf), so both boundary branches run.
+    n_categories = [3, 4, 3]
+    X, y = _synth_morp_data(
+        n=24, n_dims=n_dims, n_categories=tuple(n_categories), n_beta=n_beta,
+        seed=33,
+    )
+
+    ctrl = MORPControl(
+        iid=False, method="ovus", spherical=True, analytic_grad=True, verbose=0,
+    )
+    theta = _make_theta(
+        n_beta, n_dims, n_categories, ctrl, seed=303, perturb_scale=0.05,
+    )
+
+    _, grad_a = morp_loglik(
+        theta, X, y, n_dims, n_categories, n_beta, ctrl,
+        return_gradient=True, xp=xp,
+    )
+
+    def fn(t):
+        return morp_loglik(
+            t, X, y, n_dims, n_categories, n_beta, ctrl, xp=xp,
+        )
+
+    grad_fd = _central_fd_grad(theta, fn, eps=1e-6)
+    np.testing.assert_allclose(grad_a, grad_fd, atol=1e-4, rtol=0)
+
+
+# ---------------------------------------------------------------------------
 # (3) Threshold-block focused regression
 # ---------------------------------------------------------------------------
 
@@ -415,7 +462,12 @@ def test_morp_dining_fit_runtime_improves():
     _build(analytic=False).fit()
     t_fd = time.time() - t0
 
-    # Allow a 5% margin: analytic should at minimum be near FD speed.
-    assert t_analytic < 1.05 * t_fd, (
-        f"Analytic ({t_analytic:.2f}s) not faster than FD ({t_fd:.2f}s)"
+    # The PR's empirical claim is a ~20x speedup on DINING; tighten the
+    # assertion so a regression that loses 90% of the gain still trips.
+    # Headroom: factor 2 (instead of 20) is conservative — a noisy slow
+    # run still passes, but a flat or actually-slower analytic path would
+    # fail loudly (PR #8 review P1).
+    assert t_analytic < 0.5 * t_fd, (
+        f"Analytic ({t_analytic:.2f}s) lost the FD speedup; "
+        f"expected at least 2x faster, got {t_fd / max(t_analytic, 1e-9):.2f}x"
     )
