@@ -6,8 +6,10 @@ that touch the MNP log-likelihood / probability paths. Values come from
 BHATLIB paper Table 2 (TRAVELMODE, 1125 observations, 3 alternatives).
 
 Model (d) (mixture-of-normals) has a documented 2.0-unit tolerance due to
-local-optima sensitivity and the pending mixture-spec propagation work
-tracked as P6 in the UTA feedback plan.
+local-optima sensitivity. MNP-006 (M1) landed the ergonomic ranvars
+auto-expansion across segments; the remaining gap to the paper LL is
+structural (shared/varying coefficient handling, deferred to a separate
+phase — see ``docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md``).
 """
 
 from __future__ import annotations
@@ -108,19 +110,30 @@ def test_table2_model_c_random_coef(table2_targets, travelmode_path):
 
 
 # Current Python baseline for Model (d) mixture — pins refactor drift.
-# Paper target is -634.975 (±2); current Python gives ~-629.684 due to the
-# known mixture ranvars-propagation gap tracked as P6 in the UTA feedback
-# plan (and documented in docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md).
-_MODEL_D_BASELINE_LL = -629.684
+# Paper target is -634.975 (±2); current Python gives ~-627.885 with the
+# MNP-006 (M1) ranvars auto-expansion (replicates each base ranvar across
+# segments). The residual gap to the paper target (~7 LL units) is
+# structural — the GAUSS run has a 1-D random coefficient per segment with
+# segment-specific OVTT columns (one zeroed per segment in ivunord), while
+# pybhatlib's shared X forces a 2-D random coefficient over duplicate
+# columns. Closing this requires the shared/varying refactor in
+# ``docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md`` (a separate phase).
+_MODEL_D_BASELINE_LL = -627.885
 
 
 @pytest.mark.slow
 @pytest.mark.xfail(
-    reason="P6 mixture ranvars propagation pending; current LL ~-629.7 vs paper -634.975",
+    reason=(
+        "Mixture shared/varying coefficient refactor pending; current LL "
+        "~-627.9 vs paper -634.975. M1 ergonomic auto-expansion landed; "
+        "the residual gap is structural."
+    ),
     strict=False,
 )
 def test_table2_model_d_mixture_paper_target(table2_targets, travelmode_path):
-    """Asserts BHATLIB paper Model (d) LL. Expected to fail until P6 lands."""
+    """Asserts BHATLIB paper Model (d) LL. Expected to fail until the
+    shared/varying coefficient refactor lands.
+    """
     target = table2_targets["models"]["d_mixture"]
     tol = target.get("ll_tolerance", 2.0)
     results = _fit_model(

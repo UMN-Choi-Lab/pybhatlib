@@ -6,7 +6,9 @@ Provides a Pythonic API matching BHATLIB's mnpFit procedure.
 from __future__ import annotations
 
 import os
+import re
 import time
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -20,6 +22,12 @@ from pybhatlib.models._base import BaseModel
 from pybhatlib.models.mnp._mnp_control import MNPControl
 from pybhatlib.models.mnp._mnp_loglik import count_params, mnp_loglik
 from pybhatlib.models.mnp._mnp_results import MNPResults
+
+# Regex for explicit segment-suffix forms: ``name_seg<N>`` or ``name_s<N>``.
+# Matches ``OVTT_seg1``, ``OVTT_s2``, etc. but NOT ``AGE45`` or ``AGE4``.
+# Reference: ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``
+# (GAUSS ``ranvars = { OVTT1 OVTT2 }`` pattern).
+_EXPLICIT_SEG_RE = re.compile(r"^(.+?)_(?:seg|s)\d+$")
 
 
 class MNPModel(BaseModel):
@@ -116,22 +124,57 @@ class MNPModel(BaseModel):
 
         self.n_beta = len(self.var_names)
 
-        # Parse random variables
+        # Parse random variables.
+        #
+        # MNP-006 (M1) ergonomic auto-expansion across mixture segments:
+        # when ``control.nseg > 1`` and the user supplies a base ranvar
+        # name (e.g. ``"OVTT"``) that is not segment-suffixed in the
+        # spec, the index is repeated ``nseg`` times so each segment
+        # gets its own random-coefficient slot — mirroring the GAUSS
+        # user-facing pattern ``ranvars = { OVTT1 OVTT2 }`` from
+        # ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``.
+        #
+        # Legacy segment-suffixed input (``ranvars=["OVTT1", "OVTT2"]``
+        # with separate spec entries) continues to work unchanged.
         if isinstance(ranvars, str):
             ranvars = [ranvars]
 
+        ranvars_expanded = False
         if ranvars is not None and len(ranvars) > 0:
             self.control.mix = True
-            self.ranvar_indices = []
-            for rv in ranvars:
-                if rv in self.var_names:
-                    self.ranvar_indices.append(self.var_names.index(rv))
-                else:
-                    raise ValueError(
-                        f"Random variable '{rv}' not found in var_names: {self.var_names}"
-                    )
+            self.ranvar_indices, ranvars_expanded = self._resolve_ranvar_indices(
+                ranvars
+            )
         else:
             self.ranvar_indices = None
+
+        # Normalize mix flag so downstream display/branching never sees
+        # the meaningless ``mix=True, ranvar_indices=None`` combination
+        # (e.g. when the user sets ``mix=True`` on the control but passes
+        # ``ranvars=None`` or ``ranvars=[]``).
+        if self.ranvar_indices is None:
+            self.control.mix = False
+
+        # Warn only when auto-expansion produced duplicate column indices,
+        # which makes the random-coefficient Omega rank-deficient. User-
+        # supplied duplicate names (e.g. ``ranvars=["OVTT", "OVTT"]``) are a
+        # deliberate choice and not flagged here.
+        if (
+            ranvars_expanded
+            and self.ranvar_indices
+            and len(set(self.ranvar_indices)) < len(self.ranvar_indices)
+        ):
+            warnings.warn(
+                "Mixture ranvars auto-expansion produced duplicate column indices "
+                f"{self.ranvar_indices}. The resulting random-coefficient Omega is "
+                "rank-deficient and the optimizer can only recover effective scalar "
+                "variance per segment. To fit a model with truly per-segment random "
+                "coefficients, list segment-suffixed names in spec (e.g. OVTT_seg1, "
+                "OVTT_seg2) and pass them explicitly. See "
+                "docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         # Extract choice vector y (0-based index of chosen alternative)
         self._build_choice_vector()
@@ -146,6 +189,187 @@ class MNPModel(BaseModel):
         choice_data = self.data[self.alternatives].values.astype(np.float64)
         self.y = np.argmax(choice_data, axis=1).astype(np.int64)
         self.N = len(self.y)
+
+    def _resolve_ranvar_indices(
+        self, ranvars: list[str]
+    ) -> tuple[list[int], bool]:
+        """Resolve user-supplied ranvar names into indices in ``var_names``.
+
+        Implements the MNP-006 (M1) auto-expansion ergonomic fix.
+        Mirrors the GAUSS pattern ``ranvars = { OVTT1 OVTT2 }`` from
+        ``MNP Table2 d.gss:113`` — with ``control.nseg > 1`` the user
+        may write ``ranvars=["OVTT"]`` (base name) and the index is
+        replicated across segments automatically.
+
+        Resolution rules
+        ----------------
+        Each user-supplied name ``rv`` is classified as:
+
+        - **base** — appears in ``var_names`` and does NOT end with a
+          digit or an explicit ``_seg``/``_s`` suffix (e.g. ``"OVTT"``).
+          Auto-expanded to one slot per segment when ``nseg > 1``.
+        - **segment-suffixed (literal)** — appears in ``var_names`` and
+          ends with a digit or ``_sN`` suffix (e.g. ``"OVTT1"``,
+          ``"OVTT_s2"``). Used as-is, no expansion.
+        - **segment-suffixed (inferred)** — does not appear in
+          ``var_names``, but stripping a trailing digit or ``_sN``
+          yields a base that does (e.g. ``"OVTT1"`` → ``"OVTT"``).
+          Used as-is for that base index, no expansion.
+        - Otherwise → ``ValueError``.
+
+        is_base heuristic limitation
+        ----------------------------
+        A name is treated as a "base" eligible for auto-expansion only
+        when it neither matches the explicit ``_seg``/``_s`` regex nor
+        ends in a digit. This means a name like ``"AGE45"`` (ends in
+        digit) is **never** auto-expanded — even when the user might
+        want a per-segment AGE45 random coefficient. Conversely, a name
+        like ``"X1Y"`` (does not end in digit) **is** auto-expanded if
+        ``nseg > 1``, even when the user only wanted a single column.
+        If you need the non-default behavior, list explicit segment
+        names (e.g. ``"AGE45_seg1"``, ``"AGE45_seg2"``) in spec and
+        pass them in ``ranvars`` directly.
+
+        Parameters
+        ----------
+        ranvars : list of str
+            User-supplied random-coefficient variable names.
+
+        Returns
+        -------
+        indices : list of int
+            Resolved indices into ``self.var_names``. When auto-expansion
+            fires, length is ``n_base_names * nseg + n_non_base_names``
+            (no dedup of input names); otherwise ``len(ranvars)``.
+        expanded : bool
+            ``True`` iff auto-expansion replicated at least one base
+            index across segments. Used by ``__init__`` to attribute
+            duplicate-index warnings correctly.
+
+        Raises
+        ------
+        ValueError
+            When a name (or its inferred base) is not in ``var_names``.
+        """
+        nseg = self.control.nseg
+        resolved: list[int] = []
+        # Classify per-name so we know which to auto-expand.
+        is_base: list[bool] = []
+
+        for rv in ranvars:
+            base = self._strip_segment_suffix(rv, var_names=self.var_names)
+            looks_segment_suffixed = base is not None
+
+            if rv in self.var_names:
+                resolved.append(self.var_names.index(rv))
+                # A name qualifies as a "base" for per-segment auto-expansion
+                # only when it carries NO segment suffix (explicit or legacy).
+                # Names that end in digits but are not recognised as a legacy
+                # segment form (e.g. ``"AGE45"`` when ``"AGE4"`` is absent
+                # from spec) are treated as literal variable names, NOT bases
+                # — even though ``_strip_segment_suffix`` returns None for them.
+                # We detect the "ends-in-digits but not a recognised suffix"
+                # case by checking whether the raw name ends in a digit.
+                ends_in_digit = rv[-1].isdigit() if rv else False
+                # Treat as base only when no suffix at all (no trailing digits,
+                # no explicit _seg/_s form).
+                is_base.append(not looks_segment_suffixed and not ends_in_digit)
+                continue
+
+            # Not literally in var_names — try base lookup (only
+            # meaningful when nseg > 1; for nseg == 1 the segment
+            # suffix has no semantic meaning).
+            if nseg > 1 and looks_segment_suffixed and base in self.var_names:
+                resolved.append(self.var_names.index(base))
+                is_base.append(False)  # explicit segment form
+                continue
+
+            # Targeted hint when the failure is the nseg=1 + legacy-suffix
+            # case (e.g. user passes ranvars=["OVTT1"] with nseg=1 and only
+            # "OVTT" in var_names): with nseg=1 the segment suffix has no
+            # semantic meaning, so we don't auto-strip it.
+            if nseg == 1 and looks_segment_suffixed and base in self.var_names:
+                raise ValueError(
+                    f"Random variable '{rv}' not found in var_names "
+                    f"(with nseg=1, segment suffixes are not auto-stripped). "
+                    f"Use the literal var_name '{base}' instead, or set "
+                    f"nseg > 1 to enable suffix resolution. "
+                    f"var_names: {self.var_names}"
+                )
+
+            raise ValueError(
+                f"Random variable '{rv}' not found in var_names: "
+                f"{self.var_names}"
+            )
+
+        # Auto-expand base names when nseg > 1: replicate each base
+        # index ``nseg`` times so that every mixture segment receives
+        # its own random-coefficient slot.
+        expanded = False
+        if nseg > 1 and any(is_base):
+            expanded = True
+            replicated: list[int] = []
+            for idx, base_flag in zip(resolved, is_base):
+                if base_flag:
+                    replicated.extend([idx] * nseg)
+                else:
+                    replicated.append(idx)
+            resolved = replicated
+
+        return resolved, expanded
+
+    @staticmethod
+    def _strip_segment_suffix(
+        name: str,
+        var_names: list[str] | None = None,
+    ) -> str | None:
+        """Return the base name when ``name`` carries a recognised segment suffix.
+
+        Recognised forms
+        ----------------
+        1. **Explicit suffix** — ``name_seg<N>`` or ``name_s<N>``
+           (e.g. ``"OVTT_seg1"``, ``"OVTT_s2"``).  Always recognised,
+           regardless of ``var_names``.
+
+        2. **Legacy GAUSS form** — plain trailing digits
+           (e.g. ``"OVTT1"``, ``"OVTT2"``).  Only recognised when *both*
+           the full name (``"OVTT1"``) **and** the base (``"OVTT"``)
+           appear in ``var_names``.  This prevents ``"AGE45"`` from being
+           silently stripped to ``"AGE4"`` when ``"AGE4"`` happens to be in
+           the spec.
+
+        Reference: ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``.
+
+        Parameters
+        ----------
+        name : str
+            Candidate ranvar name.
+        var_names : list of str, optional
+            Spec variable names known to the model.  Required for legacy-form
+            detection; if omitted the legacy form is **not** recognised.
+
+        Returns
+        -------
+        str or None
+            Base name if a suffix was stripped, else ``None``.
+        """
+        # 1. Explicit ``_seg<N>`` / ``_s<N>`` form.
+        m = _EXPLICIT_SEG_RE.match(name)
+        if m:
+            return m.group(1)
+
+        # 2. Legacy plain-digit form — only when BOTH name and base are in
+        #    var_names.  Prevents AGE45 → AGE4 false-strip.
+        if var_names is not None:
+            i = len(name)
+            while i > 0 and name[i - 1].isdigit():
+                i -= 1
+            if i < len(name) and i > 0:
+                base = name[:i]
+                if name in var_names and base in var_names:
+                    return base
+
+        return None
 
     def fit(self) -> MNPResults:
         """Estimate the MNP model.
