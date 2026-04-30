@@ -59,11 +59,13 @@ class MNPControl:
     se_method : str
         Standard-error method: "bhhh" (default, matches GAUSS _max_CovPar=2),
         "hessian" (inverse observed information), or "sandwich" (robust).
-        For "bhhh" and "sandwich", per-observation scores are computed by
-        numerical differencing of the per-observation log-likelihood at the
-        converged point (currently in parameterized theta space, then
-        delta-method-transformed to reporting space via the same Jacobian
-        used by "hessian"; unparameterized scoring is a planned follow-up).
+        Per-observation scores are computed by finite differencing the
+        per-observation log-likelihood in UNPARAMETERIZED space (the GAUSS
+        lpr1/lgd1 convention) at the converged estimate. The only
+        Jacobian step that survives is the BHATLIB sigma_1 normalization
+        (one scalar per block). There is no delta-method projection through
+        the spherical-Cholesky parameterization. See MNP-002b for the
+        plan-fidelity rationale.
 
         Note: the default changed from implicit Hessian (scipy inverse BFGS
         Hessian) to BHHH in the MNP-002 work. BHHH tends to produce larger,
