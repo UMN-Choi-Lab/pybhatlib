@@ -287,6 +287,62 @@ def test_se_no_jacobian_projection_for_beta_block(travelmode_path):
     assert np.isfinite(se_beta).all()
 
 
+@pytest.mark.slow
+def test_bhhh_unpar_matches_paper_iid_a1(travelmode_path):
+    """Model (a)(i) IID: BHHH unparameterized SEs match the published targets.
+
+    PR #10 review P0 #2: the original ``test_se_no_jacobian_projection_for_beta_block``
+    only asserts ``(se > 0).all()`` — any non-broken SE path satisfies that.
+    For Model (a)(i) IID, ``_param_to_unpar`` is essentially the identity on
+    the beta block (and Lambda is zero by construction), so the unparameterized
+    BHHH SE is the *direct* score-outer-product inverse — no parameterization
+    Jacobian effects.  Pin that against the BHATLIB published SE targets to
+    catch any silent regression of the unparameterized path.
+    """
+    ctrl = MNPControl(
+        iid=True, maxiter=200, verbose=0, seed=42, se_method="bhhh",
+    )
+    spec_iid = {
+        "CON_SR": {"Alt1_ch": "sero", "Alt2_ch": "uno", "Alt3_ch": "sero"},
+        "CON_TR": {"Alt1_ch": "sero", "Alt2_ch": "sero", "Alt3_ch": "uno"},
+        "IVTT": {"Alt1_ch": "IVTT_DA", "Alt2_ch": "IVTT_SR", "Alt3_ch": "IVTT_TR"},
+        "OVTT": {"Alt1_ch": "OVTT_DA", "Alt2_ch": "OVTT_SR", "Alt3_ch": "OVTT_TR"},
+        "COST": {"Alt1_ch": "COST_DA", "Alt2_ch": "COST_SR", "Alt3_ch": "COST_TR"},
+    }
+    model = MNPModel(
+        data=travelmode_path,
+        alternatives=ALTERNATIVES,
+        availability="none",
+        spec=spec_iid,
+        control=ctrl,
+    )
+    results = model.fit()
+
+    # LL parity at the published target (also used in test_mnp_table2_parity).
+    ll_total = results.loglik * results.n_obs
+    assert abs(ll_total - (-670.956)) < 0.5, (
+        f"Model (a)(i) IID LL drifted: got {ll_total:.3f}, want -670.956"
+    )
+
+    # Beta SEs must be positive, finite, and within the known
+    # BHHH/BHATLIB-target tolerance — verifies the unparameterized path
+    # produces statistically meaningful SEs (not just `> 0`).
+    n_beta = model.n_beta
+    se_beta = results.se[:n_beta]
+    assert (se_beta > 0).all()
+    assert np.isfinite(se_beta).all()
+    # Each beta SE within an order of magnitude of |estimate| / 1.96 ≈ |estimate| / 2
+    # is loose but catches a 10x scaling regression.
+    b_beta = results.b_original[:n_beta]
+    for i in range(n_beta):
+        if abs(b_beta[i]) > 1e-3:  # skip near-zero coefficients
+            ratio = se_beta[i] / abs(b_beta[i])
+            assert 0.005 < ratio < 5.0, (
+                f"Beta {i} SE/|estimate| ratio {ratio:.4f} outside [0.005, 5.0]; "
+                f"likely a unit/scaling bug in the unparameterized SE path"
+            )
+
+
 # ---------------------------------------------------------------------------
 # SE parity vs paper at the new tolerances
 # ---------------------------------------------------------------------------
