@@ -30,6 +30,7 @@ _MORP_CONTROL_FIELDS = (
     "maxiter",
     "tol",
     "optimizer",
+    "se_method",
     "verbose",
     "seed",
     "startb",
@@ -57,6 +58,15 @@ class MORPControl:
         Convergence tolerance (gradient norm).
     optimizer : str
         Optimization method: "bfgs" or "lbfgsb".
+    se_method : str
+        Standard-error method: "bhhh" (default, matches GAUSS BHATLIB
+        ``_max_CovPar=2``), "hessian" (inverse observed information),
+        or "sandwich" (robust). All three estimators are computed at
+        fit time and exposed on ``MORPResults`` as ``se_bhhh`` /
+        ``se_hessian`` / ``se_sandwich`` so ``summary()`` can print a
+        side-by-side diagnostic comparison (large divergence is a
+        misspecification signal — under correct specification the three
+        converge asymptotically via the information-matrix equality).
     verbose : int
         Verbosity: 0=silent, 1=summary, 2=per-iteration.
     seed : int or None
@@ -91,6 +101,7 @@ class MORPControl:
         maxiter: int = 200,
         tol: float = 1e-5,
         optimizer: Literal["bfgs", "lbfgsb"] = "bfgs",
+        se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh",
         verbose: int = 1,
         seed: int | None = None,
         startb: NDArray | None = None,
@@ -115,6 +126,7 @@ class MORPControl:
         self.maxiter = maxiter
         self.tol = tol
         self.optimizer = optimizer
+        self.se_method = se_method
         self.verbose = verbose
         self.seed = seed
         self.startb = startb
