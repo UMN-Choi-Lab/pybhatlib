@@ -76,10 +76,15 @@ def morp_loglik(
     # Analytic gradient computes both nll and grad in one pass when the
     # MVNCD method has an analytic-gradient implementation. Fall through to
     # the forward-only path + numerical FD otherwise.
+    #
+    # ``fix_scales=True`` (MORP-104 spike) is a different parameter layout
+    # the analytic gradient does not yet handle, so we force the FD path
+    # in that case until the analytic side is updated.
     if (
         return_gradient
         and getattr(control, "analytic_grad", False)
         and control.method in ("me", "ovus")
+        and not getattr(control, "fix_scales", False)
     ):
         return morp_analytic_gradient(
             theta_np, X_np, y_np, n_dims, n_categories, n_beta, control,
@@ -179,11 +184,14 @@ def _unpack_morp_params(
             idx += 1
         sigma = np.diag(scales**2)
     else:
-        # Full: (D-1) scale params + D*(D-1)/2 correlation params
+        # Full: (D-1) scale params + D*(D-1)/2 correlation params, OR
+        # fix_scales=True: scales locked at 1 (GAUSS BHATLIB MORP unit-
+        # variance identification), only correlations estimated.
         scales = np.ones(n_dims, dtype=np.float64)
-        for d in range(1, n_dims):
-            scales[d] = np.exp(theta[idx])
-            idx += 1
+        if not getattr(control, "fix_scales", False):
+            for d in range(1, n_dims):
+                scales[d] = np.exp(theta[idx])
+                idx += 1
 
         n_corr = n_dims * (n_dims - 1) // 2
         if n_corr > 0:
@@ -227,7 +235,8 @@ def count_morp_params(
         if control.heteronly:
             n += n_dims - 1  # scale params
         else:
-            n += n_dims - 1  # scale params
+            if not getattr(control, "fix_scales", False):
+                n += n_dims - 1  # scale params
             n += n_dims * (n_dims - 1) // 2  # correlation params
 
     return n
