@@ -50,7 +50,10 @@ model = MNPModel(
 )
 results = model.fit()
 print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
-print(f"  Estimated beta: {results.params}")
+# results.b_original is the BHATLIB-normalized reporting view (matches GAUSS).
+# results.params is raw theta-space and is what the predictor consumes
+# downstream — both are kept on the results object for distinct purposes.
+print(f"  Estimated beta (BHATLIB-normalized): {results.b_original}")
 
 # ============================================================
 #  Step 2: Build X_new manually

@@ -9,7 +9,9 @@ What you will learn:
   - What the IID assumption means in the MNP context
   - How the differenced covariance matrix Sigma_diff is constructed
   - How to set up and estimate an IID MNP model with MNPControl(iid=True)
-  - How to read the estimated coefficients from results.params
+  - How to read the estimated coefficients from results.b_original
+    (BHATLIB-normalized; matches GAUSS output) vs results.params
+    (raw theta-space, used internally for prediction)
   - When to use (and not use) the IID specification
 
 Prerequisites: t00 (quickstart).
@@ -114,7 +116,7 @@ results = model.fit()
 t_elapsed = time.perf_counter() - t0
 
 print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
-print(f"  Parameters: {len(results.params)}")
+print(f"  Parameters: {len(results.b_original)}")
 print(f"  Estimation time: {t_elapsed:.1f}s")
 
 # ============================================================
@@ -124,15 +126,15 @@ print("\n" + "=" * 60)
 print("  Step 3: Interpreting Results")
 print("=" * 60)
 
-print("\n  Estimated coefficients:")
-if hasattr(results, "param_names") and results.param_names is not None:
-    for name, val in zip(results.param_names, results.params):
-        print(f"    {name:<20s}  {val:>10.4f}")
-else:
-    param_labels = list(spec.keys())
-    for i, val in enumerate(results.params):
-        label = param_labels[i] if i < len(param_labels) else f"param_{i}"
-        print(f"    {label:<20s}  {val:>10.4f}")
+# Report BHATLIB-normalized coefficients (Sigma_diff[0,0]=1) so output
+# matches the GAUSS BHATLIB reference and the published paper tables.
+# `results.params` holds the raw theta-space values used internally by
+# the optimizer/predictor (differs by sqrt(Sigma_diff[0,0]) under IID).
+print("\n  Estimated coefficients (BHATLIB-normalized — match GAUSS output):")
+for name, val, se, t, p in zip(
+    results.param_names, results.b_original, results.se, results.t_stat, results.p_value
+):
+    print(f"    {name:<10s}  {val:>10.4f}   s.e.={se:>8.4f}   t={t:>8.3f}   p={p:>6.4f}")
 
 print(f"\n  Target log-likelihood : -670.956  (BHATLIB paper Table 1)")
 print(f"  Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")
