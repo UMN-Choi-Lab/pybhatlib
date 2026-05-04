@@ -43,10 +43,21 @@ class MNPResults:
         one fewer element than ``params`` (one scale absorbed).
     se : NDArray
         Delta-method standard errors (aligned with ``b_original``).
+        Computed using the estimator named in ``control.se_method``.
     t_stat : NDArray
         t-statistics (b_original / se).
     p_value : NDArray
         Two-sided p-values.
+    se_bhhh, se_hessian, se_sandwich : NDArray | None
+        Standard errors under each of the three asymptotic-variance
+        estimators, computed at the converged MLE for diagnostic
+        comparison. Each matches ``se`` for the method named in
+        ``control.se_method`` and provides the alternatives for the
+        other two. ``None`` if a particular estimator failed (e.g.,
+        observed-Hessian computation diverged). Large divergence
+        between BHHH, Hessian, and Sandwich on the same parameter is
+        a classic misspecification signal — under correct specification
+        the three converge asymptotically (information-matrix equality).
     gradient : NDArray
         Gradient projected into reporting space.
     loglik : float
@@ -130,6 +141,9 @@ class MNPResults:
     control: MNPControl | None = None
     data_path: str = ""
     ranvar_indices: list[int] | None = None
+    se_bhhh: NDArray | None = None
+    se_hessian: NDArray | None = None
+    se_sandwich: NDArray | None = None
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MNPResults, accepting both canonical and legacy kwargs.
@@ -236,6 +250,63 @@ class MNPResults:
                 for j in range(min(n_params, self.corr_matrix.shape[1]))
             ]
             lines.append("  " + " ".join(row_vals))
+
+        # Side-by-side SE diagnostic when more than one estimator is available.
+        # Large BHHH/Hessian/Sandwich divergence on the same coordinate is a
+        # classic misspecification signal — under correct specification the
+        # three converge asymptotically (information-matrix equality).
+        available = [
+            (label, arr) for label, arr in (
+                ("BHHH",     self.se_bhhh),
+                ("Hessian",  self.se_hessian),
+                ("Sandwich", self.se_sandwich),
+            )
+            if arr is not None
+        ]
+        if len(available) >= 2:
+            lines.append("")
+            lines.append("  Standard error diagnostic (alternative estimators)")
+            lines.append("  " + "-" * 66)
+            header_se = (
+                "  " + f"{'Parameter':<14s}"
+                + "".join(f"{lbl:>12s}" for lbl, _ in available)
+                + f"{'Hess/BHHH':>12s}"
+            )
+            lines.append(header_se)
+            n_p = len(self.param_names)
+            se_bhhh = self.se_bhhh if self.se_bhhh is not None else None
+            se_hess = self.se_hessian if self.se_hessian is not None else None
+            for i, name in enumerate(self.param_names):
+                if i >= n_p:
+                    break
+                cells = []
+                for lbl, arr in available:
+                    if i < len(arr):
+                        cells.append(f"{arr[i]:>12.4f}")
+                    else:
+                        cells.append(f"{'-':>12s}")
+                # Hessian/BHHH ratio when both are available
+                if (
+                    se_bhhh is not None and se_hess is not None
+                    and i < len(se_bhhh) and i < len(se_hess)
+                    and se_bhhh[i] > 0
+                ):
+                    ratio = se_hess[i] / se_bhhh[i]
+                    ratio_str = f"{ratio:>12.3f}"
+                else:
+                    ratio_str = f"{'-':>12s}"
+                lines.append(f"  {name:<14s}" + "".join(cells) + ratio_str)
+            primary = self.control.se_method if self.control is not None else "?"
+            lines.append("")
+            lines.append(f"  Primary se_method = '{primary}' (controls .se / .t_stat / .p_value)")
+            lines.append(
+                "  Hess/BHHH ratios far from 1 on a parameter indicate"
+                " score variance and curvature disagree there — consider"
+            )
+            lines.append(
+                "  a richer covariance specification or se_method='sandwich'"
+                " for robust inference."
+            )
 
         lines.append("")
         lines.append(f"  Number of iterations   {self.n_iter:>10d}")

@@ -288,8 +288,11 @@ for H in H_VALUES:
     print(f"    LL = {results.loglik * results.n_obs:.3f}")
     print(f"    Converged: {results.converged} ({results.n_iter} iterations)")
     print(f"    Time: {elapsed:.1f}s")
-    print(f"    Parameters: ", end="")
-    for name, val in zip(results.param_names, results.params):
+    # Report BHATLIB-normalized values (results.b_original) so output matches
+    # the GAUSS Bhat-2018 Table 2 reference; results.params remains raw theta
+    # for downstream predictor / serialization use below.
+    print(f"    Parameters (BHATLIB-normalized): ", end="")
+    for name, val in zip(results.param_names, results.b_original):
         print(f"{name}={val:.4f}  ", end="")
     print()
 

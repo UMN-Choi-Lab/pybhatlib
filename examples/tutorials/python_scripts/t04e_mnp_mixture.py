@@ -114,7 +114,7 @@ results = model.fit()
 t_elapsed = time.perf_counter() - t0
 
 print(f"\n  Log-likelihood : {results.loglik * results.n_obs:.3f}")
-print(f"  Parameters     : {len(results.params)}")
+print(f"  Parameters     : {len(results.b_original)}")
 print(f"  Estimation time: {t_elapsed:.1f}s  ({t_elapsed/60:.1f} min)")
 
 # ============================================================
@@ -124,22 +124,12 @@ print("\n" + "=" * 60)
 print("  Step 3: Interpreting Results")
 print("=" * 60)
 
-print("\n  Estimated coefficients:")
-if hasattr(results, "param_names") and results.param_names is not None:
-    for name, val in zip(results.param_names, results.params):
-        print(f"    {name:<25s}  {val:>10.4f}")
-else:
-    # Fallback: label by segment + variable name
-    n_beta = len(spec)
-    seg_labels = []
-    for s in range(1, 3):
-        for vname in spec.keys():
-            seg_labels.append(f"seg{s}_{vname}")
-    seg_labels.append("theta_seg2")   # 1 segment probability param
-    # remaining are covariance params
-    for i, val in enumerate(results.params):
-        label = seg_labels[i] if i < len(seg_labels) else f"cov_param_{i - len(seg_labels)}"
-        print(f"    {label:<25s}  {val:>10.4f}")
+# Report BHATLIB-normalized values (results.b_original) so output matches the
+# GAUSS BHATLIB reference. results.params holds raw theta-space (used internally
+# by the optimizer/predictor — different scale convention).
+print("\n  Estimated coefficients (BHATLIB-normalized — match GAUSS output):")
+for name, val in zip(results.param_names, results.b_original):
+    print(f"    {name:<25s}  {val:>10.4f}")
 
 print(f"\n  Target log-likelihood  : -634.975  (BHATLIB paper Table 1)")
 print(f"  Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")

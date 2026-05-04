@@ -105,7 +105,7 @@ print("=" * 60)
 
 print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
 print(f"  Number of observations: {results.n_obs}")
-print(f"  Number of parameters: {len(results.params)}")
+print(f"  Number of parameters: {len(results.b_original)}")
 print(f"  Converged: {results.converged}")
 
 print("\n  Key findings:")
