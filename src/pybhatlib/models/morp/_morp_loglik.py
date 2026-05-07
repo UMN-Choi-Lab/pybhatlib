@@ -85,12 +85,59 @@ def morp_loglik(
             theta_np, X_np, y_np, n_dims, n_categories, n_beta, control,
         )
 
-    # Unpack parameters
+    # Per-observation log-likelihoods (also used by BHHH score computation).
+    ll_per_obs = _per_obs_loglik(
+        theta_np, X_np, y_np, n_dims, n_categories, n_beta, control, xp,
+    )
+    total_ll = float(ll_per_obs.sum())
+
+    mean_ll = total_ll / N
+    nll = -mean_ll
+
+    if return_gradient:
+        grad = _numerical_gradient_morp(
+            theta_np, X_np, y_np, n_dims, n_categories, n_beta, control, xp
+        )
+        return nll, grad
+
+    return nll
+
+
+def _per_obs_loglik(
+    theta: NDArray,
+    X: NDArray,
+    y: NDArray,
+    n_dims: int,
+    n_categories: list[int],
+    n_beta: int,
+    control: MORPControl,
+    xp=None,
+) -> NDArray:
+    """Per-observation log-likelihood vector for MORP.
+
+    Same model as ``morp_loglik`` but returns the length-N array
+    ``log P(y_q | theta, X_q)`` instead of the scalar mean. Used by the
+    BHHH / sandwich SE computation in MORPModel — per-obs scores are
+    obtained by finite-differencing this function.
+
+    Returns
+    -------
+    ll_per_obs : ndarray, shape (N,)
+        Log-probability for each observation under the current ``theta``.
+    """
+    if xp is None:
+        xp = get_backend("numpy")
+
+    theta_np = np.asarray(theta, dtype=np.float64)
+    X_np = np.asarray(X, dtype=np.float64)
+    y_np = np.asarray(y, dtype=np.int64)
+    N = X_np.shape[0]
+
     beta, thresholds, sigma = _unpack_morp_params(
         theta_np, n_beta, n_dims, n_categories, control
     )
 
-    total_ll = 0.0
+    ll_per_obs = np.zeros(N, dtype=np.float64)
 
     for q in range(N):
         # Latent utility mean: mu_d = X_d @ beta for each dimension
@@ -123,18 +170,9 @@ def morp_loglik(
         prob_q = _rect_prob_finite_only(lower, upper, sigma, control, xp)
 
         prob_q = max(prob_q, 1e-300)
-        total_ll += np.log(prob_q)
+        ll_per_obs[q] = np.log(prob_q)
 
-    mean_ll = total_ll / N
-    nll = -mean_ll
-
-    if return_gradient:
-        grad = _numerical_gradient_morp(
-            theta_np, X_np, y_np, n_dims, n_categories, n_beta, control, xp
-        )
-        return nll, grad
-
-    return nll
+    return ll_per_obs
 
 
 def _unpack_morp_params(
