@@ -438,8 +438,14 @@ class MORPModel(BaseModel):
                 names.append(f"tau_{self.dep_vars[d]}_{j + 1}")
 
         if not self.control.iid:
-            for d in range(1, self.n_dims):
-                names.append(f"scale_{self.dep_vars[d]}")
+            # Scale params only when neither heteronly+only-scales nor
+            # fix_scales (which locks them at 1).
+            estimate_scales = self.control.heteronly or not getattr(
+                self.control, "fix_scales", False
+            )
+            if estimate_scales:
+                for d in range(1, self.n_dims):
+                    names.append(f"scale_{self.dep_vars[d]}")
 
             if not self.control.heteronly:
                 for i in range(self.n_dims):

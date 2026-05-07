@@ -25,6 +25,7 @@ _MORP_CONTROL_FIELDS = (
     "iid",
     "correst",
     "heteronly",
+    "fix_scales",
     "method",
     "spherical",
     "maxiter",
@@ -48,6 +49,15 @@ class MORPControl:
         Correlation restriction matrix. None means no restrictions.
     heteronly : bool
         If True, estimate only heteroscedastic errors (no correlations).
+    fix_scales : bool
+        If True, fix all latent-utility scales at 1 and estimate only the
+        correlation parameters (matches GAUSS BHATLIB MORP's unit-variance
+        identification convention). Only applies when ``iid=False`` and
+        ``heteronly=False``. Default False for backward compatibility —
+        existing callers continue to estimate the (D-1) heteroscedastic
+        scale parameters. This is the standard ordered-probit
+        identification — the latent utility variance is not separately
+        identified from the threshold spacing.
     method : str
         MVNCD method: "me", "ovus", "tvbs", "bme", "ovbs", "ssj", "scipy".
     spherical : bool
@@ -96,6 +106,7 @@ class MORPControl:
         iid: bool = False,
         correst: NDArray | None = None,
         heteronly: bool = False,
+        fix_scales: bool = False,
         method: str = "ovus",
         spherical: bool = True,
         maxiter: int = 200,
@@ -121,6 +132,7 @@ class MORPControl:
         self.iid = iid
         self.correst = correst
         self.heteronly = heteronly
+        self.fix_scales = fix_scales
         self.method = method
         self.spherical = spherical
         self.maxiter = maxiter
