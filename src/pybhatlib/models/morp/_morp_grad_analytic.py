@@ -230,10 +230,15 @@ def _layout_indices(
 
     cov_slice = None
     if not control.iid:
+        n_corr = n_dims * (n_dims - 1) // 2
         if control.heteronly:
             n_cov = n_dims - 1
+        elif getattr(control, "fix_scales", False):
+            # Scales locked at 1 (GAUSS BHATLIB unit-variance convention):
+            # the cov block is just the correlation params.
+            n_cov = n_corr
         else:
-            n_cov = (n_dims - 1) + n_dims * (n_dims - 1) // 2
+            n_cov = (n_dims - 1) + n_corr
         if n_cov > 0:
             cov_slice = slice(idx, idx + n_cov)
             idx += n_cov
@@ -311,10 +316,17 @@ def _build_sigma_components(
         sigma = np.diag(scales ** 2)
         return sigma, scales, None, None
 
-    # Full covariance: scales then correlation params
-    n_scale = K - 1
-    scales = np.ones(K, dtype=np.float64)
-    scales[1:] = np.exp(cov_params[:n_scale])
+    # Full covariance: scales then correlation params (scales absent when
+    # ``fix_scales=True`` — all latent-utility scales locked at 1, matching
+    # GAUSS BHATLIB MORP's unit-variance ordered-probit identification).
+    fix_scales = getattr(control, "fix_scales", False)
+    if fix_scales:
+        n_scale = 0
+        scales = np.ones(K, dtype=np.float64)
+    else:
+        n_scale = K - 1
+        scales = np.ones(K, dtype=np.float64)
+        scales[1:] = np.exp(cov_params[:n_scale])
 
     n_corr = K * (K - 1) // 2
     corr_theta = cov_params[n_scale: n_scale + n_corr]
@@ -667,8 +679,9 @@ def _adj_sigma_to_params(
             adj[d - 1] = adj_Sigma[d, d] * 2.0 * scales[d] ** 2
         return adj
 
-    # Full: scales (K-1 free) then correlations.
-    n_scale = K - 1
+    # Full: scales (K-1 free, or 0 when fix_scales=True) then correlations.
+    fix_scales = getattr(control, "fix_scales", False)
+    n_scale = 0 if fix_scales else K - 1
     n_corr = K * (K - 1) // 2
     out = np.zeros(n_scale + n_corr, dtype=np.float64)
 
@@ -678,11 +691,13 @@ def _adj_sigma_to_params(
     #                              =  scales_i scales_j corr_ij * (delta_{di} + delta_{dj})
     # adj_log_scale_d = 2 * scales_d * sum_j adj_Sigma[d, j] * corr[d, j] * scales[j]
     # but scales[0] = 1 is fixed, so we only emit slots 1..K-1.
-    for d in range(1, K):
-        s = 0.0
-        for j in range(K):
-            s += adj_Sigma[d, j] * corr[d, j] * scales[j]
-        out[d - 1] = 2.0 * s * scales[d]
+    # When fix_scales=True, all scales are locked at 1 — no slots to emit.
+    if not fix_scales:
+        for d in range(1, K):
+            s = 0.0
+            for j in range(K):
+                s += adj_Sigma[d, j] * corr[d, j] * scales[j]
+            out[d - 1] = 2.0 * s * scales[d]
 
     # ---- Correlation block ----
     if n_corr > 0:

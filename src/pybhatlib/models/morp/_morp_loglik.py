@@ -76,15 +76,10 @@ def morp_loglik(
     # Analytic gradient computes both nll and grad in one pass when the
     # MVNCD method has an analytic-gradient implementation. Fall through to
     # the forward-only path + numerical FD otherwise.
-    #
-    # ``fix_scales=True`` (MORP-104 spike) is a different parameter layout
-    # the analytic gradient does not yet handle, so we force the FD path
-    # in that case until the analytic side is updated.
     if (
         return_gradient
         and getattr(control, "analytic_grad", False)
         and control.method in ("me", "ovus")
-        and not getattr(control, "fix_scales", False)
     ):
         return morp_analytic_gradient(
             theta_np, X_np, y_np, n_dims, n_categories, n_beta, control,
