@@ -24,7 +24,7 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr as _ndtr
 
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
@@ -374,7 +374,7 @@ class MDCEVModel:
         # ---- t-stats and p-values ------------------------------------
         with np.errstate(invalid="ignore"):
             t_stat = np.where(se_full > 0, x_reported / se_full, 0.0)
-        p_value = 2.0 * (1.0 - norm.cdf(np.abs(t_stat)))
+        p_value = 2.0 * (1.0 - _ndtr(np.abs(t_stat)))
 
         all_param_names = list(self.param_names) + list(self.gamma_names) + ["sigma"]
 
