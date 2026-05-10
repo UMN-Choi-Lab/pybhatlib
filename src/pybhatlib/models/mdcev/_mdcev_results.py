@@ -47,10 +47,13 @@ class MDCEVResults:
         Two-sided p-values.
     gradient : NDArray
         Final gradient vector at convergence (reported-parameter space).
-    ll : float
-        Mean log-likelihood (per observation).
+    loglik : float
+        Mean log-likelihood (per observation). Multiply by ``n_obs`` for
+        the total log-likelihood. Matches the ``loglik`` field on
+        ``MNPResults`` and ``MORPResults``.
     ll_total : float
-        Total log-likelihood.
+        Total log-likelihood (kept for convenience; equals
+        ``loglik * n_obs``).
     n_obs : int
         Number of observations.
     param_names : list[str]
@@ -60,8 +63,9 @@ class MDCEVResults:
         Correlation matrix of parameter estimates.
     cov_matrix : NDArray
         Variance-covariance matrix of parameter estimates.
-    n_iterations : int
-        Number of optimizer iterations.
+    n_iter : int
+        Number of optimizer iterations. Matches the ``n_iter`` field on
+        ``MNPResults`` and ``MORPResults``.
     convergence_time : float
         Wall-clock time in minutes to convergence.
     converged : bool
@@ -82,13 +86,13 @@ class MDCEVResults:
     t_stat: NDArray
     p_value: NDArray
     gradient: NDArray
-    ll: float
+    loglik: float
     ll_total: float
     n_obs: int
     param_names: list[str]
     corr_matrix: NDArray
     cov_matrix: NDArray
-    n_iterations: int
+    n_iter: int
     convergence_time: float
     converged: bool
     return_code: int
@@ -125,7 +129,7 @@ class MDCEVResults:
         lines.append(f"  return code = {self.return_code:>5d}")
         lines.append(f"  {rc_msg}")
         lines.append("")
-        lines.append(f"  Mean log-likelihood    {self.ll:>14.6f}")
+        lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 
@@ -218,7 +222,7 @@ class MDCEVResults:
             primary = self.control.se_method if self.control is not None else "?"
             lines.append("")
 
-        lines.append(f"  Number of iterations   {self.n_iterations:>10d}")
+        lines.append(f"  Number of iterations   {self.n_iter:>10d}")
         lines.append(f"  Minutes to convergence {self.convergence_time:>10.5f}")
         lines.append(sep)
 
