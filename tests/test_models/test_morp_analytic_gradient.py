@@ -97,9 +97,10 @@ def _make_theta(
                 theta[idx] = 0.1
                 idx += 1
         else:
-            for _ in range(n_dims - 1):
-                theta[idx] = 0.1
-                idx += 1
+            if not getattr(control, "fix_scales", False):
+                for _ in range(n_dims - 1):
+                    theta[idx] = 0.1
+                    idx += 1
             n_corr = n_dims * (n_dims - 1) // 2
             for k in range(n_corr):
                 theta[idx + k] = 0.0  # corr ~ 0 (mid spherical/tanh)
@@ -191,6 +192,59 @@ def test_analytic_grad_matches_fd_synthetic_flexible(seed):
 
     grad_fd = _central_fd_grad(theta, fn, eps=1e-6)
 
+    np.testing.assert_allclose(grad_a, grad_fd, atol=1e-5, rtol=0)
+
+
+# ---------------------------------------------------------------------------
+# (2a) fix_scales=True (MORP-104) — analytic grad on the unit-variance layout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spherical", [False, True])
+def test_analytic_grad_matches_fd_synthetic_fix_scales(spherical):
+    """Analytic gradient must match FD when scales are locked at 1.
+
+    Under ``fix_scales=True`` the parameter vector drops the K-1 log-scale
+    slots, leaving only ``[beta | thresholds | corr_theta]``. This test
+    pins the analytic Jacobian against central FD for both spherical and
+    tanh correlation parameterizations. ``spherical=False`` matches the
+    GAUSS BHATLIB MORP_WALK driver (``_Spher = 0``).
+    """
+    xp = get_backend("numpy")
+    n_beta = 2
+    n_dims = 2
+    n_categories = [3, 3]
+    X, y = _synth_morp_data(
+        n=30, n_dims=n_dims, n_categories=tuple(n_categories), n_beta=n_beta,
+        seed=44,
+    )
+
+    ctrl = MORPControl(
+        iid=False, method="ovus", spherical=spherical, fix_scales=True,
+        analytic_grad=True, verbose=0,
+    )
+    theta = _make_theta(
+        n_beta, n_dims, n_categories, ctrl, seed=400, perturb_scale=0.05,
+    )
+
+    # Sanity: count_morp_params returned the fix_scales-aware length and
+    # _make_theta wrote exactly that many slots. Catches a layout drift
+    # before the gradient comparison reports a mysterious failure.
+    assert len(theta) == count_morp_params(
+        n_beta, n_dims, n_categories, ctrl,
+    )
+
+    nll_a, grad_a = morp_loglik(
+        theta, X, y, n_dims, n_categories, n_beta, ctrl,
+        return_gradient=True, xp=xp,
+    )
+
+    def fn(t):
+        return morp_loglik(
+            t, X, y, n_dims, n_categories, n_beta, ctrl, xp=xp,
+        )
+
+    grad_fd = _central_fd_grad(theta, fn, eps=1e-6)
     np.testing.assert_allclose(grad_a, grad_fd, atol=1e-5, rtol=0)
 
 
