@@ -669,22 +669,25 @@ class MNPModel(BaseModel):
         )
         dim = self.n_alts - 1
 
-        # Compute sigma_1 for normalizing structural parameters
+        # Overall-scale normalizer for the reported structural matrices.
+        # Matches _unpar_to_report: non-IID kernels use the SUM-OF-SQUARED-
+        # SCALES normalization (divide by trace, so trace(lambda_hat) == 1);
+        # IID keeps the reference normalization (Sigma_diff[0,0] == 2).
         if self.control.iid:
-            sigma_1_sq = 2.0
+            scale_norm_sq = 2.0
         else:
             Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
-            sigma_1_sq = Sigma_diff[0, 0]
+            scale_norm_sq = float(np.trace(Sigma_diff))
 
         if not self.control.iid and "lambda_params" in params:
             Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
-            lambda_hat = Sigma_diff / sigma_1_sq  # normalized
+            lambda_hat = Sigma_diff / scale_norm_sq  # normalized
 
         if self.control.mix and self.ranvar_indices and "omega_params" in params:
             L_raw = _build_omega_cholesky(
                 params["omega_params"], self.ranvar_indices, self.control,
             )
-            cholesky_L = L_raw / np.sqrt(sigma_1_sq)
+            cholesky_L = L_raw / np.sqrt(scale_norm_sq)
             omega_hat = cholesky_L @ cholesky_L.T
 
         if self.control.nseg > 1:
@@ -884,23 +887,27 @@ class MNPModel(BaseModel):
         return self._unpar_to_report(theta_unpar)
 
     def _unpar_to_report(self, theta_unpar: np.ndarray) -> np.ndarray:
-        """Map unparameterized theta to BHATLIB reporting convention.
+        """Map unparameterized theta to the MNP reporting convention.
 
-        BHATLIB normalizes the differenced error covariance so that
-        Sigma_diff[0,0] = 1, absorbing one scale parameter for non-IID
-        models. All betas are divided by sigma_1; the kernel block becomes
-        normalized correlations (``parker``) and relative scales
-        (``scale``); the random-coefficient block reports the Omega
-        variance/covariance entries divided by sigma_1**2.
+        For non-IID kernels the differenced error covariance is normalized so
+        that the SUM OF SQUARED SCALES equals 1 (``trace(Sigma_diff) == 1``),
+        matching the GAUSS likelihood normalization
+        ``wker = sqrt(logitmod(xscalker))``. All betas are divided by
+        ``scale_norm = sqrt(trace(Sigma_diff))``; the kernel block reports the
+        (scale-invariant) correlations (``parker``) and all I-1 scales
+        (``scale``, with ``sum(scale**2) == 1``); the random-coefficient block
+        reports the Omega variance/covariance entries divided by
+        ``scale_norm**2``. IID kernels have no free scales and keep the
+        reference normalization (``scale_norm**2 == Sigma_diff[0,0] == 2``).
 
         Notes
         -----
         This is the only Jacobian step we keep on the SE path: a single
-        scalar normalization (``sigma_1``) per block. It is NOT the
+        scalar normalization (``scale_norm``) per block. It is NOT the
         delta-method through the spherical-Cholesky parameterization that
         the MNP-002 SE machinery used; the unparameterized theta and the
-        reporting theta are identical except for sigma_1 scaling, and the
-        Jacobian of that scaling is computed in closed form by finite
+        reporting theta are identical except for the scale_norm scaling, and
+        the Jacobian of that scaling is computed in closed form by finite
         differencing this function only.
         """
         from pybhatlib.models.mnp._mnp_loglik import (
@@ -926,26 +933,44 @@ class MNPModel(BaseModel):
         else:
             Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
 
-        sigma_1 = np.sqrt(Sigma_diff[0, 0])
+        # --- Overall-scale normalization ---------------------------------
+        # For non-IID kernels the scales are normalized so the SUM OF SQUARED
+        # SCALES across the (I-1) differenced alternatives equals 1 — i.e.
+        # divide Sigma_diff by its TRACE. This reproduces the GAUSS likelihood
+        # normalization ``wker = sqrt(logitmod(xscalker))`` (softmax, so
+        # sum(wker**2) == 1), applied here at the reporting layer: the
+        # maximized log-likelihood is invariant to the overall error scale, so
+        # this leaves the fit and every published LL target unchanged while
+        # reporting the unparameterized wker and their SEs. IID kernels have no
+        # free scales, so they keep the reference normalization
+        # (sigma_1**2 == Sigma_diff[0,0] == 2; betas / sqrt(2)).
+        if self.control.iid:
+            scale_norm_sq = float(Sigma_diff[0, 0])
+        else:
+            scale_norm_sq = float(np.trace(Sigma_diff))
+        scale_norm = np.sqrt(scale_norm_sq)
         report: list[float] = []
 
         # --- Betas ---
-        report.extend(params["beta"] / sigma_1)
+        report.extend(params["beta"] / scale_norm)
 
         # --- Covariance parameters (non-IID) ---
         if not self.control.iid:
-            Sigma_norm = Sigma_diff / (sigma_1 ** 2)
-            d_norm = np.sqrt(np.diag(Sigma_norm))
-            Corr_norm = Sigma_norm / np.outer(d_norm, d_norm)
+            Sigma_norm = Sigma_diff / scale_norm_sq  # trace(Sigma_norm) == 1
+            wker = np.sqrt(np.diag(Sigma_norm))      # scales; sum(wker**2) == 1
+            Corr_norm = Sigma_norm / np.outer(wker, wker)
 
             if not self.control.heteronly:
                 for i in range(dim):
                     for j in range(i + 1, dim):
                         report.append(float(Corr_norm[i, j]))
 
-            # Relative scales (indices 1 .. dim-1; index 0 is normalized to 1).
-            for i in range(1, dim):
-                report.append(float(d_norm[i]))
+            # All (I-1) kernel scales (wker) are reported. Unlike the old
+            # reference normalization (first scale pinned to 1), every scale is
+            # now free up to the single sum-of-squares constraint, so each
+            # carries an estimated SE.
+            for i in range(dim):
+                report.append(float(wker[i]))
 
         # --- Random-coefficient Omega (variance/covariance entries) ---
         # GAUSS reference: MNP_TRAVELMODE.gss line 211 reports
@@ -961,7 +986,7 @@ class MNPModel(BaseModel):
             Omega = _build_omega_direct(
                 params["omega_params"], self.ranvar_indices, self.control,
             )
-            Omega_norm = Omega / (sigma_1 ** 2)
+            Omega_norm = Omega / scale_norm_sq
             n_rand = len(self.ranvar_indices)
             if self.control.randdiag:
                 for i in range(n_rand):
@@ -979,7 +1004,7 @@ class MNPModel(BaseModel):
             for h in range(1, self.control.nseg):
                 if h - 1 < len(params.get("segment_betas", [])):
                     report.extend(
-                        (params["segment_betas"][h - 1] / sigma_1).tolist()
+                        (params["segment_betas"][h - 1] / scale_norm).tolist()
                     )
                 if (
                     self.control.mix
@@ -991,7 +1016,7 @@ class MNPModel(BaseModel):
                         self.ranvar_indices,
                         self.control,
                     )
-                    Omega_h_norm = Omega_h / (sigma_1 ** 2)
+                    Omega_h_norm = Omega_h / scale_norm_sq
                     n_rand = len(self.ranvar_indices)
                     if self.control.randdiag:
                         for i in range(n_rand):
@@ -1006,10 +1031,10 @@ class MNPModel(BaseModel):
     def _build_theta_to_report_map(self) -> dict[int, int | None]:
         """Map theta-space parameter indices to report-space indices.
 
-        Returns a dict ``{theta_idx: report_idx}`` where ``report_idx`` is
-        ``None`` for theta params that are absorbed by the BHATLIB
-        normalization (i.e., scale01, the first scale parameter for non-IID
-        models).
+        Returns a dict ``{theta_idx: report_idx}``. Under the sum-of-squared-
+        scales normalization every kernel scale is reported (none absorbed),
+        so the only ``None`` entries would come from model-specific frozen
+        params; the kernel block itself is a 1:1 theta→report mapping.
 
         Used by ``_normalize_for_reporting`` to mark SE=NaN for frozen params.
         """
@@ -1027,10 +1052,9 @@ class MNPModel(BaseModel):
             dim = self.n_alts - 1
 
             # --- Scale params in theta-space: scale01..scale0{dim} ---
-            # scale01 (theta[n_beta]) is absorbed → None.
-            # scale02..scale0{dim} (theta[n_beta+1..n_beta+dim-1]) map to
-            # report-space *after* all parker params, so we compute their
-            # report indices later.
+            # All dim scales are reported (sum-of-squared-scales norm); they
+            # map to report-space *after* all parker params, so we compute
+            # their report indices later.
             n_scale = dim
             scale_theta_start = theta_idx
             theta_idx += n_scale  # advance past all scales
@@ -1040,24 +1064,21 @@ class MNPModel(BaseModel):
             parker_theta_start = theta_idx
             theta_idx += n_corr
 
-            # In report space: parkers come first (after betas),
-            # then scale[1..dim-1] (relative scales).
+            # In report space: parkers come first (after betas), then all dim
+            # scales.
             parker_report_start = report_idx
             report_idx += n_corr  # advance past parkers in report space
 
             scale_report_start = report_idx
-            report_idx += dim - 1  # dim-1 relative scales in report space
+            report_idx += dim  # all dim scales in report space
 
             # Fill mapping for parkers: direct 1:1
             for k in range(n_corr):
                 mapping[parker_theta_start + k] = parker_report_start + k
 
-            # Fill mapping for scales:
-            #   theta scale00 (index 0 among scales) → absorbed → None
-            #   theta scale{i} for i=1..dim-1 → report_scale{i-1}
-            mapping[scale_theta_start] = None  # absorbed (scale00)
-            for k in range(1, n_scale):
-                mapping[scale_theta_start + k] = scale_report_start + (k - 1)
+            # Fill mapping for scales: direct 1:1 (none absorbed).
+            for k in range(n_scale):
+                mapping[scale_theta_start + k] = scale_report_start + k
 
         # --- Random-coefficient Cholesky params ---
         if self.control.mix and self.ranvar_indices is not None:
@@ -1117,9 +1138,9 @@ class MNPModel(BaseModel):
                         idx += 1
                         names.append(f"parker{idx:02d}")
 
-            # Relative scales (indices 1..dim-1)
-            for i in range(1, dim):
-                names.append(f"scale{i:02d}")
+            # All I-1 kernel scales (sum of squares == 1); none absorbed.
+            for i in range(dim):
+                names.append(f"scale{i + 1:02d}")
 
         if self.control.mix and self.ranvar_indices is not None:
             n_rand = len(self.ranvar_indices)
@@ -1226,8 +1247,9 @@ class MNPModel(BaseModel):
         delta-method projection through the spherical-Cholesky
         parameterization.
 
-        The only Jacobian that survives is the BHATLIB sigma_1 normalization
-        from ``_unpar_to_report`` — a scalar division per block. This is
+        The only Jacobian that survives is the overall-scale normalization
+        from ``_unpar_to_report`` (``scale_norm``: trace-based for non-IID,
+        sigma_1 for IID) — a scalar division per block. This is
         unavoidable (the paper's reported parameters are normalized) and is
         explicitly NOT what the plan calls "delta method": the projection
         is a single closed-form scaling, computed by finite-differencing
@@ -1303,8 +1325,9 @@ class MNPModel(BaseModel):
         n_report = len(b_report)
 
         # 3) Normalization Jacobian: J_norm = d(b_report)/d(theta_unpar).
-        # This is a scalar sigma_1 normalization per block, NOT a
-        # delta-method through the spherical-Cholesky parameterization.
+        # This is a scalar overall-scale normalization per block (scale_norm:
+        # trace-based for non-IID, sigma_1 for IID), NOT a delta-method
+        # through the spherical-Cholesky parameterization.
         J_norm = self._fd_jacobian(self._unpar_to_report, theta_unpar)
 
         # MNP-003 active_mask × unparameterized SE: the J-column zeroing

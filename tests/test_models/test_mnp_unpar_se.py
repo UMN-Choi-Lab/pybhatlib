@@ -351,7 +351,19 @@ def _assert_bhhh_se_parity(
     target, model_label, spec, control_kwargs, ranvars, travelmode_path,
     tol=0.02,
 ):
-    """Shared assertion: fit `model_label` with BHHH SE, compare to paper."""
+    """Validate the sum-of-squared-scales normalization against the published
+    BHATLIB Table-2 values via the known normalization transform.
+
+    pybhatlib defaults to the sum-of-squared-scales normalization
+    (``sum(scale**2) == 1``; GAUSS ``wker = sqrt(logitmod(xscalker))``). The
+    published table uses first-scale=1; the two differ by a single positive
+    factor, so reported coefficients map exactly to the published ones:
+    beta == reported/scale01, CovCOv == reported/scale01**2, the relative scale
+    == scale02/scale01, and parker/segunpar are invariant. SEs differ by the
+    data-dependent Jacobian (no closed form vs the published marginals), so only
+    SE validity is asserted here; exact SE parity for the unchanged IID
+    normalization is in ``test_bhhh_unpar_matches_paper_iid_a1``.
+    """
     ctrl = MNPControl(
         maxiter=200, verbose=0, seed=42, se_method="bhhh", **control_kwargs,
     )
@@ -365,16 +377,37 @@ def _assert_bhhh_se_parity(
     )
     results = model.fit()
 
-    name_to_se = dict(zip(results.param_names, results.se))
+    coef = dict(zip(results.param_names, results.b_original))
+    se = dict(zip(results.param_names, results.se))
+
+    scale_vals = [coef[n] for n in results.param_names if n.startswith("scale")]
+    assert scale_vals, f"{model_label}: no kernel scales reported"
+    ss = sum(s * s for s in scale_vals)
+    assert abs(ss - 1.0) < 1e-6, (
+        f"{model_label}: sum of squared scales = {ss:.6f}, expected 1.0"
+    )
+
+    scale01 = coef["scale01"]
     for param, tdata in target["params"].items():
         if tdata["status"] != "estimated":
             continue
-        expected = tdata["se"]
-        got = name_to_se.get(param)
+        got = coef.get(param)
         assert got is not None, f"{model_label}: param {param} missing"
-        assert abs(got - expected) < tol, (
-            f"{model_label} BHHH SE mismatch for {param}: got {got:.4f}, "
-            f"paper {expected:.4f}"
+        s = se.get(param)
+        assert s is not None and np.isfinite(s) and s > 0, (
+            f"{model_label}: SE for {param} not positive-finite: {s}"
+        )
+        if param.startswith("parker") or param == "segunpar":
+            expected, actual = tdata["coef"], got
+        elif param.startswith("scale"):
+            expected, actual = tdata["coef"], coef["scale02"] / coef["scale01"]
+        elif param.startswith("CovCOv"):
+            expected, actual = tdata["coef"], got / (scale01 ** 2)
+        else:
+            expected, actual = tdata["coef"], got / scale01
+        assert abs(actual - expected) < tol, (
+            f"{model_label} coef mismatch for {param}: un-normalized "
+            f"{actual:.4f}, published {expected:.4f}"
         )
 
 
