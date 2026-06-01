@@ -158,20 +158,32 @@ class MDCEVResults:
             t   = self.t_stat[i]     if i < len(self.t_stat)     else 0.0
             p   = self.p_value[i]    if i < len(self.p_value)    else 0.0
             g   = self.gradient[i]   if i < len(self.gradient)   else 0.0
+            if se == 0 or se == "--":
+                se_str = t_str = p_str = g_str = "        --"
+            else:
+                se_str = f"{se:>10.4f}"
+                t_str  = f"{t:>10.3f}"
+                p_str  = f"{p:>10.4f}"
+                g_str  = f"{g:>10.4f}"
             lines.append(
-                f"  {name:<16s} {est:>10.4f} {se:>10.4f}"
-                f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
+                f"  {name:<16s} {est:>10.4f} {se_str}{t_str}{p_str}{g_str}"
             )
 
         lines.append("")
 
         n_params = len(self.param_names)
         lines.append("  Correlation matrix of the parameters")
+        #for i in range(min(n_params, self.corr_matrix.shape[0])):
+        #    row_vals = [
+        #        f"{self.corr_matrix[i, j]:>7.3f}"
+        #        for j in range(min(n_params, self.corr_matrix.shape[1]))
+        #    ]
+        #    lines.append("  " + " ".join(row_vals))
         for i in range(min(n_params, self.corr_matrix.shape[0])):
-            row_vals = [
-                f"{self.corr_matrix[i, j]:>7.3f}"
-                for j in range(min(n_params, self.corr_matrix.shape[1]))
-            ]
+            row_vals = []
+            for j in range(min(n_params, self.corr_matrix.shape[1])):
+                val = self.corr_matrix[i, j]
+                row_vals.append("     --" if val == 0 else f"{val:>7.3f}")
             lines.append("  " + " ".join(row_vals))
 
         # Side-by-side SE diagnostic when more than one estimator is available.

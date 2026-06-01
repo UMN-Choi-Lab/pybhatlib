@@ -6,12 +6,12 @@ import os
 import sys
 
 # Add src to path for development
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "src"))
 
 from pybhatlib.models.mdcev import MDCEVModel, MDCEVControl
 
 # Data path
-data_path = os.path.join(os.path.dirname(__file__), "data", "Workshop_SCAG_Est.csv")
+data_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "Workshop_SCAG_Est.csv")
 
 # Model specification 
 utility_spec = {

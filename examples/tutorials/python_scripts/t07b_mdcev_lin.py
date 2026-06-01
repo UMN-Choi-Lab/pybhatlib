@@ -1,4 +1,4 @@
-"""Example: Traditional MDCEV Model
+"""Example: Linear MDCEV Model
 """
 
 import pandas as pd
@@ -6,12 +6,12 @@ import os
 import sys
 
 # Add src to path for development
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..","..", "src"))
 
 from pybhatlib.models.mdcev import MDCEVModel, MDCEVControl
 
 # Data path
-data_path = os.path.join(os.path.dirname(__file__), "data", "WorkshopData_ToursimExp.csv")
+data_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "WorkshopData_ToursimExp.csv")
 
 # Model specification 
 utility_spec = {

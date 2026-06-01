@@ -318,7 +318,7 @@ def mdcev_loglik(
         else:
             # All inside goods consumed (h[i] == 0)
             pdisc[i] = 1.0
-            pcont[i] = c[i] * float(nonpdfmvlogit(vdarrok1_consum, mu_con, sig_con))
+            pcont[i] = c[i] * nonpdfmvlogit(vdarrok1_consum, mu_con, sig_con).item()
 
     z = pdisc * pcont
     z = np.where(z <= 0.0, 1e-4, z)
@@ -459,7 +459,7 @@ def mdcev_gradient(
         else:
             # h[i] == 0: all inside goods consumed
             pdisc[i] = 1.0
-            pcont[i] = c[i] * float(nonpdfmvlogit(vdarrok1_consum, mu_con, sig_con))
+            pcont[i] = c[i] * nonpdfmvlogit(vdarrok1_consum, mu_con, sig_con).item()
 
             if control.utility == "trad":
                 ggam2[i, :] = (

@@ -372,7 +372,7 @@ class MDCEVModel:
         t_elapsed = (time.time() - t_start) / 60.0
 
         # ---- t-stats and p-values ------------------------------------
-        with np.errstate(invalid="ignore"):
+        with np.errstate(divide="ignore", invalid="ignore"):
             t_stat = np.where(se_full > 0, x_reported / se_full, 0.0)
         p_value = 2.0 * (1.0 - _ndtr(np.abs(t_stat)))
 
