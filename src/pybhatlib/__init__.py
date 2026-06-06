@@ -1,6 +1,13 @@
 """pybhatlib: Python implementation of BHATLIB for matrix-based econometric inference."""
 
 from pybhatlib._version import __version__
+from pybhatlib.models.mdcev import (
+    MDCEVATEResult,
+    MDCEVControl,
+    MDCEVModel,
+    MDCEVResults,
+    mdcev_ate,
+)
 from pybhatlib.models.mnp import (
     ATEResult,
     MNPControl,
@@ -22,6 +29,12 @@ from pybhatlib.models.morp import (
 
 __all__ = [
     "__version__",
+    # MDCEV
+    "MDCEVControl",
+    "MDCEVModel",
+    "MDCEVResults",
+    "MDCEVATEResult",
+    "mdcev_ate",
     # MNP
     "MNPControl",
     "MNPModel",
