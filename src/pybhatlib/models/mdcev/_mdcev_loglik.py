@@ -308,12 +308,12 @@ def mdcev_loglik(
             mu_mixed  = np.zeros((n_con + n_nonc, 1), dtype=np.float64)
             sig_mixed = xsigm * np.ones((n_con + n_nonc, 1), dtype=np.float64)
             pdisc[i] = 1.0
-            pcont[i] = c[i] * float(nonpdfcdfmvlogit(
+            pcont[i] = c[i] * nonpdfcdfmvlogit(
                 vdarrok1_consum, vtildek1_noncon, mu_mixed, sig_mixed,
-            ))
+            ).item()
         elif n_con == 0:
             # No inside goods consumed — pure outside-good observation
-            pdisc[i] = float(noncdfmvlogit(vtildek1_noncon, mu_noncon, sig_noncon))
+            pdisc[i] = noncdfmvlogit(vtildek1_noncon, mu_noncon, sig_noncon).item()
             pcont[i] = 1.0
         else:
             # All inside goods consumed (h[i] == 0)
@@ -419,9 +419,9 @@ def mdcev_gradient(
             mu_mixed  = np.zeros((n_con + n_nonc, 1), dtype=np.float64)
             sig_mixed = xsigm * np.ones((n_con + n_nonc, 1), dtype=np.float64)
             pdisc[i] = 1.0
-            pcont[i] = c[i] * float(nonpdfcdfmvlogit(
+            pcont[i] = c[i] * nonpdfcdfmvlogit(
                 vdarrok1_consum, vtildek1_noncon, mu_mixed, sig_mixed,
-            ))
+            ).item()
 
             # ggam2: gradient of pcont w.r.t. gamma utility index
             # trad GAUSS: (pcont.*(-c3) + c2.*prr.*(pcont/c)).*f
@@ -448,7 +448,7 @@ def mdcev_gradient(
 
         elif n_con == 0:
             # No inside goods consumed — pure outside-good observation
-            pdisc[i] = float(noncdfmvlogit(vtildek1_noncon, mu_noncon, sig_noncon))
+            pdisc[i] = noncdfmvlogit(vtildek1_noncon, mu_noncon, sig_noncon).item()
             pcont[i] = 1.0
             gdisci, _, gsigdisci = gradnoncdfmvlogit(
                 vtildek1_noncon, mu_noncon, sig_noncon,
