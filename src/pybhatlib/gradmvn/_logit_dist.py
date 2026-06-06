@@ -1015,7 +1015,7 @@ def cdfmvlogitcomp(b: np.ndarray) -> float:
         for row in yi:
             idx = row - 1                              # 0-based
             b2  = b[idx, :]                            # (i, 1)
-            com1 += ((-1) ** i) * float(cdfmvlogit(b2))
+            com1 += ((-1) ** i) * cdfmvlogit(b2).item()
     result = 1.0 + com1
     return 0.0 if result < 0.0 else result
 
@@ -1158,14 +1158,14 @@ def cdfmvlogitc(a: np.ndarray, b: np.ndarray) -> float:
     a  = np.atleast_2d(a)
     b  = np.atleast_2d(b)
     b1 = b.shape[0]
-    a2   = float(cdfmvlogit(a))
+    a2   = cdfmvlogit(a).item()
     com1 = 0.0
     for i in range(1, b1 + 1):
         yi = combinate(b1, i)                              # (M, i)
         for row in yi:
             idx = row - 1                                  # 0-based
             b2  = b[idx, :]                                # (i, 1)
-            com1 += ((-1) ** i) * float(cdfmvlogit(np.vstack([a, b2])))
+            com1 += ((-1) ** i) * cdfmvlogit(np.vstack([a, b2])).item()
     result = a2 + com1
     return 0.0 if result < 0.0 else result
 
@@ -1436,7 +1436,7 @@ def cdrectmvlogit(
     P = 0.0
     for j in range(len(sign)):
         vertex = comb[j, :].reshape(-1, 1)   # (K, 1)
-        P += sign[j] * float(noncdfmvlogit(vertex, mu, sig))
+        P += sign[j] * noncdfmvlogit(vertex, mu, sig).item()
     return 0.0 if P < 0.0 else P
 
 
@@ -1481,7 +1481,7 @@ def gradcdrectmvlogit(
     P = 0.0
     for j in range(len(sign)):
         vertex = comb[j, :].reshape(-1, 1)         # (K, 1)
-        P     += sign[j] * float(noncdfmvlogit(vertex, mu, sig))
+        P     += sign[j] * noncdfmvlogit(vertex, mu, sig).item()
         gx, gmu, gsig = gradnoncdfmvlogit(vertex, mu, sig)
         gmu1  += sign[j] * gmu
         gsig1 += sign[j] * gsig
