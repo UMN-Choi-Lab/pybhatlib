@@ -32,9 +32,11 @@ _MORP_CONTROL_FIELDS = (
     "tol",
     "optimizer",
     "se_method",
+    "se_diagnostic",
     "verbose",
     "seed",
     "startb",
+    "analytic_grad",
 )
 
 
@@ -50,14 +52,21 @@ class MORPControl:
     heteronly : bool
         If True, estimate only heteroscedastic errors (no correlations).
     fix_scales : bool
-        If True, fix all latent-utility scales at 1 and estimate only the
-        correlation parameters (matches GAUSS BHATLIB MORP's unit-variance
-        identification convention). Only applies when ``iid=False`` and
-        ``heteronly=False``. Default False for backward compatibility —
-        existing callers continue to estimate the (D-1) heteroscedastic
-        scale parameters. This is the standard ordered-probit
-        identification — the latent utility variance is not separately
-        identified from the threshold spacing.
+        If True (default), fix all latent-utility scales at 1 and estimate
+        only the correlation parameters (matches GAUSS BHATLIB MORP's
+        unit-variance identification convention). Only applies when
+        ``iid=False`` and ``heteronly=False``.
+
+        This is the *correct* identification for a multivariate ordered-
+        response probit: each dimension's latent-utility variance is not
+        separately identified from its threshold spacing, so the (D-1)
+        free heteroscedastic scales of the legacy ``fix_scales=False`` path
+        are unidentified and make the full-covariance model fail to
+        converge (see UTA report, 2026-06). The default was flipped to
+        ``True`` so that ``MORPControl(iid=False)`` matches GAUSS BHATLIB
+        MORP out of the box. Set ``fix_scales=False`` only to deliberately
+        reproduce the legacy (unidentified) free-scale layout, e.g. for
+        gradient-path testing.
     method : str
         MVNCD method: "me", "ovus", "tvbs", "bme", "ovbs", "ssj", "scipy".
     spherical : bool
@@ -71,12 +80,20 @@ class MORPControl:
     se_method : str
         Standard-error method: "bhhh" (default, matches GAUSS BHATLIB
         ``_max_CovPar=2``), "hessian" (inverse observed information),
-        or "sandwich" (robust). All three estimators are computed at
-        fit time and exposed on ``MORPResults`` as ``se_bhhh`` /
-        ``se_hessian`` / ``se_sandwich`` so ``summary()`` can print a
-        side-by-side diagnostic comparison (large divergence is a
-        misspecification signal — under correct specification the three
-        converge asymptotically via the information-matrix equality).
+        or "sandwich" (robust). The estimator named here is the one wired
+        to ``.se`` / ``.t_stat`` / ``.p_value``.
+    se_diagnostic : bool
+        If True, compute *all three* SE estimators (BHHH, Hessian,
+        sandwich) at the converged MLE and print the side-by-side
+        diagnostic block in ``summary()``. Large divergence between the
+        three is a misspecification signal — under correct specification
+        they converge asymptotically via the information-matrix equality.
+        Default ``False``: only the primary ``se_method`` estimator is
+        computed, which roughly halves post-convergence time (the
+        observed-Hessian estimator needs ``2 * n_params`` extra full
+        gradient evaluations). Turn it on when you actually want the
+        comparison. ``se_bhhh`` / ``se_hessian`` / ``se_sandwich`` on the
+        result are populated only for the estimator(s) actually computed.
     verbose : int
         Verbosity: 0=silent, 1=summary, 2=per-iteration.
     seed : int or None
@@ -106,13 +123,14 @@ class MORPControl:
         iid: bool = False,
         correst: NDArray | None = None,
         heteronly: bool = False,
-        fix_scales: bool = False,
+        fix_scales: bool = True,
         method: str = "ovus",
         spherical: bool = True,
         maxiter: int = 200,
         tol: float = 1e-5,
         optimizer: Literal["bfgs", "lbfgsb"] = "bfgs",
         se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh",
+        se_diagnostic: bool = False,
         verbose: int = 1,
         seed: int | None = None,
         startb: NDArray | None = None,
@@ -139,6 +157,7 @@ class MORPControl:
         self.tol = tol
         self.optimizer = optimizer
         self.se_method = se_method
+        self.se_diagnostic = se_diagnostic
         self.verbose = verbose
         self.seed = seed
         self.startb = startb
@@ -174,10 +193,12 @@ class MORPControl:
     def __repr__(self) -> str:
         return (
             f"MORPControl(iid={self.iid!r}, heteronly={self.heteronly!r}, "
-            f"method={self.method!r}, spherical={self.spherical!r}, "
-            f"maxiter={self.maxiter!r}, tol={self.tol!r}, "
-            f"optimizer={self.optimizer!r}, verbose={self.verbose!r}, "
-            f"seed={self.seed!r}, analytic_grad={self.analytic_grad!r})"
+            f"fix_scales={self.fix_scales!r}, method={self.method!r}, "
+            f"spherical={self.spherical!r}, maxiter={self.maxiter!r}, "
+            f"tol={self.tol!r}, optimizer={self.optimizer!r}, "
+            f"se_method={self.se_method!r}, se_diagnostic={self.se_diagnostic!r}, "
+            f"verbose={self.verbose!r}, seed={self.seed!r}, "
+            f"analytic_grad={self.analytic_grad!r})"
         )
 
 

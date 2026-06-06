@@ -13,6 +13,7 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from pybhatlib.models.morp._morp_control import MORPControl
+from pybhatlib.models.morp._morp_report import MORPReportTable
 
 
 # Asymmetric with ``MNPResults`` (which is ``@dataclass(init=False)`` with a
@@ -73,6 +74,13 @@ class MORPResults:
         Optimizer return code.
     control : MORPControl
         Control structure used for estimation.
+    report : MORPReportTable or None
+        GAUSS-style reporting table in which the raw ``tau_*`` slots are
+        replaced by the actual threshold cut-points (with delta-method
+        standard errors) and a log-likelihood gradient column is added.
+        Drives ``summary()`` / ``to_dataframe()`` when present; ``None`` for
+        results constructed without it (raw ``tau``-space rendering is used
+        as a fallback).
     """
 
     params: NDArray
@@ -95,6 +103,7 @@ class MORPResults:
     se_bhhh: NDArray | None = None
     se_hessian: NDArray | None = None
     se_sandwich: NDArray | None = None
+    report: MORPReportTable | None = None
 
     def summary(self) -> str:
         """Print formatted estimation results.
@@ -120,26 +129,44 @@ class MORPResults:
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 
+        # Use the GAUSS-style reporting table (threshold cut-points instead of
+        # the raw tau/delta slots, plus a gradient column) when available;
+        # otherwise fall back to the raw tau-space arrays.
+        if self.report is not None:
+            names = self.report.names
+            est_arr = self.report.estimate
+            se_arr = self.report.se
+            t_arr = self.report.t_stat
+            p_arr = self.report.p_value
+            grad_arr = self.report.gradient
+        else:
+            names = self.param_names
+            est_arr = self.params
+            se_arr = self.se
+            t_arr = self.t_stat
+            p_arr = self.p_value
+            grad_arr = self.gradient
+
+        name_w = max(16, max((len(n) for n in names), default=16) + 1)
         header = (
-            f"  {'Parameters':<16s} {'Estimates':>10s} {'Std. err.':>10s} "
-            f"{'Est./s.e.':>10s} {'Prob.':>10s}"
+            f"  {'Parameters':<{name_w}s} {'Estimates':>10s} {'Std. err.':>10s} "
+            f"{'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
         )
         lines.append(header)
-        lines.append("  " + "-" * 58)
+        lines.append("  " + "-" * (name_w + 56))
 
-        for i, name in enumerate(self.param_names):
-            est = self.params[i]
-            se_i = self.se[i] if i < len(self.se) else 0.0
-            t_i = self.t_stat[i] if i < len(self.t_stat) else 0.0
-            p_i = self.p_value[i] if i < len(self.p_value) else 0.0
-            lines.append(f"  {name:<16s} {est:>10.4f} {se_i:>10.4f} {t_i:>10.3f} {p_i:>10.4f}")
+        def _fmt(arr, i, width=10, prec=4):
+            if arr is not None and i < len(arr) and np.isfinite(arr[i]):
+                return f"{arr[i]:>{width}.{prec}f}"
+            return f"{'.':>{width}s}"
 
-        lines.append("")
-
-        # Thresholds
-        for d, tau_d in enumerate(self.thresholds):
-            lines.append(f"  Thresholds (dimension {d + 1}): "
-                         + ", ".join(f"{t:.4f}" for t in tau_d))
+        for i, name in enumerate(names):
+            est_s = _fmt(est_arr, i)
+            se_s = _fmt(se_arr, i)
+            t_s = _fmt(t_arr, i, prec=3)
+            p_s = _fmt(p_arr, i)
+            g_s = _fmt(grad_arr, i)
+            lines.append(f"  {name:<{name_w}s} {est_s} {se_s} {t_s} {p_s} {g_s}")
 
         lines.append("")
 
@@ -207,7 +234,23 @@ class MORPResults:
         return text
 
     def to_dataframe(self) -> pd.DataFrame:
-        """Convert coefficient table to DataFrame."""
+        """Convert coefficient table to DataFrame.
+
+        Uses the GAUSS-style reporting table (threshold cut-points, gradient
+        column) when available; falls back to the raw ``tau``-space arrays.
+        """
+        if self.report is not None:
+            r = self.report
+            return pd.DataFrame(
+                {
+                    "Estimate": r.estimate,
+                    "Std.Error": r.se,
+                    "t-stat": r.t_stat,
+                    "p-value": r.p_value,
+                    "Gradient": r.gradient,
+                },
+                index=r.names,
+            )
         n = len(self.param_names)
         return pd.DataFrame(
             {

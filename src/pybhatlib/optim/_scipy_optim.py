@@ -173,15 +173,7 @@ def minimize_scipy(
             last_eval["g"] = g_arr.copy()
             return f_val, g_arr
 
-        result = minimize(
-            scipy_func,
-            x0,
-            method=method,
-            jac=True,
-            options={"maxiter": maxiter, "gtol": tol, "disp": False},
-            bounds=bounds,
-            callback=callback,
-        )
+        chosen_func = scipy_func
     else:
         # jac=False: wrap func to populate last_eval cache (f only, no grad)
         def scipy_func_nojac(x):
@@ -192,14 +184,31 @@ def minimize_scipy(
             last_eval["g"] = None
             return f_val
 
-        result = minimize(
-            scipy_func_nojac,
-            x0,
+        chosen_func = scipy_func_nojac
+
+    _options = {"maxiter": maxiter, "gtol": tol, "disp": False}
+
+    def _minimize_from(x_init):
+        return minimize(
+            chosen_func,
+            x_init,
             method=method,
-            options={"maxiter": maxiter, "gtol": tol, "disp": False},
+            jac=jac,
+            options=_options,
             bounds=bounds,
             callback=callback,
         )
+
+    result = _minimize_from(x0)
+
+    # NOTE: an automatic BFGS restart-on-status-2 was trialled here to clean up
+    # the MORP full-covariance "precision loss" stops (UTA report, 2026-06).
+    # It was removed: it barely moved the MORP optimum yet shifted converged
+    # MNP fits off GAUSS's stopping point, breaking the tight BHHH SE parity
+    # tests. The substantive MORP iid=False fix is the unit-variance
+    # identification default (MORPControl.fix_scales=True), not optimiser
+    # tweaks. A status-2 stop with correct estimates is surfaced via the
+    # "Optimizer message" line below instead.
 
     # Extract gradient
     if hasattr(result, "jac") and result.jac is not None:
@@ -223,6 +232,8 @@ def minimize_scipy(
         status = "converged" if converged else "did not converge"
         print(f"  Optimization {status} in {result.nit} iterations ({elapsed:.2f}s)")
         print(f"  Final objective: {result.fun:.6f}")
+        if not converged:
+            print(f"  Optimizer message: {result.message}")
 
     return OptimResult(
         x=result.x,

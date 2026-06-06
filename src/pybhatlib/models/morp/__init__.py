@@ -8,12 +8,15 @@ from pybhatlib.models.morp._morp_control import (
 )
 from pybhatlib.models.morp._morp_forecast import morp_predict, morp_predict_category
 from pybhatlib.models.morp._morp_model import MORPModel
+from pybhatlib.models.morp._morp_report import MORPReportTable, build_morp_report
 from pybhatlib.models.morp._morp_results import MORPResults
 
 __all__ = [
     "MORPControl",
     "MORPModel",
     "MORPResults",
+    "MORPReportTable",
+    "build_morp_report",
     "MORPATEResult",
     "morp_ate",
     "morp_predict",

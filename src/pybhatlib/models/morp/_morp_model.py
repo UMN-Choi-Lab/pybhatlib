@@ -25,6 +25,7 @@ from pybhatlib.models.morp._morp_loglik import (
     count_morp_params,
     morp_loglik,
 )
+from pybhatlib.models.morp._morp_report import build_morp_report
 from pybhatlib.models.morp._morp_results import MORPResults
 
 
@@ -263,6 +264,15 @@ class MORPModel(BaseModel):
         corr_matrix = D_inv @ sigma @ D_inv
         np.fill_diagonal(corr_matrix, 1.0)
 
+        # Reporting table: map the raw tau/delta slots into the actual
+        # threshold cut-points (with delta-method SEs and a log-likelihood
+        # gradient column), matching GAUSS BHATLIB's output (UTA report,
+        # 2026-06). Betas and covariance params pass through unchanged.
+        report = build_morp_report(
+            theta_hat, cov_primary, result.grad, self.n_beta, self.n_dims,
+            self.n_categories, self.control, param_names, self.dep_vars,
+        )
+
         return MORPResults(
             params=theta_hat,
             se=se,
@@ -284,6 +294,7 @@ class MORPModel(BaseModel):
             se_bhhh=se_by_method.get("bhhh"),
             se_hessian=se_by_method.get("hessian"),
             se_sandwich=se_by_method.get("sandwich"),
+            report=report,
         )
 
     # ------------------------------------------------------------------
@@ -348,12 +359,19 @@ class MORPModel(BaseModel):
     def _compute_all_se(
         self, theta: np.ndarray,
     ) -> tuple[dict[str, np.ndarray | None], dict[str, np.ndarray | None]]:
-        """Compute SE arrays under all three estimators.
+        """Compute SE arrays under the requested estimator(s).
 
         Returns (se_by_method, cov_by_method). Each dict maps
         ``"bhhh"`` / ``"hessian"`` / ``"sandwich"`` to either the
         SE array (shape n_params) / cov matrix or ``None`` if that
-        estimator's computation failed.
+        estimator was not requested or its computation failed.
+
+        When ``control.se_diagnostic`` is False (default) only the building
+        blocks needed for the primary ``se_method`` are computed — this
+        avoids the expensive observed-Hessian pass (``2 * n_params`` extra
+        full gradient evaluations) that dominated post-convergence time on
+        larger models (UTA report, 2026-06). When True, all three estimators
+        are computed so ``summary()`` can print the side-by-side diagnostic.
         """
         se_by_method: dict[str, np.ndarray | None] = {
             "bhhh": None, "hessian": None, "sandwich": None,
@@ -362,31 +380,39 @@ class MORPModel(BaseModel):
             "bhhh": None, "hessian": None, "sandwich": None,
         }
 
+        diagnostic = bool(getattr(self.control, "se_diagnostic", False))
+        primary = self.control.se_method
+        # BHHH score matrix is needed for the bhhh and sandwich estimators;
+        # the observed Hessian for the hessian and sandwich estimators. Under
+        # the diagnostic, compute everything.
+        need_scores = diagnostic or primary in ("bhhh", "sandwich")
+        need_hessian = diagnostic or primary in ("hessian", "sandwich")
+
         # BHHH: S^T S inverse.
-        S = None
         B = None
-        try:
-            S = self._per_obs_scores(theta)
-            B = S.T @ S
-            cov_b = np.linalg.inv(B)
-            se_by_method["bhhh"] = np.sqrt(np.maximum(np.diag(cov_b), 0.0))
-            cov_by_method["bhhh"] = cov_b
-        except Exception:
-            pass
+        if need_scores:
+            try:
+                S = self._per_obs_scores(theta)
+                B = S.T @ S
+                cov_b = np.linalg.inv(B)
+                se_by_method["bhhh"] = np.sqrt(np.maximum(np.diag(cov_b), 0.0))
+                cov_by_method["bhhh"] = cov_b
+            except Exception:
+                B = None
 
         # Observed Hessian: cov = inv(H_sum_scale).
-        H = None
         H_inv = None
-        try:
-            H = self._observed_hessian(theta)
-            H_inv = np.linalg.inv(H)
-            se_by_method["hessian"] = np.sqrt(np.maximum(np.diag(H_inv), 0.0))
-            cov_by_method["hessian"] = H_inv
-        except Exception:
-            pass
+        if need_hessian:
+            try:
+                H = self._observed_hessian(theta)
+                H_inv = np.linalg.inv(H)
+                se_by_method["hessian"] = np.sqrt(np.maximum(np.diag(H_inv), 0.0))
+                cov_by_method["hessian"] = H_inv
+            except Exception:
+                H_inv = None
 
         # Sandwich: H_inv @ B @ H_inv. Reuses already-computed B and H_inv.
-        if H_inv is not None and B is not None:
+        if (diagnostic or primary == "sandwich") and H_inv is not None and B is not None:
             try:
                 cov_s = H_inv @ B @ H_inv
                 se_by_method["sandwich"] = np.sqrt(

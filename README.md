@@ -117,8 +117,15 @@ TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 Models (a)–(c) reproduce the published estimates and BHHH standard errors to
 ≤0.001 on every parameter (verified end-to-end against GAUSS 26.1.1 + MaxLik
 5.0.9). Model (d) is documented as multi-modal — the Python optimum is a
-slightly better local mode than the published one. MORP parity against
-`MORP_WALK` is in progress (see `docs/plans/MORP_BHATLIB_PARITY.md`).
+slightly better local mode than the published one.
+
+For MORP, `iid=False` now uses GAUSS BHATLIB's unit-variance identification by
+default (`MORPControl.fix_scales=True`): the latent-utility variances are fixed
+at 1 and only correlations are estimated. The full-covariance `MORP_DINING` /
+`MORP_WALK` models reproduce the GAUSS mean log-likelihoods (−4.6598 / −3.7591)
+and correlation matrices. `summary()` reports the actual threshold cut-points
+(with delta-method standard errors) and a gradient column, matching GAUSS's
+output. See `docs/plans/MORP_BHATLIB_PARITY.md`.
 
 The driving notebooks are
 [`t04h_bhatlib_table1.ipynb`](examples/tutorials/t04h_bhatlib_table1.ipynb) and

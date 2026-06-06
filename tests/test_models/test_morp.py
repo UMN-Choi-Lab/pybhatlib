@@ -76,7 +76,16 @@ class TestCountMORPParams:
         assert n == 7
 
     def test_full_cov_2d_3cat(self):
+        # Default is now unit-variance identification (fix_scales=True), so the
+        # (D-1) free scales are dropped — matching GAUSS BHATLIB MORP.
         ctrl = MORPControl(iid=False)
+        n = count_morp_params(3, 2, [3, 3], ctrl)
+        # 3 betas + 2*2 thresholds + 0 scales + 1 corr = 8
+        assert n == 8
+
+    def test_full_cov_2d_3cat_free_scales(self):
+        # Legacy (unidentified) free-scale layout, opt-in via fix_scales=False.
+        ctrl = MORPControl(iid=False, fix_scales=False)
         n = count_morp_params(3, 2, [3, 3], ctrl)
         # 3 betas + 2*2 thresholds + 1 scale + 1 corr = 9
         assert n == 9
@@ -216,3 +225,113 @@ class TestMORPModel:
                 spec={"x1": {"y1": "x1", "y2": "x1"}, "missing_col": {"y1": "missing_col", "y2": "missing_col"}},
                 n_categories=[3, 3],
             )
+
+
+# ---------------------------------------------------------------------------
+# UTA report (2026-06): reporting-space output and SE-diagnostic gating.
+# ---------------------------------------------------------------------------
+
+_REPORT_SPEC = {
+    "x1": {"y1": "x1", "y2": "x1"},
+    "x2": {"y1": "x2", "y2": "x2"},
+}
+
+
+def _make_report_df():
+    rng = np.random.default_rng(7)
+    n = 150
+    x1 = rng.standard_normal(n)
+    x2 = rng.standard_normal(n)
+    beta = np.array([0.5, -0.3])
+    eps = rng.multivariate_normal([0.0, 0.0], [[1.0, 0.3], [0.3, 1.0]], size=n)
+    base = x1 * beta[0] + x2 * beta[1]
+    y1 = np.digitize(base + eps[:, 0], [-0.5, 0.5])
+    y2 = np.digitize(base + eps[:, 1], [-0.3, 0.7])
+    return pd.DataFrame({"x1": x1, "x2": x2, "y1": y1, "y2": y2})
+
+
+def _fit_synth(df, **ctrl_kw):
+    model = MORPModel(
+        data=df, dep_vars=["y1", "y2"], spec=_REPORT_SPEC,
+        n_categories=[3, 3],
+        control=MORPControl(iid=True, verbose=0, seed=42, maxiter=80, **ctrl_kw),
+    )
+    return model.fit()
+
+
+@pytest.fixture(scope="module")
+def report_fit():
+    return _fit_synth(_make_report_df())
+
+
+class TestMORPReportTable:
+    """Issue 1+2: summary shows threshold cut-points (not raw tau/delta slots)
+    with delta-method SEs and a gradient column (GAUSS BHATLIB parity)."""
+
+    @pytest.fixture(scope="class")
+    def fitted(self, report_fit):
+        return report_fit
+
+    def test_report_present_and_relabelled(self, fitted):
+        assert fitted.report is not None
+        assert any(n.startswith("thresh_y1_") for n in fitted.report.names)
+        # raw tau_* labels must not leak into the display table
+        assert not any(n.startswith("tau_") for n in fitted.report.names)
+
+    def test_report_thresholds_match_unpack(self, fitted):
+        # report estimates in each threshold block == cumulative thresholds
+        idx = 2  # two betas precede the threshold blocks
+        for tau_d in fitted.thresholds:
+            m = len(tau_d)
+            np.testing.assert_allclose(fitted.report.estimate[idx:idx + m], tau_d)
+            idx += m
+
+    def test_first_threshold_se_equals_raw(self, fitted):
+        # the first threshold per dimension is the identity row of the
+        # delta-method Jacobian, so its reported SE equals the raw tau_1 SE
+        assert np.isfinite(fitted.report.se[2])
+        np.testing.assert_allclose(fitted.report.se[2], fitted.se[2], rtol=1e-6)
+
+    def test_gradient_column_present_and_small(self, fitted):
+        assert len(fitted.report.gradient) == len(fitted.report.names)
+        assert np.nanmax(np.abs(fitted.report.gradient)) < 0.1
+
+    def test_summary_and_dataframe_show_thresholds(self, fitted):
+        txt = fitted.summary()
+        assert "Gradient" in txt and "thresh_y1_1" in txt and "tau_" not in txt
+        dfres = fitted.to_dataframe()
+        assert "Gradient" in dfres.columns
+        assert any(str(ix).startswith("thresh_") for ix in dfres.index)
+
+
+class TestMORPSEDiagnosticOptional:
+    """Issue 4: the 3-estimator SE diagnostic is opt-in via se_diagnostic."""
+
+    def test_diagnostic_off_by_default(self, report_fit):
+        r = report_fit  # default se_diagnostic=False
+        assert r.se_bhhh is not None          # primary still computed
+        assert r.se_hessian is None and r.se_sandwich is None
+        assert "alternative estimators" not in r.summary()
+
+    def test_diagnostic_on_populates_all_three(self):
+        r = _fit_synth(_make_report_df(), se_diagnostic=True)
+        assert r.se_bhhh is not None
+        assert r.se_hessian is not None
+        assert r.se_sandwich is not None
+        assert "alternative estimators" in r.summary()
+
+
+class TestMORPFixScalesDefault:
+    """Issue 3: full-covariance MORP defaults to unit-variance identification
+    (fix_scales=True), matching GAUSS BHATLIB MORP (no free latent scales)."""
+
+    def test_default_is_unit_variance(self):
+        assert MORPControl(iid=False).fix_scales is True
+
+    def test_full_cov_param_count_matches_gauss(self):
+        # 2 betas + (2+2) thresholds + 0 scales + 1 corr = 7 (not 8 w/ a scale)
+        n = count_morp_params(2, 2, [3, 3], MORPControl(iid=False))
+        assert n == 7
+        n_free = count_morp_params(2, 2, [3, 3],
+                                   MORPControl(iid=False, fix_scales=False))
+        assert n_free == 8  # legacy layout keeps the (D-1)=1 free scale

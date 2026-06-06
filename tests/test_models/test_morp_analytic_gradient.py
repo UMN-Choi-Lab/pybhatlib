@@ -171,8 +171,11 @@ def test_analytic_grad_matches_fd_synthetic_flexible(seed):
         seed=22,
     )
 
+    # fix_scales=False pins the legacy free-scale layout so this test keeps
+    # exercising the *scale* gradient block (the default is now fix_scales=True).
     ctrl = MORPControl(
-        iid=False, method="ovus", spherical=True, analytic_grad=True, verbose=0,
+        iid=False, fix_scales=False, method="ovus", spherical=True,
+        analytic_grad=True, verbose=0,
     )
     perturb = [0.0, 0.1][seed]
     theta = _make_theta(
@@ -275,7 +278,8 @@ def test_analytic_grad_matches_fd_synthetic_k3_mixed_boundaries():
     )
 
     ctrl = MORPControl(
-        iid=False, method="ovus", spherical=True, analytic_grad=True, verbose=0,
+        iid=False, fix_scales=False, method="ovus", spherical=True,
+        analytic_grad=True, verbose=0,
     )
     theta = _make_theta(
         n_beta, n_dims, n_categories, ctrl, seed=303, perturb_scale=0.05,
@@ -452,7 +456,7 @@ def test_morp_dining_analytic_matches_fd():
     n_categories = [11, 7, 7]
 
     ctrl_a = MORPControl(
-        iid=False, method="ovus", analytic_grad=True, verbose=0,
+        iid=False, fix_scales=False, method="ovus", analytic_grad=True, verbose=0,
     )
     model = MORPModel(
         data=df,
@@ -497,7 +501,7 @@ def test_morp_dining_fit_runtime_improves():
 
     def _build(analytic: bool) -> MORPModel:
         ctrl = MORPControl(
-            iid=False, method="ovus", analytic_grad=analytic,
+            iid=False, fix_scales=False, method="ovus", analytic_grad=analytic,
             verbose=0, seed=42, maxiter=15,  # cap to keep test fast
         )
         return MORPModel(
