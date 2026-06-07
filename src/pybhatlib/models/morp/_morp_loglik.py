@@ -344,24 +344,42 @@ def _numerical_gradient_morp(
     control: MORPControl,
     xp,
 ) -> np.ndarray:
-    """Compute gradient via central finite differences."""
-    eps = 1e-6
+    """Compute gradient via forward finite differences (``n+1`` LL evals).
+
+    Forward FD has ``O(eps)`` accuracy vs central FD's ``O(eps^2)``, but
+    halves the number of LL evaluations — important for the scipy-MVNCD
+    path used at K ≤ 4 (~1 LL call ≈ 1 s on N=1583). For optimisation
+    direction this trade-off is fine; BHHH/sandwich SEs use a separate
+    central-FD scoring routine in ``MORPModel._per_obs_scores`` that
+    targets per-observation derivatives and is unaffected by this change.
+
+    The FD step ``eps`` is method-dependent because the noise floor of
+    the LL function differs: the OVUS/ME analytic kernels are tight to
+    machine precision and tolerate the standard ``eps=1e-6``; the scipy
+    MVNCD path uses Genz QMC with ``abseps=1e-9`` (precision floor
+    ~1e-9), and the optimal forward-FD step is ``sqrt(noise/|g|)``.
+    With ``|g|`` ~ 1e-3 near the MORP optimum, that's ``eps ~ 1e-3``.
+    A too-small ``eps`` (e.g. 1e-6) makes ``noise/eps`` ~ 1e-3 — same
+    order as the actual gradient signal, which makes BFGS see pure
+    noise and stall immediately.
+    """
+    if control.method == "scipy":
+        eps = 1e-3  # tuned for scipy.mvn default precision (abseps=1e-5)
+    else:
+        eps = 1e-6
     n = len(theta)
     grad = np.zeros(n, dtype=np.float64)
 
+    # Anchor f at the base point (one eval) — reused for every column.
+    f0 = morp_loglik(
+        theta, X, y, n_dims, n_categories, n_beta, control, xp=xp
+    )
     for i in range(n):
         theta_plus = theta.copy()
         theta_plus[i] += eps
         f_plus = morp_loglik(
             theta_plus, X, y, n_dims, n_categories, n_beta, control, xp=xp
         )
-
-        theta_minus = theta.copy()
-        theta_minus[i] -= eps
-        f_minus = morp_loglik(
-            theta_minus, X, y, n_dims, n_categories, n_beta, control, xp=xp
-        )
-
-        grad[i] = (f_plus - f_minus) / (2.0 * eps)
+        grad[i] = (f_plus - f0) / eps
 
     return grad

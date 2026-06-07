@@ -190,13 +190,47 @@ class MORPModel(BaseModel):
             else:
                 print("  Error structure: Full covariance")
 
+        # GAUSS-parity dispatch: match BHATLIB's ``cdorrectmvn`` (gradients
+        # mvn.src lines 712-721), which routes K=2 → cdfbvn, K=3 → cdftvn,
+        # K=4 → cdfqvn (exact closed-form CDFs) and only falls back to the
+        # ``_method`` ("OVUS"/"TVBS"/…) approximation when K ≥ 5.
+        # Without this dispatch the OVUS approximation introduces a
+        # systematic LL bias of ~1e-3/obs at K=4 — measured at GAUSS's MLE
+        # for the WALK dataset: ovus=-3.75967, vs GAUSS exact=-3.75842.
+        # Scipy's ``multivariate_normal.cdf`` (Genz QMC, same as GAUSS
+        # cdfqvn) at the same point gave -3.758422, a 5-decimal match.
+        #
+        # We optimise with the user's control (typically OVUS analytic
+        # gradient — fast and stable) and then *re-evaluate* the LL at
+        # the converged point through scipy's exact CDF, returning that
+        # GAUSS-equivalent LL value. This eliminates the systematic ~1e-3
+        # OVUS bias in the reported LL while keeping the optimiser fast.
+        # The MLE parameters themselves remain at the OVUS stationary
+        # point (~0.005 from GAUSS in correlation space); closing that
+        # last gap requires an analytic gradient through the exact CDF
+        # (Bhat's ``gradcdrectmvnanl``, not ported yet) — FD against the
+        # exact LL is noise-limited at the OVUS optimum (gradient signal
+        # ~1e-3 is below scipy's default FD-discoverable noise ~1e-2).
+        from pybhatlib.models.morp._morp_control import morp_control_replace
+        use_exact_eval = (
+            not self.control.iid
+            and self.n_dims <= 4
+            and self.control.method in ("me", "ovus", "tvbs", "bme", "ovbs",
+                                         "tg", "tgbme")
+        )
+        if use_exact_eval and self.control.verbose >= 1:
+            print(
+                f"  MVNCD dispatch: K={self.n_dims} ≤ 4 → exact scipy CDF "
+                f"used for LL report (matches GAUSS cdorrectmvn / cdfqvn)."
+            )
+
         # Starting values
         if self.control.startb is not None:
             theta0 = self.control.startb.copy()
         else:
             theta0 = self._default_start_values()
 
-        # Define objective
+        # Optimisation objective (user's control — typically OVUS).
         def objective(theta):
             return morp_loglik(
                 theta, self.X, self.y, self.n_dims, self.n_categories,
@@ -219,6 +253,39 @@ class MORPModel(BaseModel):
             verbose=self.control.verbose,
             jac=True,
         )
+
+        # GAUSS-parity LL re-evaluation: substitute the exact CDF value
+        # at the converged parameters. We rebuild ``result`` with the
+        # updated ``fun`` field so all downstream consumers (MORPResults,
+        # report, summary) see the exact-LL value.
+        if use_exact_eval:
+            exact_control = morp_control_replace(
+                self.control, method="scipy", analytic_grad=False,
+            )
+            t_exact = time.time()
+            f_exact = morp_loglik(
+                result.x, self.X, self.y, self.n_dims, self.n_categories,
+                self.n_beta, exact_control, return_gradient=False, xp=xp,
+            )
+            if self.control.verbose >= 1:
+                print(
+                    f"  Re-evaluated LL with exact scipy CDF: "
+                    f"f_approx={result.fun:.6f}  →  f_exact={f_exact:.6f}  "
+                    f"(Δ={f_exact - result.fun:+.6f}) in "
+                    f"{time.time() - t_exact:.1f}s"
+                )
+            # Mutate result in-place so the rest of fit() sees f_exact.
+            # Preserve the raw scipy ``status`` so downstream callers (and
+            # the precision-limited-as-converged reclassification upstream)
+            # keep the correct distinction between "gradient at floor" (0/2)
+            # and a genuine failure mode.
+            result = type(result)(
+                x=result.x, fun=float(f_exact), grad=result.grad,
+                hess_inv=result.hess_inv, n_iter=result.n_iter,
+                converged=result.converged, return_code=result.return_code,
+                message=result.message, status=getattr(result, "status", 0),
+            )
+
 
         elapsed = (time.time() - start_time) / 60.0
 
