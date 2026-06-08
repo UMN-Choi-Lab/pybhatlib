@@ -649,16 +649,15 @@ class MNPModel(BaseModel):
             finally:
                 self.control.se_method = _saved_method
 
-        # Apply the GAUSS kernel-correlation parameterization (2*atanh) so
-        # reported parker values match GAUSS BHATLIB output verbatim. Delta
-        # method propagates the transform to the covariance / s.e. arrays
-        # (including the diagnostic estimators). No-op when there are no
-        # parker params (IID; fixed-correlation specifications).
-        (
-            b_report, se, t_stat, p_value, cov_report, corr_report, se_by_method,
-        ) = self._apply_gauss_kernel_transform(
-            param_names, b_report, se, cov_report, se_other=se_by_method,
-        )
+        # Kernel correlations are reported in UNPARAMETERIZED form (the raw
+        # correlation entry, e.g. 0.473), matching GAUSS BHATLIB's
+        # ``_wantcovariance`` path (``MNP_TRAVELMODE.gss`` lines 199-216,
+        # which re-runs ``lpr1`` on ``vecndup(cholker'*cholker)`` and labels
+        # the entries ``cor``) and the ``bhatlib_table2_targets`` fixture
+        # (``parker01`` documented as the correlation = 0.473, se 0.1598).
+        # ``_normalize_for_reporting`` already produces these raw correlations
+        # and their unparameterized SEs via the lpr1/lgd1 score path, so no
+        # further transform is applied here.
 
         # Extract normalized structural parameters
         lambda_hat = None
@@ -733,102 +732,6 @@ class MNPModel(BaseModel):
             se_hessian=se_by_method.get("hessian"),
             se_sandwich=se_by_method.get("sandwich"),
         )
-
-    @staticmethod
-    def _apply_gauss_kernel_transform(
-        param_names: list[str],
-        b_report: np.ndarray,
-        se: np.ndarray,
-        cov_report: np.ndarray,
-        se_other: dict[str, np.ndarray | None] | None = None,
-    ) -> tuple[
-        np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-        np.ndarray, np.ndarray, dict[str, np.ndarray | None] | None,
-    ]:
-        """Convert kernel correlation entries to GAUSS's parameterization.
-
-        GAUSS BHATLIB reports the kernel correlation in the parameterized
-        scalar ``parker = 2 * atanh(s) = ln((1+s)/(1-s))`` (the radial /
-        spherical-Cholesky link). pybhatlib estimates the raw correlation
-        ``s`` directly. Applying ``parker = 2*atanh(s)`` and the delta-method
-        scaling ``J[i,i] = 2/(1-s²)`` to the standard errors yields output
-        that matches GAUSS to optimizer-tolerance precision.
-
-        Other parameters (betas, scales, segment probs) pass through
-        unchanged. Parker entries near the |s|=1 boundary are left in raw
-        form (the transform is undefined there) — the optimizer should
-        not produce such values for any well-identified model.
-
-        Returns transformed (b, se, t_stat, p_value, cov, corr, se_other).
-        """
-        from scipy import stats as _stats
-
-        n = len(b_report)
-        parker_idx = [
-            i for i, nm in enumerate(param_names) if nm.startswith("parker")
-        ]
-        if not parker_idx:
-            # No kernel correlation params — return inputs unchanged.
-            t_stat = np.where(se > 0, b_report / se, 0.0)
-            p_value = 2.0 * (1.0 - _stats.norm.cdf(np.abs(t_stat)))
-            d = np.sqrt(np.diag(cov_report))
-            with np.errstate(invalid="ignore", divide="ignore"):
-                corr = cov_report / np.outer(d, d)
-                corr = np.where(np.isfinite(corr), corr, 0.0)
-            return b_report, se, t_stat, p_value, cov_report, corr, se_other
-
-        # Build diagonal Jacobian J: identity except J[i,i] = 2/(1-s²) for parkers.
-        J = np.eye(n, dtype=np.float64)
-        b_new = b_report.copy()
-        boundary_mask = np.zeros(n, dtype=bool)
-        for i in parker_idx:
-            s = float(b_report[i])
-            if abs(s) >= 1.0 - 1e-9:
-                # On the boundary: leave alone, mark so SE/cov stay raw too.
-                boundary_mask[i] = True
-                continue
-            J[i, i] = 2.0 / (1.0 - s * s)
-            b_new[i] = 2.0 * np.arctanh(s)
-
-        # Apply delta-method to covariance matrix (full transform handles
-        # parker×parker entries correctly).
-        cov_new = J @ cov_report @ J.T
-        # Standard errors from the diagonal of the new covariance.
-        # Diagonal scaling: var_new[i,i] = J[i,i]² * var[i,i] for parkers.
-        se_new = se.copy()
-        for i in parker_idx:
-            if boundary_mask[i]:
-                continue
-            if i < len(se):
-                se_new[i] = J[i, i] * se[i]
-
-        # Recompute t_stat / p_value in the transformed space.
-        with np.errstate(invalid="ignore", divide="ignore"):
-            t_new = np.where(se_new > 0, b_new / se_new, np.nan)
-        p_new = 2.0 * (1.0 - _stats.norm.cdf(np.abs(t_new)))
-
-        # Recompute correlation matrix from the transformed covariance.
-        d = np.sqrt(np.maximum(np.diag(cov_new), 0.0))
-        with np.errstate(invalid="ignore", divide="ignore"):
-            corr_new = cov_new / np.outer(d, d)
-            corr_new = np.where(np.isfinite(corr_new), corr_new, 0.0)
-
-        # Same transform on alternative-estimator SE arrays.
-        se_other_new: dict[str, np.ndarray | None] | None = None
-        if se_other is not None:
-            se_other_new = {}
-            for method, se_m in se_other.items():
-                if se_m is None:
-                    se_other_new[method] = None
-                    continue
-                tmp = se_m.copy()
-                for i in parker_idx:
-                    if boundary_mask[i] or i >= len(tmp):
-                        continue
-                    tmp[i] = J[i, i] * se_m[i]
-                se_other_new[method] = tmp
-
-        return b_new, se_new, t_new, p_new, cov_new, corr_new, se_other_new
 
     def _default_start_values(self) -> np.ndarray:
         """Generate reasonable starting values for optimization."""
