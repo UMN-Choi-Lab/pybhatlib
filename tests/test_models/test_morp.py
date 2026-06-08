@@ -407,3 +407,116 @@ class TestMORPCorrReporting:
         reported = [r.report.estimate[k] for k, nm in enumerate(r.report.names)
                     if nm.startswith("corr_")]
         np.testing.assert_allclose(reported, offdiag, atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# UTA follow-up report (2026-06), issue #3: compute ATE from user-input final
+# coefficients (betas / threshold cut-points / correlation) without re-fitting,
+# matching the GAUSS "plug in est" workflow.
+# ---------------------------------------------------------------------------
+
+def _ate_X(df, n_dims, var_cols):
+    n = len(df)
+    X = np.zeros((n, n_dims, len(var_cols)))
+    block = df[var_cols].to_numpy(dtype=float)
+    for d in range(n_dims):
+        X[:, d, :] = block
+    return X
+
+
+class TestMORPFromEstimatesATE:
+    """from_estimates + morp_ate / morp_joint_probs reproduce a fit's ATE from
+    the reported coefficients alone (no re-optimisation)."""
+
+    @pytest.fixture(scope="class")
+    def setup(self):
+        from pybhatlib.models.morp import morp_ate, morp_joint_probs
+        r = _fit_corr(spherical=True)
+        df = _make_corr_report_df()
+        X = _ate_X(df, 3, ["x1", "x2"])
+        return r, X, morp_ate, morp_joint_probs
+
+    def test_round_trip_marginal_ate_is_exact(self, setup):
+        from pybhatlib.models.morp import MORPResults
+        r, X, morp_ate, _ = setup
+        r2 = MORPResults.from_estimates(
+            r.params[:2], r.thresholds, r.correlation_matrix,
+            dep_vars=["d1", "d2", "d3"], n_categories=[3, 3, 3],
+        )
+        a1 = morp_ate(r, X, 3, [3, 3, 3], 2)
+        a2 = morp_ate(r2, X, 3, [3, 3, 3], 2)
+        for d in range(3):
+            np.testing.assert_allclose(
+                a1.predicted_probs[d], a2.predicted_probs[d], atol=1e-12
+            )
+
+    def test_from_estimates_recovers_thresholds_and_corr(self, setup):
+        from pybhatlib.models.morp import MORPResults
+        r, _, _, _ = setup
+        r2 = MORPResults.from_estimates(
+            r.params[:2], r.thresholds, r.correlation_matrix,
+            dep_vars=["d1", "d2", "d3"], n_categories=[3, 3, 3],
+        )
+        for a, b in zip(r2.thresholds, r.thresholds):
+            np.testing.assert_allclose(a, b, atol=1e-10)
+        np.testing.assert_allclose(
+            r2.correlation_matrix, r.correlation_matrix, atol=1e-10
+        )
+
+    def test_joint_probs_sum_to_one(self, setup):
+        r, X, _, morp_joint_probs = setup
+        J = morp_joint_probs(r, X, 3, [3, 3, 3], 2)
+        assert J.combos.shape == (27, 3)
+        # MVNCD approximation -> close to 1, not exact
+        np.testing.assert_allclose(J.probs.sum(), 1.0, atol=1e-2)
+
+    def test_joint_marginal_matches_direct_marginal(self, setup):
+        r, X, morp_ate, morp_joint_probs = setup
+        a = morp_ate(r, X, 3, [3, 3, 3], 2)
+        J = morp_joint_probs(r, X, 3, [3, 3, 3], 2)
+        for d in range(3):
+            np.testing.assert_allclose(J.marginal(d), a.predicted_probs[d], atol=1e-2)
+
+    def test_from_params_convenience_matches(self, setup):
+        from pybhatlib.models.morp import morp_ate_from_params
+        r, X, morp_ate, _ = setup
+        a1 = morp_ate(r, X, 3, [3, 3, 3], 2)
+        a3 = morp_ate_from_params(
+            r.params[:2], r.thresholds, r.correlation_matrix, X, 3, [3, 3, 3], 2,
+            dep_vars=["d1", "d2", "d3"],
+        )
+        for d in range(3):
+            np.testing.assert_allclose(
+                a1.predicted_probs[d], a3.predicted_probs[d], atol=1e-12
+            )
+
+
+class TestMORPFromEstimatesValidation:
+    """from_estimates input validation and the IID path."""
+
+    def test_iid_when_correlation_none(self):
+        from pybhatlib.models.morp import MORPResults
+        r = MORPResults.from_estimates(
+            [0.5], [np.array([-0.4, 0.6])], None,
+            dep_vars=["y1"], n_categories=[3],
+        )
+        assert r.control.iid is True
+        assert r.correlation_matrix is None
+        np.testing.assert_allclose(r.thresholds[0], [-0.4, 0.6])
+
+    def test_non_increasing_thresholds_raise(self):
+        from pybhatlib.models.morp import MORPResults
+        with pytest.raises(ValueError, match="strictly increasing"):
+            MORPResults.from_estimates(
+                [0.5], [np.array([0.6, -0.4])], None,
+                dep_vars=["y1"], n_categories=[3],
+            )
+
+    def test_out_of_range_correlation_raises(self):
+        from pybhatlib.models.morp import MORPResults
+        with pytest.raises(ValueError, match="must be in"):
+            MORPResults.from_estimates(
+                [0.5, 0.3], [np.array([0.0]), np.array([0.0])],
+                np.array([[1.0, 1.4], [1.4, 1.0]]),
+                dep_vars=["y1", "y2"], n_categories=[2, 2],
+            )

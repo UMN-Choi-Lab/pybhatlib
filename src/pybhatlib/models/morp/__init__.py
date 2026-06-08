@@ -1,6 +1,12 @@
 """Multivariate Ordered Response Probit (MORP) model."""
 
-from pybhatlib.models.morp._morp_ate import MORPATEResult, morp_ate
+from pybhatlib.models.morp._morp_ate import (
+    MORPATEResult,
+    MORPJointATEResult,
+    morp_ate,
+    morp_ate_from_params,
+    morp_joint_probs,
+)
 from pybhatlib.models.morp._morp_control import (
     MORPControl,
     morp_control_asdict,
@@ -18,7 +24,10 @@ __all__ = [
     "MORPReportTable",
     "build_morp_report",
     "MORPATEResult",
+    "MORPJointATEResult",
     "morp_ate",
+    "morp_ate_from_params",
+    "morp_joint_probs",
     "morp_predict",
     "morp_predict_category",
     "morp_control_replace",
