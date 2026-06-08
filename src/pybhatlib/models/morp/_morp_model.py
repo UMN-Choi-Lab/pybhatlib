@@ -25,6 +25,7 @@ from pybhatlib.models.morp._morp_loglik import (
     count_morp_params,
     morp_loglik,
 )
+from pybhatlib.models.morp._morp_report import build_morp_report
 from pybhatlib.models.morp._morp_results import MORPResults
 
 
@@ -189,13 +190,47 @@ class MORPModel(BaseModel):
             else:
                 print("  Error structure: Full covariance")
 
+        # GAUSS-parity dispatch: match BHATLIB's ``cdorrectmvn`` (gradients
+        # mvn.src lines 712-721), which routes K=2 → cdfbvn, K=3 → cdftvn,
+        # K=4 → cdfqvn (exact closed-form CDFs) and only falls back to the
+        # ``_method`` ("OVUS"/"TVBS"/…) approximation when K ≥ 5.
+        # Without this dispatch the OVUS approximation introduces a
+        # systematic LL bias of ~1e-3/obs at K=4 — measured at GAUSS's MLE
+        # for the WALK dataset: ovus=-3.75967, vs GAUSS exact=-3.75842.
+        # Scipy's ``multivariate_normal.cdf`` (Genz QMC, same as GAUSS
+        # cdfqvn) at the same point gave -3.758422, a 5-decimal match.
+        #
+        # We optimise with the user's control (typically OVUS analytic
+        # gradient — fast and stable) and then *re-evaluate* the LL at
+        # the converged point through scipy's exact CDF, returning that
+        # GAUSS-equivalent LL value. This eliminates the systematic ~1e-3
+        # OVUS bias in the reported LL while keeping the optimiser fast.
+        # The MLE parameters themselves remain at the OVUS stationary
+        # point (~0.005 from GAUSS in correlation space); closing that
+        # last gap requires an analytic gradient through the exact CDF
+        # (Bhat's ``gradcdrectmvnanl``, not ported yet) — FD against the
+        # exact LL is noise-limited at the OVUS optimum (gradient signal
+        # ~1e-3 is below scipy's default FD-discoverable noise ~1e-2).
+        from pybhatlib.models.morp._morp_control import morp_control_replace
+        use_exact_eval = (
+            not self.control.iid
+            and self.n_dims <= 4
+            and self.control.method in ("me", "ovus", "tvbs", "bme", "ovbs",
+                                         "tg", "tgbme")
+        )
+        if use_exact_eval and self.control.verbose >= 1:
+            print(
+                f"  MVNCD dispatch: K={self.n_dims} ≤ 4 → exact scipy CDF "
+                f"used for LL report (matches GAUSS cdorrectmvn / cdfqvn)."
+            )
+
         # Starting values
         if self.control.startb is not None:
             theta0 = self.control.startb.copy()
         else:
             theta0 = self._default_start_values()
 
-        # Define objective
+        # Optimisation objective (user's control — typically OVUS).
         def objective(theta):
             return morp_loglik(
                 theta, self.X, self.y, self.n_dims, self.n_categories,
@@ -218,6 +253,39 @@ class MORPModel(BaseModel):
             verbose=self.control.verbose,
             jac=True,
         )
+
+        # GAUSS-parity LL re-evaluation: substitute the exact CDF value
+        # at the converged parameters. We rebuild ``result`` with the
+        # updated ``fun`` field so all downstream consumers (MORPResults,
+        # report, summary) see the exact-LL value.
+        if use_exact_eval:
+            exact_control = morp_control_replace(
+                self.control, method="scipy", analytic_grad=False,
+            )
+            t_exact = time.time()
+            f_exact = morp_loglik(
+                result.x, self.X, self.y, self.n_dims, self.n_categories,
+                self.n_beta, exact_control, return_gradient=False, xp=xp,
+            )
+            if self.control.verbose >= 1:
+                print(
+                    f"  Re-evaluated LL with exact scipy CDF: "
+                    f"f_approx={result.fun:.6f}  →  f_exact={f_exact:.6f}  "
+                    f"(Δ={f_exact - result.fun:+.6f}) in "
+                    f"{time.time() - t_exact:.1f}s"
+                )
+            # Mutate result in-place so the rest of fit() sees f_exact.
+            # Preserve the raw scipy ``status`` so downstream callers (and
+            # the precision-limited-as-converged reclassification upstream)
+            # keep the correct distinction between "gradient at floor" (0/2)
+            # and a genuine failure mode.
+            result = type(result)(
+                x=result.x, fun=float(f_exact), grad=result.grad,
+                hess_inv=result.hess_inv, n_iter=result.n_iter,
+                converged=result.converged, return_code=result.return_code,
+                message=result.message, status=getattr(result, "status", 0),
+            )
+
 
         elapsed = (time.time() - start_time) / 60.0
 
@@ -263,6 +331,15 @@ class MORPModel(BaseModel):
         corr_matrix = D_inv @ sigma @ D_inv
         np.fill_diagonal(corr_matrix, 1.0)
 
+        # Reporting table: map the raw tau/delta slots into the actual
+        # threshold cut-points (with delta-method SEs and a log-likelihood
+        # gradient column), matching GAUSS BHATLIB's output (UTA report,
+        # 2026-06). Betas and covariance params pass through unchanged.
+        report = build_morp_report(
+            theta_hat, cov_primary, result.grad, self.n_beta, self.n_dims,
+            self.n_categories, self.control, param_names, self.dep_vars,
+        )
+
         return MORPResults(
             params=theta_hat,
             se=se,
@@ -284,6 +361,7 @@ class MORPModel(BaseModel):
             se_bhhh=se_by_method.get("bhhh"),
             se_hessian=se_by_method.get("hessian"),
             se_sandwich=se_by_method.get("sandwich"),
+            report=report,
         )
 
     # ------------------------------------------------------------------
@@ -348,12 +426,19 @@ class MORPModel(BaseModel):
     def _compute_all_se(
         self, theta: np.ndarray,
     ) -> tuple[dict[str, np.ndarray | None], dict[str, np.ndarray | None]]:
-        """Compute SE arrays under all three estimators.
+        """Compute SE arrays under the requested estimator(s).
 
         Returns (se_by_method, cov_by_method). Each dict maps
         ``"bhhh"`` / ``"hessian"`` / ``"sandwich"`` to either the
         SE array (shape n_params) / cov matrix or ``None`` if that
-        estimator's computation failed.
+        estimator was not requested or its computation failed.
+
+        When ``control.se_diagnostic`` is False (default) only the building
+        blocks needed for the primary ``se_method`` are computed — this
+        avoids the expensive observed-Hessian pass (``2 * n_params`` extra
+        full gradient evaluations) that dominated post-convergence time on
+        larger models (UTA report, 2026-06). When True, all three estimators
+        are computed so ``summary()`` can print the side-by-side diagnostic.
         """
         se_by_method: dict[str, np.ndarray | None] = {
             "bhhh": None, "hessian": None, "sandwich": None,
@@ -362,31 +447,39 @@ class MORPModel(BaseModel):
             "bhhh": None, "hessian": None, "sandwich": None,
         }
 
+        diagnostic = bool(getattr(self.control, "se_diagnostic", False))
+        primary = self.control.se_method
+        # BHHH score matrix is needed for the bhhh and sandwich estimators;
+        # the observed Hessian for the hessian and sandwich estimators. Under
+        # the diagnostic, compute everything.
+        need_scores = diagnostic or primary in ("bhhh", "sandwich")
+        need_hessian = diagnostic or primary in ("hessian", "sandwich")
+
         # BHHH: S^T S inverse.
-        S = None
         B = None
-        try:
-            S = self._per_obs_scores(theta)
-            B = S.T @ S
-            cov_b = np.linalg.inv(B)
-            se_by_method["bhhh"] = np.sqrt(np.maximum(np.diag(cov_b), 0.0))
-            cov_by_method["bhhh"] = cov_b
-        except Exception:
-            pass
+        if need_scores:
+            try:
+                S = self._per_obs_scores(theta)
+                B = S.T @ S
+                cov_b = np.linalg.inv(B)
+                se_by_method["bhhh"] = np.sqrt(np.maximum(np.diag(cov_b), 0.0))
+                cov_by_method["bhhh"] = cov_b
+            except Exception:
+                B = None
 
         # Observed Hessian: cov = inv(H_sum_scale).
-        H = None
         H_inv = None
-        try:
-            H = self._observed_hessian(theta)
-            H_inv = np.linalg.inv(H)
-            se_by_method["hessian"] = np.sqrt(np.maximum(np.diag(H_inv), 0.0))
-            cov_by_method["hessian"] = H_inv
-        except Exception:
-            pass
+        if need_hessian:
+            try:
+                H = self._observed_hessian(theta)
+                H_inv = np.linalg.inv(H)
+                se_by_method["hessian"] = np.sqrt(np.maximum(np.diag(H_inv), 0.0))
+                cov_by_method["hessian"] = H_inv
+            except Exception:
+                H_inv = None
 
         # Sandwich: H_inv @ B @ H_inv. Reuses already-computed B and H_inv.
-        if H_inv is not None and B is not None:
+        if (diagnostic or primary == "sandwich") and H_inv is not None and B is not None:
             try:
                 cov_s = H_inv @ B @ H_inv
                 se_by_method["sandwich"] = np.sqrt(

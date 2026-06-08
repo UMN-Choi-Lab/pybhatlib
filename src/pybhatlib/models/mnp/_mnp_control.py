@@ -75,11 +75,18 @@ class MNPControl:
         ``se_method="sandwich"`` for the robust estimator that does not
         assume the information-matrix equality.
 
-        Regardless of which method is chosen as the primary, all three
-        estimators are computed at fit time and exposed on the results
-        object as ``se_bhhh``, ``se_hessian``, ``se_sandwich`` so that
-        ``summary()`` can print a side-by-side diagnostic comparison
-        (large divergence is a misspecification signal).
+        The estimator named here is the one wired to ``.se`` / ``.t_stat`` /
+        ``.p_value``. The other two are computed only when
+        ``se_diagnostic=True`` (see below).
+    se_diagnostic : bool
+        If True, compute all three SE estimators (BHHH, Hessian, sandwich)
+        at the converged MLE and print the side-by-side diagnostic block in
+        ``summary()``; ``se_bhhh`` / ``se_hessian`` / ``se_sandwich`` are then
+        populated for the comparison (large divergence is a misspecification
+        signal). Default ``False``: only the primary ``se_method`` estimator
+        is computed, which skips the observed-Hessian pass (``2 * n_params``
+        extra full gradient evaluations) when the primary is BHHH — the same
+        post-convergence slowdown reported for MORP (UTA report, 2026-06).
     verbose : int
         Verbosity: 0=silent, 1=summary, 2=per-iteration NLL,
         3=per-iteration NLL + parameter/gradient/rel-gradient table.
@@ -114,6 +121,7 @@ class MNPControl:
     tol: float = 1e-5
     optimizer: Literal["bfgs", "lbfgsb", "torch_adam", "torch_lbfgs"] = "bfgs"
     se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh"
+    se_diagnostic: bool = False
     verbose: int = 1
     seed: int | None = None
     analytic_grad: bool = True

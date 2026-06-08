@@ -582,23 +582,31 @@ class MNPModel(BaseModel):
         # ``inv(inv(H)) = H`` reported as the covariance.  Fix: on
         # fallback set ``hess_observed = None`` so SE goes to NaN rather
         # than silently double-inverting.
-        # MNP-002b: always attempt the observed Hessian so that the
-        # Hessian and Sandwich diagnostic estimators are available even
-        # when the primary se_method is BHHH. Only emit a warning if the
-        # primary method needed it and it failed.
+        # The observed Hessian (``2 * n_params`` extra full gradient
+        # evaluations) is needed only when the primary se_method uses it, or
+        # when the user opts into the full three-estimator diagnostic. With
+        # the default BHHH primary and se_diagnostic=False this pass is
+        # skipped — eliminating the post-convergence slowdown reported for the
+        # sibling MORP model (UTA report, 2026-06). Previously (MNP-002b) it
+        # was always computed so the diagnostic was available unconditionally.
         hess_observed: np.ndarray | None = None
-        try:
-            hess_observed = self._observed_hessian(theta_hat)
-        except Exception as _exc:
-            if self.control.se_method in ("hessian", "sandwich"):
-                warnings.warn(
-                    f"observed Hessian computation failed ({_exc}); "
-                    "SE for se_method='{}' will be NaN".format(
-                        self.control.se_method
-                    ),
-                    RuntimeWarning,
-                )
-            hess_observed = None
+        _need_hessian = (
+            self.control.se_method in ("hessian", "sandwich")
+            or getattr(self.control, "se_diagnostic", False)
+        )
+        if _need_hessian:
+            try:
+                hess_observed = self._observed_hessian(theta_hat)
+            except Exception as _exc:
+                if self.control.se_method in ("hessian", "sandwich"):
+                    warnings.warn(
+                        f"observed Hessian computation failed ({_exc}); "
+                        "SE for se_method='{}' will be NaN".format(
+                            self.control.se_method
+                        ),
+                        RuntimeWarning,
+                    )
+                hess_observed = None
 
         # BHATLIB-normalized reporting (primary se_method)
         param_names = self._build_report_names()
@@ -609,34 +617,37 @@ class MNPModel(BaseModel):
             hess_observed=hess_observed,
         )
 
-        # Compute the other two SE estimators for the diagnostic block.
-        # Each is derived at the same converged theta_hat — the only
-        # variation is the variance estimator. If one fails (e.g.,
-        # Hessian-based when hess_observed is None), it stays None and
-        # summary() simply omits it from the diagnostic table.
+        # Compute the other two SE estimators for the diagnostic block, but
+        # only when the user opted in via se_diagnostic. Each is derived at
+        # the same converged theta_hat — the only variation is the variance
+        # estimator. If one fails (e.g., Hessian-based when hess_observed is
+        # None), it stays None and summary() omits it from the table. When the
+        # diagnostic is off, only the primary estimator is populated and the
+        # side-by-side block is automatically suppressed.
         se_by_method: dict[str, np.ndarray | None] = {
             self.control.se_method: se,
         }
-        _saved_method = self.control.se_method
-        try:
-            for _alt in ("bhhh", "hessian", "sandwich"):
-                if _alt == _saved_method:
-                    continue
-                if _alt in ("hessian", "sandwich") and hess_observed is None:
-                    se_by_method[_alt] = None
-                    continue
-                try:
-                    self.control.se_method = _alt
-                    (_, _se_alt, _, _, _, _, _) = self._normalize_for_reporting(
-                        theta_hat, hess_inv, grad_full,
-                        active_mask=active_mask,
-                        hess_observed=hess_observed,
-                    )
-                    se_by_method[_alt] = _se_alt
-                except Exception:
-                    se_by_method[_alt] = None
-        finally:
-            self.control.se_method = _saved_method
+        if getattr(self.control, "se_diagnostic", False):
+            _saved_method = self.control.se_method
+            try:
+                for _alt in ("bhhh", "hessian", "sandwich"):
+                    if _alt == _saved_method:
+                        continue
+                    if _alt in ("hessian", "sandwich") and hess_observed is None:
+                        se_by_method[_alt] = None
+                        continue
+                    try:
+                        self.control.se_method = _alt
+                        (_, _se_alt, _, _, _, _, _) = self._normalize_for_reporting(
+                            theta_hat, hess_inv, grad_full,
+                            active_mask=active_mask,
+                            hess_observed=hess_observed,
+                        )
+                        se_by_method[_alt] = _se_alt
+                    except Exception:
+                        se_by_method[_alt] = None
+            finally:
+                self.control.se_method = _saved_method
 
         # Apply the GAUSS kernel-correlation parameterization (2*atanh) so
         # reported parker values match GAUSS BHATLIB output verbatim. Delta

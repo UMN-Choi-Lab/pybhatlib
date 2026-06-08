@@ -690,6 +690,31 @@ def mvncd_rect(
     if all_neg_inf:
         return mvncd(xp.array(upper_np), xp.array(sigma_np), method=method, xp=xp)
 
+    # Fast scipy rectangle path: scipy.stats.multivariate_normal.cdf accepts
+    # a ``lower_limit`` argument that computes P(lower <= X <= upper) in a
+    # single call. This is ~25× faster than the 2^K inclusion-exclusion
+    # below (measured: 0.75 ms vs 18.86 ms for K=4) and gives the same
+    # answer to 1e-4. Used when ``method='scipy'``, matching GAUSS's
+    # ``cdorrectmvn`` dispatch for K <= 4 (exact closed-form CDFs).
+    if method == "scipy":
+        try:
+            # Default scipy precision (abseps=1e-5, releps=1e-5). Tighter
+            # bounds (1e-7, 1e-9) slow Genz QMC dramatically on hard
+            # corner cases — measured 10-100× per call on the MORP_WALK
+            # K=4 rectangles. The default suffices for MORP's primary
+            # use case here: evaluating the LL at an OVUS-converged point
+            # for a GAUSS-parity report (matches GAUSS cdfqvn to ~5e-6).
+            result = _scipy_mvn.cdf(
+                upper_np,
+                mean=np.zeros(K, dtype=np.float64),
+                cov=sigma_np,
+                lower_limit=lower_np,
+            )
+            return max(0.0, min(1.0, float(result)))
+        except Exception:
+            # Fall through to inclusion-exclusion on failure.
+            pass
+
     # Inclusion-exclusion over 2^K vertices
     prob = 0.0
     for s in range(1 << K):

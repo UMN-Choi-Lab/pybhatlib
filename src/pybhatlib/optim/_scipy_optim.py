@@ -32,6 +32,11 @@ class OptimResult:
         Return code (0 = converged).
     message : str
         Status message.
+    status : int
+        Raw scipy ``OptimizeResult.status`` code (0 = gradient below tol,
+        1 = max iterations, 2 = line-search/precision-loss stop). Exposed so
+        callers can distinguish a precision-loss stop at the gradient floor
+        (estimates valid) from a genuine failure such as hitting maxiter.
     """
 
     x: NDArray
@@ -42,6 +47,7 @@ class OptimResult:
     converged: bool
     return_code: int
     message: str
+    status: int = 0
 
 
 def minimize_scipy(
@@ -173,15 +179,7 @@ def minimize_scipy(
             last_eval["g"] = g_arr.copy()
             return f_val, g_arr
 
-        result = minimize(
-            scipy_func,
-            x0,
-            method=method,
-            jac=True,
-            options={"maxiter": maxiter, "gtol": tol, "disp": False},
-            bounds=bounds,
-            callback=callback,
-        )
+        chosen_func = scipy_func
     else:
         # jac=False: wrap func to populate last_eval cache (f only, no grad)
         def scipy_func_nojac(x):
@@ -192,14 +190,31 @@ def minimize_scipy(
             last_eval["g"] = None
             return f_val
 
-        result = minimize(
-            scipy_func_nojac,
-            x0,
+        chosen_func = scipy_func_nojac
+
+    _options = {"maxiter": maxiter, "gtol": tol, "disp": False}
+
+    def _minimize_from(x_init):
+        return minimize(
+            chosen_func,
+            x_init,
             method=method,
-            options={"maxiter": maxiter, "gtol": tol, "disp": False},
+            jac=jac,
+            options=_options,
             bounds=bounds,
             callback=callback,
         )
+
+    result = _minimize_from(x0)
+
+    # NOTE: an automatic BFGS restart-on-status-2 was trialled here to clean up
+    # the MORP full-covariance "precision loss" stops (UTA report, 2026-06).
+    # It was removed: it barely moved the MORP optimum yet shifted converged
+    # MNP fits off GAUSS's stopping point, breaking the tight BHHH SE parity
+    # tests. The substantive MORP iid=False fix is the unit-variance
+    # identification default (MORPControl.fix_scales=True), not optimiser
+    # tweaks. A status-2 stop with correct estimates is surfaced via the
+    # "Optimizer message" line below instead.
 
     # Extract gradient
     if hasattr(result, "jac") and result.jac is not None:
@@ -215,14 +230,49 @@ def minimize_scipy(
         else:
             hess_inv = np.asarray(result.hess_inv)
 
+    status = int(getattr(result, "status", 0))
     converged = result.success
+
+    # Precision-loss stop at the gradient floor == convergence.
+    # SciPy's BFGS reports status 2 ("Desired error not necessarily achieved
+    # due to precision loss") when the line search can no longer descend. At a
+    # point whose relative gradient is already at the numerical floor that *is*
+    # an optimum, not a failure: SciPy's gtol (default 1e-5) is far tighter
+    # than GAUSS MaxLik's effective criterion, so approximate-MVNCD gradients
+    # (OVUS) that floor around 1e-3..1e-2 trip status 2 even though the
+    # estimates match GAUSS's reported "normal convergence" (UTA report,
+    # 2026-06: MORP full-covariance iid=False). Treat such a stop as
+    # converged so the summary banner and verbose line don't read as a
+    # spurious failure. A genuine failure surfaces as status 1 (max iterations)
+    # or status 2 with a large gradient, both of which fall through below.
+    # The 0.1 bound is a conservative sanity guard (observed floors are
+    # <=9e-3); the raw scipy ``status`` is preserved on the result for callers
+    # that need the distinction.
+    _SOFT_RELGRAD_TOL = 0.1
+    rel_grad = (
+        float(np.max(np.abs(grad) / np.maximum(np.abs(result.x), 1.0)))
+        if grad.size
+        else 0.0
+    )
+    precision_limited = (
+        not converged and status == 2 and rel_grad < _SOFT_RELGRAD_TOL
+    )
+    if precision_limited:
+        converged = True
     return_code = 0 if converged else 2
 
     if verbose >= 1:
         elapsed = time.time() - start_time
-        status = "converged" if converged else "did not converge"
-        print(f"  Optimization {status} in {result.nit} iterations ({elapsed:.2f}s)")
+        status_str = "converged" if converged else "did not converge"
+        print(f"  Optimization {status_str} in {result.nit} iterations ({elapsed:.2f}s)")
         print(f"  Final objective: {result.fun:.6f}")
+        if precision_limited:
+            print(
+                f"  (relative gradient {rel_grad:.2e} at numerical floor; "
+                "line search precision-limited — treated as converged)"
+            )
+        if not converged:
+            print(f"  Optimizer message: {result.message}")
 
     return OptimResult(
         x=result.x,
@@ -233,4 +283,5 @@ def minimize_scipy(
         converged=converged,
         return_code=return_code,
         message=result.message,
+        status=int(getattr(result, "status", 0)),
     )
