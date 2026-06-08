@@ -61,12 +61,19 @@ def morp_analytic_gradient(
     n_categories: list[int],
     n_beta: int,
     control: MORPControl,
-) -> tuple[float, NDArray]:
+    *,
+    return_per_obs: bool = False,
+) -> tuple[float, NDArray] | tuple[float, NDArray, NDArray]:
     """Compute MORP negative mean log-likelihood and its analytic gradient.
 
     Uses ME or OVUS for the per-vertex MVNCD and chains through the
     rectangle inclusion-exclusion identity. Falls back to FD only when
     invoked through ``morp_loglik`` with an unsupported MVNCD method.
+
+    When ``return_per_obs=True`` the per-observation score matrix
+    ``S[q, k] = d log P_q / d theta_k`` is also returned (same quantity the
+    BHHH/sandwich estimators otherwise obtain by finite-differencing the
+    per-observation log-likelihood, but in a single analytic pass).
 
     Parameters
     ----------
@@ -92,6 +99,9 @@ def morp_analytic_gradient(
         Negative mean log-likelihood.
     grad : ndarray, shape (n_params,)
         Gradient of ``nll`` w.r.t. ``theta``.
+    scores : ndarray, shape (N, n_params)
+        Per-observation scores ``d log P_q / d theta`` (only when
+        ``return_per_obs=True``).
     """
     theta = np.asarray(theta, dtype=np.float64)
     X = np.asarray(X, dtype=np.float64)
@@ -99,6 +109,7 @@ def morp_analytic_gradient(
     N = X.shape[0]
     K = n_dims
     n_params = len(theta)
+    scores = np.zeros((N, n_params), dtype=np.float64) if return_per_obs else None
 
     # ---- Unpack & precompute ----
     layout = _layout_indices(n_beta, n_dims, n_categories, control)
@@ -156,6 +167,8 @@ def morp_analytic_gradient(
         # _rect_prob_and_grad).
         grad_beta_q = -X[q].T @ sum_dP_dz  # (n_beta,)
         grad[layout["beta"]] += inv_p * grad_beta_q
+        if scores is not None:
+            scores[q, layout["beta"]] = inv_p * grad_beta_q
 
         # ---- Threshold gradient ----
         # tau_d[j] = tau_d[0] + sum_{k=1..j} exp(delta_d_k)
@@ -181,6 +194,8 @@ def morp_analytic_gradient(
             # Chain through cumulative log-spacing parameterization.
             grad_thr_d = _tau_to_param_grad(dP_dtau, delta_log[d])
             grad[slot] += inv_p * grad_thr_d
+            if scores is not None:
+                scores[q, slot] = inv_p * grad_thr_d
 
         # ---- Sigma chain (scales + correlations) ----
         if not control.iid and dP_dsigma_vech is not None:
@@ -191,9 +206,13 @@ def morp_analytic_gradient(
             slot = layout["cov"]
             if slot is not None and adj_lp is not None:
                 grad[slot] += inv_p * adj_lp
+                if scores is not None:
+                    scores[q, slot] = inv_p * adj_lp
 
     nll = -total_ll / N
     grad = -grad / N
+    if return_per_obs:
+        return nll, grad, scores
     return nll, grad
 
 

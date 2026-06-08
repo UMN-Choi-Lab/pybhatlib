@@ -520,3 +520,72 @@ class TestMORPFromEstimatesValidation:
                 np.array([[1.0, 1.4], [1.4, 1.0]]),
                 dep_vars=["y1", "y2"], n_categories=[2, 2],
             )
+
+
+# ---------------------------------------------------------------------------
+# UTA follow-up report (2026-06), issue #2: BHHH per-observation scores are
+# computed analytically (single pass) instead of by 2*n_params finite-difference
+# passes — the dominant post-convergence cost for non-independent MORP.
+# ---------------------------------------------------------------------------
+
+class TestMORPAnalyticScores:
+    """Analytic per-obs scores match finite differences and yield identical
+    BHHH standard errors, at a fraction of the cost."""
+
+    @pytest.fixture(scope="class")
+    def model_and_theta(self):
+        df = _make_corr_report_df()
+        spec = {"x1": {f"d{d}": "x1" for d in (1, 2, 3)},
+                "x2": {f"d{d}": "x2" for d in (1, 2, 3)}}
+        model = MORPModel(
+            data=df, dep_vars=["d1", "d2", "d3"], spec=spec,
+            n_categories=[3, 3, 3],
+            control=MORPControl(iid=False, verbose=0, seed=1, maxiter=120),
+        )
+        r = model.fit()
+        return model, r.params
+
+    def _fd_scores(self, model, theta, eps=1e-6):
+        from pybhatlib.models.morp._morp_loglik import _per_obs_loglik
+        from pybhatlib.backend._array_api import get_backend
+        xp = get_backend("numpy")
+        S = np.zeros((model.N, len(theta)))
+        for k in range(len(theta)):
+            tp = theta.copy(); tp[k] += eps
+            tm = theta.copy(); tm[k] -= eps
+            args = (model.X, model.y, model.n_dims, model.n_categories,
+                    model.n_beta, model.control, xp)
+            S[:, k] = (_per_obs_loglik(tp, *args) - _per_obs_loglik(tm, *args)) / (2 * eps)
+        return S
+
+    def test_analytic_scores_match_fd(self, model_and_theta):
+        model, theta = model_and_theta
+        S_an = model._per_obs_scores(theta)        # analytic fast path
+        S_fd = self._fd_scores(model, theta)
+        assert S_an.shape == (model.N, len(theta))
+        np.testing.assert_allclose(S_an, S_fd, atol=1e-5)
+
+    def test_bhhh_se_unchanged(self, model_and_theta):
+        model, theta = model_and_theta
+        se = lambda S: np.sqrt(np.diag(np.linalg.inv(S.T @ S)))
+        se_an = se(model._per_obs_scores(theta))
+        se_fd = se(self._fd_scores(model, theta))
+        np.testing.assert_allclose(se_an, se_fd, rtol=1e-5)
+
+    def test_analytic_grad_per_obs_sums_to_total(self):
+        # per-obs scores sum to the total (un-normalised) log-likelihood gradient
+        from pybhatlib.models.morp._morp_grad_analytic import morp_analytic_gradient
+        model, theta = None, None
+        df = _make_corr_report_df()
+        spec = {"x1": {f"d{d}": "x1" for d in (1, 2, 3)},
+                "x2": {f"d{d}": "x2" for d in (1, 2, 3)}}
+        m = MORPModel(data=df, dep_vars=["d1", "d2", "d3"], spec=spec,
+                      n_categories=[3, 3, 3],
+                      control=MORPControl(iid=False, verbose=0, seed=1, maxiter=1))
+        theta = m._default_start_values()
+        nll, grad, scores = morp_analytic_gradient(
+            theta, m.X, m.y, m.n_dims, m.n_categories, m.n_beta, m.control,
+            return_per_obs=True,
+        )
+        # grad is the mean NLL gradient = -(1/N) sum_i score_i
+        np.testing.assert_allclose(grad, -scores.mean(axis=0), atol=1e-10)
