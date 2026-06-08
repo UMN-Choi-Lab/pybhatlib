@@ -335,3 +335,75 @@ class TestMORPFixScalesDefault:
         n_free = count_morp_params(2, 2, [3, 3],
                                    MORPControl(iid=False, fix_scales=False))
         assert n_free == 8  # legacy layout keeps the (D-1)=1 free scale
+
+
+# ---------------------------------------------------------------------------
+# UTA follow-up report (2026-06): corr_* rows must equal the printed
+# correlation matrix (not the raw spherical-angle / atanh parameters).
+# ---------------------------------------------------------------------------
+
+def _make_corr_report_df():
+    rng = np.random.default_rng(7)
+    n = 250
+    x1 = rng.standard_normal(n)
+    x2 = rng.standard_normal(n)
+    beta = np.array([0.6, -0.4])
+    rho = np.array([[1.0, 0.45, 0.2], [0.45, 1.0, -0.3], [0.2, -0.3, 1.0]])
+    eps = (np.linalg.cholesky(rho) @ rng.standard_normal((3, n))).T
+    base = x1 * beta[0] + x2 * beta[1]
+    taus = [[-0.6, 0.7], [-0.4, 0.9], [-0.5, 0.6]]
+    cols = {"x1": x1, "x2": x2}
+    for d, t in enumerate(taus):
+        cols[f"d{d + 1}"] = np.digitize(base + eps[:, d], t)
+    return pd.DataFrame(cols)
+
+
+def _fit_corr(spherical=True):
+    df = _make_corr_report_df()
+    spec = {"x1": {f"d{d}": "x1" for d in (1, 2, 3)},
+            "x2": {f"d{d}": "x2" for d in (1, 2, 3)}}
+    model = MORPModel(
+        data=df, dep_vars=["d1", "d2", "d3"], spec=spec, n_categories=[3, 3, 3],
+        control=MORPControl(iid=False, spherical=spherical, verbose=0,
+                            seed=1, maxiter=150),
+    )
+    return model.fit()
+
+
+class TestMORPCorrReporting:
+    """corr_* report rows show the actual correlation entries with finite
+    delta-method SEs, matching the 'Estimated error correlation matrix' block."""
+
+    @pytest.fixture(scope="class")
+    def fitted(self):
+        return _fit_corr(spherical=True)
+
+    def _corr_rows(self, r):
+        return [(k, nm) for k, nm in enumerate(r.report.names)
+                if nm.startswith("corr_")]
+
+    def test_corr_rows_equal_correlation_matrix(self, fitted):
+        rows = self._corr_rows(fitted)
+        assert len(rows) == 3  # 3 dims -> 3 off-diagonal correlations
+        C = fitted.correlation_matrix
+        offdiag = [C[i, j] for i in range(3) for j in range(i + 1, 3)]
+        reported = [fitted.report.estimate[k] for k, _ in rows]
+        # exact match: both come from the same theta_to_corr transform
+        np.testing.assert_allclose(reported, offdiag, atol=1e-12)
+
+    def test_corr_rows_are_valid_correlations(self, fitted):
+        for k, _ in self._corr_rows(fitted):
+            est = fitted.report.estimate[k]
+            assert -1.0 < est < 1.0          # a correlation, not a raw angle
+            assert np.isfinite(fitted.report.se[k]) and fitted.report.se[k] > 0
+
+    def test_gradient_small_at_optimum(self, fitted):
+        assert np.nanmax(np.abs(fitted.report.gradient)) < 0.1
+
+    def test_direct_parameterization_also_matches(self):
+        r = _fit_corr(spherical=False)
+        C = r.correlation_matrix
+        offdiag = [C[i, j] for i in range(3) for j in range(i + 1, 3)]
+        reported = [r.report.estimate[k] for k, nm in enumerate(r.report.names)
+                    if nm.startswith("corr_")]
+        np.testing.assert_allclose(reported, offdiag, atol=1e-12)

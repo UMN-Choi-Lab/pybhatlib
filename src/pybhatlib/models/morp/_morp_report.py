@@ -18,6 +18,14 @@ See ``anna0605/email.md`` (UTA report, 2026-06): "the threshold values printed
 at the end are correct ... would you be able to adjust the output so that the
 threshold values are the ones printed in the table as opposed to the tau
 values? Also ... add a gradient column similar to the GAUSS output."
+
+The same parameterised-vs-reported gap applies to the **correlation** slots.
+The ``corr_*`` rows are raw optimiser parameters — spherical angles (default
+``spherical=True``) or ``atanh`` pre-images (``spherical=False``) — not the
+correlation values printed in the "Estimated error correlation matrix" block at
+the end (which match GAUSS). This module also maps those slots to the actual
+correlation entries with delta-method SEs, so the ``corr_*`` rows equal the
+printed matrix (UTA follow-up report, 2026-06).
 """
 
 from __future__ import annotations
@@ -28,6 +36,11 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.special import ndtr as _ndtr
 
+from pybhatlib.matgradient._spherical import (
+    _corr_upper_index,
+    grad_corr_theta,
+    theta_to_corr,
+)
 from pybhatlib.models.morp._morp_control import MORPControl
 
 __all__ = ["MORPReportTable", "reporting_jacobian", "build_morp_report"]
@@ -109,6 +122,18 @@ def reporting_jacobian(
                 G[idx + j, idx + k] = np.exp(p[k])
         idx += m
 
+    # Scale slots (when present) are left in raw space — identity rows. The
+    # correlation block maps raw parameters (spherical angles / atanh) to the
+    # actual correlation entries; fill it in place.
+    if _has_corr_block(control):
+        c0 = _corr_block_start(theta, n_beta, n_dims, n_categories, control)
+        n_corr = n_dims * (n_dims - 1) // 2
+        if n_corr > 0:
+            corr_theta = theta[c0 : c0 + n_corr]
+            G[c0 : c0 + n_corr, c0 : c0 + n_corr] = _corr_reporting_block(
+                corr_theta, n_dims, control
+            )
+
     return G
 
 
@@ -122,6 +147,72 @@ def _cumulative_thresholds(p: NDArray) -> NDArray:
     for j in range(1, m):
         t[j] = t[j - 1] + np.exp(p[j])
     return t
+
+
+def _has_corr_block(control: MORPControl) -> bool:
+    """True when the model estimates a full correlation block (off-diagonals)."""
+    return not control.iid and not getattr(control, "heteronly", False)
+
+
+def _corr_block_start(
+    theta: NDArray,
+    n_beta: int,
+    n_dims: int,
+    n_categories: list[int],
+    control: MORPControl,
+) -> int:
+    """Flat index where the correlation parameters begin.
+
+    Mirrors the unpack order in ``_unpack_morp_params`` / ``_build_param_names``:
+    ``beta -> thresholds -> scales -> corr``. Scale params are present only when
+    ``heteronly`` or ``not fix_scales`` (and number ``n_dims - 1``).
+    """
+    idx = n_beta
+    for d in range(n_dims):
+        idx += max(n_categories[d] - 1, 0)
+    estimate_scales = getattr(control, "heteronly", False) or not getattr(
+        control, "fix_scales", False
+    )
+    if not control.iid and estimate_scales:
+        idx += n_dims - 1
+    return idx
+
+
+def _correlation_from_theta(corr_theta: NDArray, n_dims: int, control: MORPControl) -> NDArray:
+    """Correlation matrix implied by the raw corr slots (matches the unpack)."""
+    if control.spherical:
+        return theta_to_corr(corr_theta, n_dims)
+    corr = np.eye(n_dims, dtype=np.float64)
+    c = 0
+    for i in range(n_dims):
+        for j in range(i + 1, n_dims):
+            corr[i, j] = corr[j, i] = np.tanh(corr_theta[c])
+            c += 1
+    return corr
+
+
+def _corr_reporting_block(corr_theta: NDArray, n_dims: int, control: MORPControl) -> NDArray:
+    """Jacobian ``d(off-diagonal corr)/d(corr_theta)`` in ``corr_<i>_<j>`` order.
+
+    Square ``(n_corr, n_corr)`` block (rows = reported correlation entries in
+    row-based upper-triangular order; columns = raw corr parameters). For the
+    spherical parameterisation this is the off-diagonal slice of
+    :func:`grad_corr_theta`; for the direct ``tanh`` parameterisation it is the
+    diagonal ``1 - rho**2``.
+    """
+    n_corr = n_dims * (n_dims - 1) // 2
+    if control.spherical:
+        # grad_corr_theta: jac[theta_pos, upper_idx] = d corr_upper / d theta.
+        jac = grad_corr_theta(corr_theta, n_dims)
+        offdiag_cols = [
+            _corr_upper_index(i, j, n_dims)
+            for i in range(n_dims)
+            for j in range(i + 1, n_dims)
+        ]
+        # Reorient to G[report_row, theta_col] = d corr_(i,j) / d theta_col.
+        return jac[:, offdiag_cols].T
+    rho = np.tanh(np.asarray(corr_theta, dtype=np.float64))
+    return np.diag(1.0 - rho**2)
 
 
 def build_morp_report(
@@ -176,6 +267,20 @@ def build_morp_report(
         for j in range(m):
             names[idx + j] = f"thresh_{dep_vars[d]}_{j + 1}"
         idx += m
+
+    # Correlation block: replace the raw spherical-angle / atanh slots with the
+    # actual correlation entries (row-based upper-triangular order), matching
+    # the printed correlation matrix and GAUSS. Names already read corr_<i>_<j>.
+    if _has_corr_block(control):
+        c0 = _corr_block_start(theta, n_beta, n_dims, n_categories, control)
+        n_corr = n_dims * (n_dims - 1) // 2
+        if n_corr > 0:
+            corr_mat = _correlation_from_theta(theta[c0 : c0 + n_corr], n_dims, control)
+            c = 0
+            for i in range(n_dims):
+                for j in range(i + 1, n_dims):
+                    estimate[c0 + c] = corr_mat[i, j]
+                    c += 1
 
     # Delta-method SEs: Cov(r) = G Cov(theta) G^T.
     if cov is not None:
