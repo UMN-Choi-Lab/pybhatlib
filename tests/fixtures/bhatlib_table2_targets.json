@@ -4,6 +4,7 @@
   "n_obs": 1125,
   "n_alts": 3,
   "notes": {
+    "normalization": "These published values use the FIRST-SCALE=1 normalization (scale01 below is the relative 2nd-alt scale; alt-1's differenced error variance is fixed to 1). pybhatlib's DEFAULT reporting changed to the SUM-OF-SQUARED-SCALES normalization (sum(scale_i**2)==1; GAUSS wker=sqrt(logitmod(xscalker))). The two differ by a single positive factor, so coefficients map exactly: published_beta == reported_beta/scale01_reported, published_CovCOv == reported/scale01_reported**2, published scale01 (relative scale) == reported scale02/scale01. The log-likelihood and the parker correlation are invariant. SEs differ by the data-dependent normalization Jacobian and are NOT directly comparable across the two conventions. Tests transform these published values by the known relation rather than asserting raw SEs.",
     "se_derivation": "SE = |coef| / |t_stat|. The BHATLIB paper table reports coefficients and t-statistics (not SE directly); SE is derived. GAUSS default is _max_CovPar = 2 (BHHH / cross-product of first derivatives), so these SEs are BHHH unless Dale ran a different option.",
     "fixed_params": "Entries marked fixed are pinned to their value by the model specification (not estimated). For Model (a)(i) IID: parker01=0.5 and scale01=1.0. Tests should not include fixed parameters in the estimated-parameter SE vector.",
     "covCov01": "Variance of the OVTT random coefficient (Models (c), (d))",
