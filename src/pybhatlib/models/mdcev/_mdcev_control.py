@@ -56,6 +56,13 @@ class MDCEVControl:
     se_method : str
         Standard-error method: "bhhh" (default, matches GAUSS _max_CovPar=2),
         "hessian" (inverse observed information), or "sandwich" (robust).
+    se_diagnostic : bool
+        If True, compute *all three* SE estimators (BHHH, observed Hessian,
+        sandwich) at convergence so they can be compared side by side; the
+        reported ``se`` still follows ``se_method``. When False (default) only
+        the building blocks needed for ``se_method`` are computed — this avoids
+        the expensive observed-Hessian finite-difference pass when only BHHH is
+        wanted (parity with MORP/MNP ``se_diagnostic``).
     verbose : int
         Verbosity: 0 = silent, 1 = summary, 2 = per-iteration.
     seed : int or None
@@ -81,6 +88,7 @@ class MDCEVControl:
     want_covariance: bool = True
     analytic_grad: bool = True
     se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh"
+    se_diagnostic: bool = False
     verbose: int = 1
     seed: int | None = None
     startb: NDArray | None = None
