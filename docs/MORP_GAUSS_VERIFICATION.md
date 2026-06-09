@@ -180,6 +180,18 @@ writes `combo ~ meancombprob` to `ate1.csv`; it also prints the marginal
 3. **Confirm the scenario:** verify whether `ate1.csv` is the treatment
    (`Female=1`) or base scenario by matching against both; document which.
 
+> **RESOLVED (2026‑06‑08, GAUSS run).** `ate1.csv` is the **`Female=0` base
+> scenario**, *not* the `Female=1` treatment that `MORP_WALK_ATE.gss`'s
+> `changeval={1}` text implies (the committed CSV predates / differs from that
+> setting). Feeding the exact converged `est` vector from `MORP_WALK_ATE.gss`
+> through `from_estimates` (OVUS, `fix_scales=True`) and building `X` with
+> `Female:=0` reproduces `ate1.csv` to **max joint Δ = 8.25e‑4** (mean 1.9e‑4),
+> with `Happy3`/`Meaning3` marginals matching to ~1e‑4. `Female:=1` gives a
+> systematic 2.8e‑2 gap concentrated in `[3,3,·,·]` cells — diagnostic, since
+> marginals are correlation‑independent and only the two Female‑bearing outcomes
+> (Happy, Meaning) drifted. The ATE machinery is correct; residual 8e‑4 is pure
+> OVUS‑approximation noise. (Harness: `/tmp/gauss_run/verify_A2_ate.py`.)
+
 Automated (internal consistency): `pytest tests/test_models/test_morp.py -k FromEstimates`.
 
 ---
