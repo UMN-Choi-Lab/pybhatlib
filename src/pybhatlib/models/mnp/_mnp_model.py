@@ -1240,6 +1240,96 @@ class MNPModel(BaseModel):
         # Symmetrize to eliminate numerical asymmetry from FD noise
         return 0.5 * (H + H.T)
 
+    def _bhhh_scores_unpar(
+        self, theta_hat: np.ndarray, theta_unpar: np.ndarray,
+    ) -> np.ndarray:
+        """Per-observation BHHH score matrix in unparameterized space.
+
+        ``G[q, k] = d log P_q / d theta_unpar[k]``, shape ``(N, n_theta)``.
+
+        When the analytic gradient is available (``analytic_grad`` and
+        ``method in {me, ovus}`` and single segment) this is computed in a
+        single analytic pass: the parameterized-space per-observation scores
+        from :func:`mnp_per_obs_scores` are projected to unparameterized space
+        via the par->unpar Jacobian. BHHH scores transform *exactly* under
+        reparameterisation (the score is linear in the Jacobian), so
+
+            d log P_q / d theta_unpar = (d log P_q / d theta_par) @ inv(J_pu),
+            J_pu = d theta_unpar / d theta_par,
+
+        and ``J_pu`` is finite-differenced over the cheap parameter map
+        ``_param_to_unpar`` (no data passes), preserving the single-pass speed.
+
+        Falls back to central finite differences on the unparameterized
+        per-observation log-likelihood (``2 * n_theta`` full-data passes) for
+        mixture models or unsupported MVNCD methods.
+        """
+        from pybhatlib.models.mnp._mnp_grad_analytic import mnp_per_obs_scores
+        from pybhatlib.models.mnp._mnp_loglik import (
+            _param_to_unpar,
+            _per_obs_loglik_unpar,
+        )
+
+        n_theta = len(theta_unpar)
+
+        # When parameters are frozen (active_mask), the BHHH path relies on the
+        # per-obs score columns being mutually independent so frozen columns can
+        # be zeroed cleanly. The par->unpar Jacobian projection couples columns,
+        # which would leak a frozen parameter's score into the active block, so
+        # we use finite differences (native column independence) in that case.
+        active_mask = getattr(self.control, "active_mask", None)
+        no_frozen = active_mask is None or bool(np.all(active_mask))
+
+        analytic_ok = (
+            getattr(self.control, "analytic_grad", False)
+            and self.control.method in ("me", "ovus")
+            and self.control.nseg == 1
+            and no_frozen
+        )
+        if analytic_ok:
+            try:
+                G_par = mnp_per_obs_scores(
+                    theta_hat, self.X, self.y, self.avail,
+                    self.n_alts, self.n_beta, self.control,
+                    self.ranvar_indices,
+                )
+                J_pu = self._fd_jacobian(
+                    lambda th: _param_to_unpar(
+                        th, self.n_beta, self.n_alts, self.control,
+                        self.ranvar_indices,
+                    ),
+                    theta_hat,
+                )
+                G = G_par @ np.linalg.inv(J_pu)
+                if np.all(np.isfinite(G)):
+                    return G
+            except Exception:
+                pass  # fall back to finite differences below
+
+        # Central FD on the unparameterized per-obs log-likelihood.
+        # Scaled step eps_machine^(1/3) * (1 + |theta_i|) balances truncation
+        # and roundoff while respecting parameter magnitude.
+        base_eps = np.finfo(np.float64).eps ** (1.0 / 3.0)
+        G = np.zeros((self.N, n_theta), dtype=np.float64)
+        for i in range(n_theta):
+            eps_i = base_eps * (1.0 + abs(theta_unpar[i]))
+            theta_p = theta_unpar.copy()
+            theta_p[i] += eps_i
+            theta_m = theta_unpar.copy()
+            theta_m[i] -= eps_i
+            ll_p = _per_obs_loglik_unpar(
+                theta_p, self.X, self.y, self.avail,
+                self.n_alts, self.n_beta, self.control,
+                self.ranvar_indices,
+            )
+            ll_m = _per_obs_loglik_unpar(
+                theta_m, self.X, self.y, self.avail,
+                self.n_alts, self.n_beta, self.control,
+                self.ranvar_indices,
+            )
+            G[:, i] = (ll_p - ll_m) / (2.0 * eps_i)
+        return G
+
     def _normalize_for_reporting(
         self,
         theta_hat: np.ndarray,
@@ -1319,10 +1409,7 @@ class MNPModel(BaseModel):
         """
         import warnings
 
-        from pybhatlib.models.mnp._mnp_loglik import (
-            _param_to_unpar,
-            _per_obs_loglik_unpar,
-        )
+        from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar
 
         # 1) Translate the converged parameterized estimate to unparameterized.
         theta_unpar = _param_to_unpar(
@@ -1358,28 +1445,10 @@ class MNPModel(BaseModel):
 
         if se_method in ("bhhh", "sandwich"):
             # Per-obs scores in UNPARAMETERIZED space (the lpr1/lgd1 path).
-            # Scaled FD step: eps_machine^(1/3) balances truncation O(h^2)
-            # and roundoff O(eps/h); the (1 + |theta_i|) scale respects
-            # parameter magnitude without vanishing at theta_i ~ 0.
-            base_eps = np.finfo(np.float64).eps ** (1.0 / 3.0)
-            G = np.zeros((self.N, n_theta), dtype=np.float64)
-            for i in range(n_theta):
-                eps_i = base_eps * (1.0 + abs(theta_unpar[i]))
-                theta_p = theta_unpar.copy()
-                theta_p[i] += eps_i
-                theta_m = theta_unpar.copy()
-                theta_m[i] -= eps_i
-                ll_p = _per_obs_loglik_unpar(
-                    theta_p, self.X, self.y, self.avail,
-                    self.n_alts, self.n_beta, self.control,
-                    self.ranvar_indices,
-                )
-                ll_m = _per_obs_loglik_unpar(
-                    theta_m, self.X, self.y, self.avail,
-                    self.n_alts, self.n_beta, self.control,
-                    self.ranvar_indices,
-                )
-                G[:, i] = (ll_p - ll_m) / (2.0 * eps_i)
+            # Single analytic pass when available (analytic_grad + me/ovus +
+            # single segment), projected from parameterized space via the cheap
+            # par->unpar Jacobian; otherwise 2*n_theta full-data FD passes.
+            G = self._bhhh_scores_unpar(theta_hat, theta_unpar)
 
             # Zero out columns for frozen (inactive) parameters from PR #6
             # active_mask (MNPControl attribute).  This prevents inactive
