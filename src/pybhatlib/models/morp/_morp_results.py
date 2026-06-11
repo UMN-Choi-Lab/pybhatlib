@@ -333,6 +333,18 @@ class MORPResults:
                 raise ValueError(
                     f"correlation must be {n_dims}x{n_dims}, got {corr_mat.shape}"
                 )
+            # Only the upper triangle is consumed below; reject a non-symmetric
+            # matrix rather than silently ignoring the lower triangle (a flipped
+            # off-diagonal there scrambles joint probabilities while leaving the
+            # correlation-independent marginals intact — see PR #30).
+            for i in range(n_dims):
+                for j in range(i + 1, n_dims):
+                    if not np.isclose(corr_mat[i, j], corr_mat[j, i], atol=1e-8):
+                        raise ValueError(
+                            f"correlation must be symmetric: entry [{i},{j}]="
+                            f"{corr_mat[i, j]:g} != [{j},{i}]={corr_mat[j, i]:g}. "
+                            "Pass the same value in both off-diagonal positions."
+                        )
             for i in range(n_dims):
                 for j in range(i + 1, n_dims):
                     rho = float(corr_mat[i, j])

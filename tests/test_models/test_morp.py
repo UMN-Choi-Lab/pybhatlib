@@ -521,6 +521,46 @@ class TestMORPFromEstimatesValidation:
                 dep_vars=["y1", "y2"], n_categories=[2, 2],
             )
 
+    def test_asymmetric_correlation_raises(self):
+        """A non-symmetric correlation matrix must raise, not silently read the
+        upper triangle (PR #30: a sign-flipped lower-triangle entry produced
+        wrong joint ATE probabilities while the marginals looked fine)."""
+        from pybhatlib.models.morp import MORPResults
+        # Upper [0,2]=+0.4 disagrees with lower [2,0]=-0.4 (Anna's exact bug).
+        corr = np.array([
+            [1.0,  0.3,  0.4],
+            [0.3,  1.0, -0.2],
+            [-0.4, -0.2, 1.0],
+        ])
+        with pytest.raises(ValueError, match="symmetric"):
+            MORPResults.from_estimates(
+                [0.5, 0.3, 0.1],
+                [np.array([0.0]), np.array([0.0]), np.array([0.0])],
+                corr, dep_vars=["y1", "y2", "y3"], n_categories=[2, 2, 2],
+            )
+        # The error message should name the offending [i, j] entry.
+        with pytest.raises(ValueError, match=r"\[0\s*,\s*2\]|\[2\s*,\s*0\]"):
+            MORPResults.from_estimates(
+                [0.5, 0.3, 0.1],
+                [np.array([0.0]), np.array([0.0]), np.array([0.0])],
+                corr, dep_vars=["y1", "y2", "y3"], n_categories=[2, 2, 2],
+            )
+
+    def test_symmetric_correlation_accepted(self):
+        """A properly symmetric matrix passes the guard unchanged."""
+        from pybhatlib.models.morp import MORPResults
+        corr = np.array([
+            [1.0,  0.3,  -0.4],
+            [0.3,  1.0,  -0.2],
+            [-0.4, -0.2,  1.0],
+        ])
+        r = MORPResults.from_estimates(
+            [0.5, 0.3, 0.1],
+            [np.array([0.0]), np.array([0.0]), np.array([0.0])],
+            corr, dep_vars=["y1", "y2", "y3"], n_categories=[2, 2, 2],
+        )
+        np.testing.assert_allclose(r.correlation_matrix, corr, atol=1e-9)
+
 
 # ---------------------------------------------------------------------------
 # UTA follow-up report (2026-06), issue #2: BHHH per-observation scores are
