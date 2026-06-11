@@ -179,9 +179,9 @@ def test_frozen_se_is_nan(travelmode_path):
     startb = np.zeros(FLEXIBLE_N_PARAMS, dtype=np.float64)
     startb[PARKER01_IDX] = 0.5
 
-    # Freeze parker01 AND scale1 (theta index 6)
+    # Freeze parker01 AND scale02 (theta index 6; scale01 is theta index 5)
     mask = np.ones(FLEXIBLE_N_PARAMS, dtype=bool)
-    mask[6] = False          # freeze scale01
+    mask[6] = False          # freeze scale02
     mask[PARKER01_IDX] = False  # freeze parker01
 
     ctrl = MNPControl(
@@ -201,10 +201,15 @@ def test_frozen_se_is_nan(travelmode_path):
     )
     results = model.fit()
 
-    # Frozen theta indices: 6 (scale01 → report scale01) and 7 (parker01)
-    # In report space: [CON_SR, CON_TR, IVTT, OVTT, COST, parker01, scale01]
-    # parker01 at report idx 5, scale01 at report idx 6
-    for report_idx, label in [(5, "parker01"), (6, "scale01")]:
+    # Frozen theta indices: 6 (scale02) and 7 (parker01).
+    # theta-space layout:  betas[0..4], scale01=5, scale02=6, parker01=7.
+    # report-space layout: [CON_SR, CON_TR, IVTT, OVTT, COST, parker01,
+    #                       scale01, scale02]  (parker before scales).
+    # So the theta->report map sends the *frozen* params to:
+    #   theta 7 (parker01) -> report idx 5
+    #   theta 6 (scale02)  -> report idx 7
+    # (theta 5 / scale01 is NOT frozen, so report idx 6 stays finite.)
+    for report_idx, label in [(5, "parker01"), (7, "scale02")]:
         assert np.isnan(results.se[report_idx]), (
             f"SE for frozen {label} should be NaN"
         )

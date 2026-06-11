@@ -233,6 +233,165 @@ class MORPResults:
         print(text)
         return text
 
+    @classmethod
+    def from_estimates(
+        cls,
+        beta: NDArray,
+        thresholds: list[NDArray],
+        correlation: NDArray | None = None,
+        *,
+        dep_vars: list[str],
+        n_categories: list[int],
+        var_names: list[str] | None = None,
+        control: MORPControl | None = None,
+    ) -> "MORPResults":
+        """Build a results object from final (natural-space) coefficients.
+
+        This is the GAUSS-style "plug in the converged estimates" workflow: it
+        lets you compute predictions / ATEs from the **reported** coefficients
+        (betas, threshold cut-points, and the correlation matrix) without
+        re-running the optimiser. See ``anna0605/email.md`` (UTA follow-up,
+        2026-06): "match the GAUSS style, where users can input the final
+        estimation coefficients and use those values to calculate the ATEs."
+
+        The natural quantities are encoded into a self-consistent raw parameter
+        vector (thresholds → log-increments; correlations → ``atanh`` under the
+        direct parameterisation, which reproduces any valid PD input matrix
+        exactly), so the resulting object drives ``morp_ate`` / ``morp_predict``
+        / ``morp_joint_probs`` / ``summary`` unchanged. Standard errors are
+        ``NaN`` (no covariance is supplied for fixed user inputs).
+
+        Parameters
+        ----------
+        beta : array-like, shape (n_beta,)
+            Slope coefficients, in the model's coefficient order.
+        thresholds : list of array-like
+            Per-dimension threshold **cut-points** (the values printed in the
+            output table / GAUSS THRESH), each of length ``n_categories[d] - 1``
+            and strictly increasing.
+        correlation : array-like, shape (n_dims, n_dims), optional
+            Error correlation matrix. ``None`` (default) builds an IID model.
+        dep_vars : list of str
+            Outcome names (defines ``n_dims = len(dep_vars)``).
+        n_categories : list of int
+            Number of ordinal categories per dimension.
+        var_names : list of str, optional
+            Names for the ``beta`` coefficients (defaults to ``b0, b1, ...``).
+        control : MORPControl, optional
+            Base control; its ``method`` (MVNCD approximation) is preserved.
+            The correlation encoding is forced to a consistent unit-variance,
+            direct-parameterisation form.
+
+        Returns
+        -------
+        MORPResults
+        """
+        from pybhatlib.models.morp._morp_control import (
+            MORPControl as _MC,
+            morp_control_replace,
+        )
+        from pybhatlib.models.morp._morp_report import build_morp_report
+
+        beta = np.asarray(beta, dtype=np.float64).ravel()
+        n_beta = beta.shape[0]
+        n_dims = len(dep_vars)
+        thresholds = [np.asarray(t, dtype=np.float64).ravel() for t in thresholds]
+        if len(thresholds) != n_dims or len(n_categories) != n_dims:
+            raise ValueError(
+                "thresholds and n_categories must each have length len(dep_vars)"
+            )
+        iid = correlation is None
+
+        base = control if control is not None else _MC(iid=iid)
+        control = morp_control_replace(
+            base, iid=iid, spherical=False, fix_scales=True, heteronly=False
+        )
+
+        # Encode raw optimiser-space theta from the natural quantities.
+        theta: list[float] = [float(b) for b in beta]
+        for d in range(n_dims):
+            m = n_categories[d] - 1
+            t = thresholds[d]
+            if m <= 0:
+                continue
+            if t.shape[0] != m:
+                raise ValueError(
+                    f"thresholds[{d}] must have {m} cut-points, got {t.shape[0]}"
+                )
+            incs = np.diff(t)
+            if t.shape[0] >= 2 and np.any(incs <= 0):
+                raise ValueError(
+                    f"thresholds[{d}] must be strictly increasing: {t}"
+                )
+            theta.append(float(t[0]))
+            theta.extend(np.log(incs).tolist())
+
+        corr_mat: NDArray | None = None
+        if not iid:
+            corr_mat = np.asarray(correlation, dtype=np.float64)
+            if corr_mat.shape != (n_dims, n_dims):
+                raise ValueError(
+                    f"correlation must be {n_dims}x{n_dims}, got {corr_mat.shape}"
+                )
+            # Only the upper triangle is consumed below; reject a non-symmetric
+            # matrix rather than silently ignoring the lower triangle (a flipped
+            # off-diagonal there scrambles joint probabilities while leaving the
+            # correlation-independent marginals intact — see PR #30).
+            for i in range(n_dims):
+                for j in range(i + 1, n_dims):
+                    if not np.isclose(corr_mat[i, j], corr_mat[j, i], atol=1e-8):
+                        raise ValueError(
+                            f"correlation must be symmetric: entry [{i},{j}]="
+                            f"{corr_mat[i, j]:g} != [{j},{i}]={corr_mat[j, i]:g}. "
+                            "Pass the same value in both off-diagonal positions."
+                        )
+            for i in range(n_dims):
+                for j in range(i + 1, n_dims):
+                    rho = float(corr_mat[i, j])
+                    if not -1.0 < rho < 1.0:
+                        raise ValueError(
+                            f"correlation[{i},{j}]={rho} must be in (-1, 1)"
+                        )
+                    theta.append(float(np.arctanh(rho)))
+        theta_arr = np.asarray(theta, dtype=np.float64)
+
+        # Parameter names matching MORPModel._build_param_names convention.
+        if var_names is None:
+            var_names = [f"b{i}" for i in range(n_beta)]
+        names = list(var_names)
+        for d in range(n_dims):
+            for j in range(n_categories[d] - 1):
+                names.append(f"tau_{dep_vars[d]}_{j + 1}")
+        if not iid:
+            for i in range(n_dims):
+                for j in range(i + 1, n_dims):
+                    names.append(f"corr_{dep_vars[i]}_{dep_vars[j]}")
+
+        report = build_morp_report(
+            theta_arr, None, None, n_beta, n_dims, n_categories, control,
+            names, list(dep_vars),
+        )
+
+        nan = np.full(theta_arr.shape, np.nan, dtype=np.float64)
+        return cls(
+            params=theta_arr,
+            se=nan.copy(),
+            loglik=float("nan"),
+            n_obs=0,
+            n_params=theta_arr.shape[0],
+            converged=True,
+            n_iter=0,
+            thresholds=thresholds,
+            correlation_matrix=corr_mat,
+            param_names=names,
+            t_stat=nan.copy(),
+            p_value=nan.copy(),
+            gradient=nan.copy(),
+            cov_matrix=None,
+            control=control,
+            report=report,
+        )
+
     def to_dataframe(self) -> pd.DataFrame:
         """Convert coefficient table to DataFrame.
 

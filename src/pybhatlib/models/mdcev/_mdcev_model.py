@@ -292,17 +292,40 @@ class MDCEVModel:
             )
 
             method = ctrl.se_method
-            if method == "bhhh" or method == "sandwich":
+            diagnostic = bool(getattr(ctrl, "se_diagnostic", False))
+
+            # Which named SE estimators to report. Under se_diagnostic, all
+            # three are produced for side-by-side comparison; otherwise only the
+            # primary one (so e.g. a sandwich fit does not surface se_bhhh even
+            # though B is an internal building block).
+            report_methods = (
+                {"bhhh", "hessian", "sandwich"} if diagnostic else {method}
+            )
+            need_B = bool(report_methods & {"bhhh", "sandwich"})
+            need_hessian = bool(report_methods & {"hessian", "sandwich"})
+
+            n_full = nvarm + nvargam + 1
+            idx = np.where(active)[0]
+
+            def _active_to_se(cov_active):
+                cov_full_l = np.zeros((n_full, n_full))
+                for ii, pi in enumerate(idx):
+                    for jj, pj in enumerate(idx):
+                        cov_full_l[pi, pj] = cov_active[ii, jj]
+                return (
+                    np.sqrt(np.maximum(np.diag(cov_full_l), 0.0)),
+                    cov_full_l,
+                )
+
+            B = None
+            if need_B:
                 g_active_unpar = g_obs_unpar[:, active]
                 B = g_active_unpar.T @ g_active_unpar
 
-            if method == "bhhh":
-                try:
-                    cov_active = np.linalg.inv(B)
-                except np.linalg.LinAlgError:
-                    cov_active = np.linalg.pinv(B)
-            else:
-                # Hessian and Sandwich methods need Hessian inverse
+            hess_active = None
+            if need_hessian:
+                # Observed Hessian by finite differences (the expensive pass,
+                # only entered when hessian/sandwich is reported).
                 def obj_unpar(x):
                     ll_obs = mdcev_loglik_unpar(
                         x, dta, ivm, ivg, flagchm, flagprcm, wtind,
@@ -310,36 +333,37 @@ class MDCEVModel:
                     )
                     return -ll_obs.sum()
 
-                # Compute numerical Hessian at the optimum
                 hess_unpar = numerical_hessian(obj_unpar, x_unpar)
                 try:
                     hess_inv_unpar = np.linalg.inv(hess_unpar)
                 except np.linalg.LinAlgError:
                     hess_inv_unpar = np.linalg.pinv(hess_unpar)
-                
                 hess_active = hess_inv_unpar[np.ix_(active, active)]
 
-                if method == "hessian":
-                    cov_active = hess_active
-                else:
-                    cov_active = hess_active @ B @ hess_active
+            def _cov_for(m):
+                if m == "bhhh":
+                    try:
+                        return np.linalg.inv(B)
+                    except np.linalg.LinAlgError:
+                        return np.linalg.pinv(B)
+                if m == "hessian":
+                    return hess_active
+                return hess_active @ B @ hess_active  # sandwich
 
-            n_full = nvarm + nvargam + 1
-            cov_full = np.zeros((n_full, n_full))
-            idx = np.where(active)[0]
-            for ii, pi in enumerate(idx):
-                for jj, pj in enumerate(idx):
-                    cov_full[pi, pj] = cov_active[ii, jj]
+            se_by = {}
+            cov_by = {}
+            for m in report_methods:
+                se_m, cov_m = _active_to_se(_cov_for(m))
+                se_by[m] = se_m
+                cov_by[m] = cov_m
 
-            se_full = np.sqrt(np.maximum(np.diag(cov_full), 0.0))
-            cov_reported = cov_full.copy()  # No transformation needed
+            se_bhhh = se_by.get("bhhh")
+            se_hessian = se_by.get("hessian")
+            se_sandwich = se_by.get("sandwich")
 
-            if method == "bhhh":
-                se_bhhh = se_full
-            elif method == "hessian":
-                se_hessian = se_full
-            else:
-                se_sandwich = se_full
+            # Reported se / cov / corr follow the primary se_method.
+            se_full = se_by[method]
+            cov_reported = cov_by[method]
 
             with np.errstate(invalid="ignore"):
                 corr = cov_reported / np.outer(se_full, se_full)

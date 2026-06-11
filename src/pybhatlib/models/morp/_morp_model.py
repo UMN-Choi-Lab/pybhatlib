@@ -19,6 +19,7 @@ from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models._base import BaseModel
 from pybhatlib.models.morp._morp_control import MORPControl
+from pybhatlib.models.morp._morp_grad_analytic import morp_analytic_gradient
 from pybhatlib.models.morp._morp_loglik import (
     _per_obs_loglik,
     _unpack_morp_params,
@@ -373,13 +374,32 @@ class MORPModel(BaseModel):
     ) -> np.ndarray:
         """Per-observation score matrix S, shape (N, n_params).
 
-        ``S[i, k] = d ln P(y_i | theta) / d theta_k`` computed by central
-        finite differences on the per-observation log-likelihood.
+        ``S[i, k] = d ln P(y_i | theta) / d theta_k``.
+
+        Computed analytically in a single pass when the MVNCD method supports
+        the analytic gradient (``analytic_grad`` and ``method in {me, ovus}``),
+        which is the BHHH/sandwich hot path — otherwise it costs ``2*n_params``
+        full-data log-likelihood evaluations. Falls back to central finite
+        differences on the per-observation log-likelihood otherwise.
 
         Used for BHHH and sandwich variance estimators.
         """
         xp = get_backend("numpy")
         n = len(theta)
+
+        if getattr(self.control, "analytic_grad", False) and self.control.method in (
+            "me",
+            "ovus",
+        ):
+            try:
+                _, _, scores = morp_analytic_gradient(
+                    theta, self.X, self.y, self.n_dims, self.n_categories,
+                    self.n_beta, self.control, return_per_obs=True,
+                )
+                return scores
+            except Exception:
+                pass  # fall back to finite differences below
+
         scores = np.zeros((self.N, n), dtype=np.float64)
         for k in range(n):
             tp = theta.copy(); tp[k] += eps

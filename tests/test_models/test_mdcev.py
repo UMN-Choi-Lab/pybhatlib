@@ -81,3 +81,56 @@ class TestMDCEVModel:
         assert results.se is not None
         assert np.all(np.isfinite(results.se))
         assert results.n_obs == len(df)
+
+
+_ALTS = ["alt_out", "alt1", "alt2"]
+_USPEC = {
+    "ASC_alt1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
+    "ASC_alt2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+    "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
+}
+_GSPEC = {
+    "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
+    "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
+    "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+}
+
+
+def _fit_mdcev(df, **ctrl_kwargs):
+    model = MDCEVModel(
+        data=df, alternatives=_ALTS,
+        utility_spec=_USPEC, gamma_spec=_GSPEC,
+        control=MDCEVControl(maxiter=10, verbose=0, **ctrl_kwargs),
+    )
+    return model.fit()
+
+
+class TestMDCEVSeDiagnostic:
+    """se_diagnostic computes all three SE estimators (A3 parity with MORP/MNP)."""
+
+    def test_default_only_primary_estimator_populated(self, synthetic_mdcev_data):
+        r = _fit_mdcev(synthetic_mdcev_data, se_method="bhhh")
+        assert r.se_bhhh is not None
+        assert r.se_hessian is None
+        assert r.se_sandwich is None
+
+    def test_diagnostic_populates_all_three(self, synthetic_mdcev_data):
+        r = _fit_mdcev(synthetic_mdcev_data, se_method="bhhh", se_diagnostic=True)
+        for name, se in [
+            ("bhhh", r.se_bhhh), ("hessian", r.se_hessian),
+            ("sandwich", r.se_sandwich),
+        ]:
+            assert se is not None, f"{name} SE not computed under se_diagnostic"
+            assert np.all(np.isfinite(se)), f"{name} SE has non-finite entries"
+
+    def test_diagnostic_reported_se_matches_primary(self, synthetic_mdcev_data):
+        """Reported `se` equals the primary se_method's estimator."""
+        r = _fit_mdcev(synthetic_mdcev_data, se_method="hessian", se_diagnostic=True)
+        assert np.allclose(r.se, r.se_hessian, equal_nan=True)
+        # bhhh and hessian SEs are both finite but generally differ
+        assert r.se_bhhh is not None and r.se_sandwich is not None
+
+    def test_diagnostic_off_by_default(self, synthetic_mdcev_data):
+        r = _fit_mdcev(synthetic_mdcev_data, se_method="sandwich")
+        assert r.se_sandwich is not None
+        assert r.se_bhhh is None  # not requested, diagnostic off
