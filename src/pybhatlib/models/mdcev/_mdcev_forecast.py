@@ -47,7 +47,7 @@ def mdcev_predict(
     shares : NDArray, shape (N, nc)
         Mean predicted consumption share for each alternative.
     """
-    from pybhatlib.models.mvlogit.mvlogit import simtradmdcev
+    from pybhatlib.gradmvn import simtradmdcev
 
     ctrl    = results.control
     b       = results.b_reported

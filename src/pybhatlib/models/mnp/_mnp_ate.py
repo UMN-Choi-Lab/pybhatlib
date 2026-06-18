@@ -37,7 +37,7 @@ ScenarioSpec = Union[
 
 
 @dataclass
-class ATEResult:
+class MNPATEResult:
     """Average Treatment Effect analysis results.
 
     Attributes
@@ -99,6 +99,12 @@ class ATEResult:
         t = self.shares_per_scenario[treatment]
         with np.errstate(divide="ignore", invalid="ignore"):
             return np.where(b > 0, 100.0 * (t - b) / b, np.nan)
+
+
+# Backwards-compatible alias.  The class was historically named ``ATEResult``
+# (unprefixed, unlike MNLATEResult / MDCEVATEResult / MORPATEResult); it is now
+# ``MNPATEResult`` for naming parity.  ``ATEResult`` remains importable.
+ATEResult = MNPATEResult
 
 
 def _apply_scenario_overrides(
@@ -267,7 +273,7 @@ def mnp_ate(
     changevar: str | None = None,
     changeval: float | None = None,
     X: NDArray | None = None,
-) -> ATEResult:
+) -> MNPATEResult:
     """Compute predicted shares and ATE for an MNP model.
 
     Supports two modes:
@@ -277,7 +283,7 @@ def mnp_ate(
         variable overrides; the function rebuilds the design matrix for each
         scenario, computes per-observation probabilities via
         ``_compute_choice_prob`` / ``_compute_mixture_prob``, and returns
-        mean shares in ``ATEResult.shares_per_scenario``.
+        mean shares in ``MNPATEResult.shares_per_scenario``.
 
     **Legacy mode** (pre-MNP-004):
         Pass ``changevar`` + ``changeval`` to replicate the old single
@@ -320,7 +326,7 @@ def mnp_ate(
 
     Returns
     -------
-    result : ATEResult
+    result : MNPATEResult
 
     Raises
     ------
@@ -382,7 +388,7 @@ def mnp_ate(
             )
             shares_per_scenario[scenario_name] = scenario_shares
 
-        return ATEResult(
+        return MNPATEResult(
             n_obs=N,
             predicted_shares=baseline_shares,
             shares_per_scenario=shares_per_scenario,
@@ -423,7 +429,7 @@ def mnp_ate(
         # unmodified-data shares, NOT the treatment-data shares.  Aliasing it
         # to ``treatment_shares`` would silently change semantics for callers
         # that read ``result.predicted_shares`` (PR-review P1).
-        return ATEResult(
+        return MNPATEResult(
             n_obs=N,
             predicted_shares=base_shares,
             base_shares=base_shares,
@@ -436,7 +442,70 @@ def mnp_ate(
         X_base_np, N, I, n_vars, theta_hat, control, ranvar_indices, avail, xp,
     )
 
-    return ATEResult(
+    return MNPATEResult(
         n_obs=N,
         predicted_shares=predicted_shares,
+    )
+
+
+def mnp_ate_from_params(
+    beta: NDArray,
+    *,
+    kernel_cov: NDArray | None = None,
+    control=None,
+    ranvar_indices: list[int] | None = None,
+    param_names: list[str] | None = None,
+    n_alts: int | None = None,
+    data: "pd.DataFrame | None" = None,
+    spec: dict | None = None,
+    alternatives: list[str] | None = None,
+    avail: NDArray | None = None,
+    scenarios: "ScenarioSpec | None" = None,
+    changevar: str | None = None,
+    changeval: float | None = None,
+    X: NDArray | None = None,
+) -> MNPATEResult:
+    """Compute MNP ATE predictions directly from natural-space coefficients.
+
+    Convenience wrapper mirroring :func:`morp_ate_from_params`: it builds a
+    results object via :meth:`MNPResults.from_estimates` and dispatches to
+    :func:`mnp_ate`, so ATEs can be computed from manually entered (e.g. GAUSS)
+    estimates without re-fitting.
+
+    Parameters
+    ----------
+    beta : ndarray, shape (n_beta,)
+        Slope coefficients.
+    kernel_cov : ndarray, shape (I-1, I-1), optional
+        Differenced kernel error covariance (``None`` ⇒ IID).  See
+        :meth:`MNPResults.from_estimates`.
+    control : MNPControl, optional
+        Control structure (defaults to ``MNPControl(iid=kernel_cov is None)``).
+    ranvar_indices, param_names, n_alts
+        Forwarded to :meth:`MNPResults.from_estimates`.
+    data, spec, alternatives, avail, scenarios, changevar, changeval, X
+        Forwarded to :func:`mnp_ate` (same counterfactual API).
+
+    Returns
+    -------
+    MNPATEResult
+    """
+    results = MNPResults.from_estimates(
+        beta,
+        kernel_cov=kernel_cov,
+        control=control,
+        ranvar_indices=ranvar_indices,
+        param_names=param_names,
+        n_alts=n_alts,
+    )
+    return mnp_ate(
+        results,
+        data=data,
+        spec=spec,
+        alternatives=alternatives,
+        avail=avail,
+        scenarios=scenarios,
+        changevar=changevar,
+        changeval=changeval,
+        X=X,
     )

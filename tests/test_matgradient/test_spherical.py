@@ -6,9 +6,38 @@ import numpy as np
 import pytest
 
 from pybhatlib.matgradient._spherical import (
+    corr_to_theta,
     grad_corr_theta,
     theta_to_corr,
 )
+
+
+class TestCorrToTheta:
+    """Verify corr_to_theta is the exact inverse of theta_to_corr."""
+
+    @pytest.mark.parametrize("K", [2, 3, 4, 5, 6])
+    def test_roundtrip_from_random_theta(self, K: int):
+        rng = np.random.default_rng(7)
+        n = K * (K - 1) // 2
+        for _ in range(50):
+            theta = rng.normal(0.0, 1.5, size=n)
+            corr = theta_to_corr(theta, K)
+            corr2 = theta_to_corr(corr_to_theta(corr, K), K)
+            np.testing.assert_allclose(corr2, corr, atol=1e-12)
+
+    def test_roundtrip_direct_matrices(self):
+        mats = [
+            np.array([[1.0, 0.7], [0.7, 1.0]]),
+            0.4 * np.ones((3, 3)) + 0.6 * np.eye(3),
+            np.array([[1.0, 0.5, -0.3], [0.5, 1.0, 0.2], [-0.3, 0.2, 1.0]]),
+        ]
+        for corr in mats:
+            K = corr.shape[0]
+            corr2 = theta_to_corr(corr_to_theta(corr, K), K)
+            np.testing.assert_allclose(corr2, corr, atol=1e-12)
+
+    def test_k1_returns_empty(self):
+        assert corr_to_theta(np.array([[1.0]]), 1).shape == (0,)
 
 
 class TestThetaToCorr:

@@ -196,6 +196,116 @@ class MNPResults:
                 f"MNPResults got unexpected keyword arguments: {sorted(kwargs)}"
             )
 
+    @classmethod
+    def from_estimates(
+        cls,
+        beta: NDArray,
+        *,
+        kernel_cov: NDArray | None = None,
+        control: MNPControl | None = None,
+        ranvar_indices: list[int] | None = None,
+        param_names: list[str] | None = None,
+        n_alts: int | None = None,
+    ) -> "MNPResults":
+        """Build a results object from final (natural-space) coefficients.
+
+        GAUSS-style "plug in the converged estimates" workflow, mirroring
+        :meth:`MORPResults.from_estimates`: compute predictions / ATEs from the
+        **reported** coefficients without re-running the optimiser.  Engine
+        behind :func:`mnp_ate_from_params`.
+
+        The natural quantities are encoded into a self-consistent raw
+        (optimiser-space) parameter vector so the object drives
+        :func:`mnp_ate` / :func:`mnp_predict` unchanged.  Because MNP choice
+        probabilities are invariant to the overall scale normalisation, feeding
+        either the raw or the reported (normalised) ``(beta, kernel_cov)`` pair
+        reproduces the same predictions.
+
+        Parameters
+        ----------
+        beta : array-like, shape (n_beta,)
+            Slope coefficients in the model's coefficient order.
+        kernel_cov : array-like, shape (I-1, I-1), optional
+            Differenced kernel error covariance ``Lambda`` (the quantity
+            :func:`~pybhatlib.models.mnp._mnp_loglik._build_lambda` returns).
+            ``None`` (default) builds an IID model (``Lambda = I``).
+        control : MNPControl, optional
+            Control structure.  Defaults to ``MNPControl(iid=kernel_cov is
+            None)``.  Its ``heteronly`` flag selects the variance-only
+            encoding.  ``mix`` / ``nseg > 1`` (random coefficients / mixtures)
+            are not supported and raise ``NotImplementedError``.
+        ranvar_indices : list of int, optional
+            Random-coefficient indices (carried through to ``mnp_ate``).
+        param_names : list of str, optional
+            Names for ``beta`` (defaults to ``b0, b1, ...``).
+        n_alts : int, optional
+            Number of alternatives ``I``.  Inferred from ``kernel_cov`` shape
+            (``I-1``) when not given.
+
+        Returns
+        -------
+        MNPResults
+            With ``se`` / ``t_stat`` / ``p_value`` / covariance set to ``NaN``.
+        """
+        from pybhatlib.matgradient._spherical import corr_to_theta
+        from pybhatlib.models.mnp._mnp_control import MNPControl as _MC
+
+        beta = np.asarray(beta, dtype=np.float64).ravel()
+        n_beta = beta.shape[0]
+        iid = (kernel_cov is None) if control is None else control.iid
+        control = control if control is not None else _MC(iid=iid)
+
+        theta: list[float] = [float(b) for b in beta]
+
+        if not iid:
+            if kernel_cov is None:
+                raise ValueError("kernel_cov is required for a non-IID model")
+            if control.mix or control.nseg > 1:
+                raise NotImplementedError(
+                    "from_estimates supports IID and fixed-covariance MNP only; "
+                    "random-coefficient (mix=True) and mixture (nseg>1) "
+                    "specifications are not yet supported."
+                )
+            Lambda = np.asarray(kernel_cov, dtype=np.float64)
+            dim = Lambda.shape[0]
+            if Lambda.shape != (dim, dim):
+                raise ValueError(f"kernel_cov must be square, got {Lambda.shape}")
+            if n_alts is None:
+                n_alts = dim + 1
+            scales = np.sqrt(np.clip(np.diag(Lambda), 1e-300, None))
+            theta.extend(np.log(scales).tolist())
+            if not control.heteronly:
+                corr = Lambda / np.outer(scales, scales)
+                theta.extend(corr_to_theta(corr, dim).tolist())
+
+        theta_arr = np.asarray(theta, dtype=np.float64)
+
+        if param_names is None:
+            param_names = [f"b{i}" for i in range(n_beta)]
+
+        nan_b = np.full(n_beta, np.nan, dtype=np.float64)
+        nan_t = np.full(theta_arr.shape[0], np.nan, dtype=np.float64)
+        nan_mat = np.full((theta_arr.shape[0], theta_arr.shape[0]), np.nan)
+        return cls(
+            params=theta_arr,
+            b_original=beta.copy(),
+            se=nan_b.copy(),
+            t_stat=nan_b.copy(),
+            p_value=nan_b.copy(),
+            gradient=nan_t.copy(),
+            loglik=float("nan"),
+            n_obs=0,
+            param_names=list(param_names),
+            corr_matrix=nan_mat.copy(),
+            cov_matrix=nan_mat.copy(),
+            n_iter=0,
+            convergence_time=float("nan"),
+            converged=True,
+            return_code=0,
+            control=control,
+            ranvar_indices=ranvar_indices,
+        )
+
     def summary(self) -> str:
         """Print formatted estimation results (like BHATLIB Figure 10).
 

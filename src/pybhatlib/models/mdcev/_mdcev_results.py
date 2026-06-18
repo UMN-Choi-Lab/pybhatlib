@@ -103,6 +103,87 @@ class MDCEVResults:
     control: MDCEVControl | None = None
     data_path: str = ""
 
+    @classmethod
+    def from_estimates(
+        cls,
+        b_reported: NDArray,
+        sigma: float | None = None,
+        *,
+        control: MDCEVControl | None = None,
+        param_names: list[str] | None = None,
+    ) -> "MDCEVResults":
+        """Build a results object from final (natural-space) coefficients.
+
+        GAUSS-style "plug in the converged estimates" workflow: compute
+        predictions / ATEs from the **reported** coefficients without
+        re-running the optimiser.  Mirrors :meth:`MORPResults.from_estimates`
+        and is the engine behind :func:`mdcev_ate_from_params`.
+
+        Parameters
+        ----------
+        b_reported : array-like
+            Reported coefficient vector aligned with ``param_names``:
+            ``[beta (nvarm), gamma (nvargam), sigma]`` in natural units, exactly
+            as printed by :meth:`summary`.  The trailing ``sigma`` slot is the
+            natural scale (not ``log sigma``).
+        sigma : float, optional
+            Scale parameter.  Defaults to the last element of ``b_reported``.
+        control : MDCEVControl, optional
+            Control structure (its ``outside_good_gamma`` and ``utility`` drive
+            prediction).  Defaults to ``MDCEVControl()``.
+        param_names : list of str, optional
+            Names aligned with ``b_reported`` (defaults to ``b0, b1, ...``).
+
+        Returns
+        -------
+        MDCEVResults
+            Object with ``se`` / ``t_stat`` / ``p_value`` / covariance set to
+            ``NaN`` (no covariance is supplied for fixed user inputs).
+        """
+        from pybhatlib.models.mdcev._mdcev_control import MDCEVControl as _MC
+
+        b_reported = np.asarray(b_reported, dtype=np.float64).ravel()
+        if b_reported.size == 0:
+            raise ValueError("b_reported must be non-empty")
+        if sigma is None:
+            sigma = float(b_reported[-1])
+        sigma = float(sigma)
+        if sigma <= 0.0:
+            raise ValueError(f"sigma must be positive, got {sigma}")
+
+        control = control if control is not None else _MC()
+        n = b_reported.shape[0]
+        if param_names is None:
+            param_names = [f"b{i}" for i in range(n)]
+
+        # Raw (optimiser-space) vector mirrors b_reported but with log(sigma)
+        # in the trailing slot; not used by prediction but kept consistent.
+        b_raw = b_reported.copy()
+        b_raw[-1] = np.log(sigma)
+
+        nan = np.full(n, np.nan, dtype=np.float64)
+        nan_mat = np.full((n, n), np.nan, dtype=np.float64)
+        return cls(
+            b=b_raw,
+            b_reported=b_reported,
+            se=nan.copy(),
+            t_stat=nan.copy(),
+            p_value=nan.copy(),
+            gradient=nan.copy(),
+            loglik=float("nan"),
+            ll_total=float("nan"),
+            n_obs=0,
+            param_names=list(param_names),
+            corr_matrix=nan_mat.copy(),
+            cov_matrix=nan_mat.copy(),
+            n_iter=0,
+            convergence_time=float("nan"),
+            converged=True,
+            return_code=0,
+            sigma=sigma,
+            control=control,
+        )
+
     def summary(self) -> str:
         """Print formatted estimation results mirroring GAUSS maxprt output.
 

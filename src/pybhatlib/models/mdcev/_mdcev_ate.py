@@ -173,3 +173,64 @@ def mdcev_ate(
         pct_ate=pct_ate,
         alternative_names=alternative_names,
     )
+
+
+def mdcev_ate_from_params(
+    b_reported: NDArray,
+    sigma: float,
+    X: NDArray,
+    X_gam: NDArray,
+    price: NDArray,
+    *,
+    control=None,
+    param_names: list[str] | None = None,
+    changevar_idx: tuple[int, int] | None = None,
+    base_val: float | None = None,
+    treatment_val: float | None = None,
+    alternative_names: list[str] | None = None,
+    n_draws: int = 1000,
+    seed: int = 1234,
+) -> MDCEVATEResult:
+    """Compute MDCEV ATE predictions directly from natural-space coefficients.
+
+    Convenience wrapper mirroring :func:`morp_ate_from_params`: it builds a
+    results object via :meth:`MDCEVResults.from_estimates` and dispatches to
+    :func:`mdcev_ate`, so ATEs can be computed from manually entered (e.g.
+    GAUSS) estimates without re-fitting.
+
+    Parameters
+    ----------
+    b_reported : ndarray
+        Reported coefficient vector ``[beta, gamma, sigma]`` in natural units
+        (see :meth:`MDCEVResults.from_estimates`).
+    sigma : float
+        Scale parameter.
+    X : ndarray, shape (N, nc, nvarm)
+        Baseline utility design matrix.
+    X_gam : ndarray, shape (N, nc, nvargam)
+        Satiation utility design matrix.
+    price : ndarray, shape (N, nc)
+        Price matrix.
+    control : MDCEVControl, optional
+        Control structure (drives ``outside_good_gamma`` / utility type).
+    param_names : list of str, optional
+        Names aligned with ``b_reported``.
+    changevar_idx, base_val, treatment_val, alternative_names, n_draws, seed
+        Forwarded to :func:`mdcev_ate`.
+
+    Returns
+    -------
+    MDCEVATEResult
+    """
+    results = MDCEVResults.from_estimates(
+        b_reported, sigma, control=control, param_names=param_names,
+    )
+    return mdcev_ate(
+        results, X, X_gam, price,
+        changevar_idx=changevar_idx,
+        base_val=base_val,
+        treatment_val=treatment_val,
+        alternative_names=alternative_names,
+        n_draws=n_draws,
+        seed=seed,
+    )
