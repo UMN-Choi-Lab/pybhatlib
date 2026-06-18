@@ -77,6 +77,62 @@ class MNLResults:
     control: MNLControl | None = None
     data_path: str = ""
 
+    @classmethod
+    def from_estimates(
+        cls,
+        b: NDArray,
+        *,
+        param_names: list[str] | None = None,
+        control: MNLControl | None = None,
+    ) -> "MNLResults":
+        """Build a results object from final (reported) coefficients.
+
+        GAUSS-style "plug in the converged estimates" workflow, mirroring
+        ``MORPResults.from_estimates``: compute predictions / ATEs from the
+        reported coefficients without re-running the optimiser.  Engine behind
+        :func:`mnl_ate_from_params`.  The MNL coefficient vector is reported
+        directly (no covariance / scale parameters), so ``b`` is used as-is.
+
+        Parameters
+        ----------
+        b : array-like, shape (n_params,)
+            Estimated coefficients, in the model's coefficient order.
+        param_names : list of str, optional
+            Names aligned with ``b`` (defaults to ``b0, b1, ...``).
+        control : MNLControl, optional
+            Control structure to carry along (defaults to ``MNLControl()``).
+
+        Returns
+        -------
+        MNLResults
+            With ``se`` / ``t_stat`` / ``p_value`` / covariance set to ``NaN``
+            (no covariance is supplied for fixed user inputs).
+        """
+        b = np.asarray(b, dtype=np.float64).ravel()
+        n = b.shape[0]
+        if param_names is None:
+            param_names = [f"b{i}" for i in range(n)]
+        nan = np.full(n, np.nan, dtype=np.float64)
+        nan_mat = np.full((n, n), np.nan, dtype=np.float64)
+        return cls(
+            b=b,
+            se=nan.copy(),
+            t_stat=nan.copy(),
+            p_value=nan.copy(),
+            gradient=nan.copy(),
+            ll=float("nan"),
+            ll_total=float("nan"),
+            n_obs=0,
+            param_names=list(param_names),
+            corr_matrix=nan_mat.copy(),
+            cov_matrix=nan_mat.copy(),
+            n_iterations=0,
+            convergence_time=float("nan"),
+            converged=True,
+            return_code=0,
+            control=control if control is not None else MNLControl(),
+        )
+
     def summary(self) -> str:
         """Print formatted estimation results.
 

@@ -161,3 +161,53 @@ def mnl_ate(
         pct_ate=pct_ate,
         alternative_names=alternative_names,
     )
+
+
+def mnl_ate_from_params(
+    beta: NDArray,
+    X: NDArray,
+    avail: NDArray | None = None,
+    *,
+    param_names: list[str] | None = None,
+    control=None,
+    changevar_idx: tuple[int, int] | None = None,
+    base_val: float | None = None,
+    treatment_val: float | None = None,
+    alternative_names: list[str] | None = None,
+) -> MNLATEResult:
+    """Compute MNL ATE predictions directly from reported coefficients.
+
+    Convenience wrapper mirroring :func:`morp_ate_from_params`: it builds a
+    results object via :meth:`MNLResults.from_estimates` and dispatches to
+    :func:`mnl_ate`, so ATEs can be computed from manually entered (e.g. GAUSS)
+    estimates without re-fitting.
+
+    Parameters
+    ----------
+    beta : ndarray, shape (numunord,)
+        Estimated MNL coefficients.
+    X : ndarray, shape (N, nc, numunord)
+        Design matrix.
+    avail : ndarray, shape (N, nc), optional
+        Availability matrix.
+    param_names : list of str, optional
+        Names aligned with ``beta``.
+    control : MNLControl, optional
+        Control structure to carry along.
+    changevar_idx, base_val, treatment_val, alternative_names
+        Forwarded to :func:`mnl_ate`.
+
+    Returns
+    -------
+    MNLATEResult
+    """
+    results = MNLResults.from_estimates(
+        beta, param_names=param_names, control=control,
+    )
+    return mnl_ate(
+        results, X, avail,
+        changevar_idx=changevar_idx,
+        base_val=base_val,
+        treatment_val=treatment_val,
+        alternative_names=alternative_names,
+    )
