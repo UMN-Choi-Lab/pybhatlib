@@ -75,8 +75,12 @@ def _compute_probabilities(
 
     # Availability-masked softmax
     # GAUSS: p1 = exp(v); p2 = (p1 .* avail) ./ sumc((p1 .* avail)')
+    # Subtract the per-row max over available alternatives before exp so
+    # large utilities can't overflow to inf; the shift cancels in p2.
     avail = dta[:, davunord]                                    # (e1, nc)
-    p1    = np.exp(v) * avail                                   # (e1, nc)  masked
+    v_max = np.max(np.where(avail > 0, v, -np.inf), axis=1, keepdims=True)
+    v_max = np.where(np.isfinite(v_max), v_max, 0.0)           # guard all-unavail
+    p1    = np.exp(v - v_max) * avail                           # (e1, nc)  masked
     denom = p1.sum(axis=1, keepdims=True)                       # (e1, 1)
     denom = np.where(denom == 0, 1.0, denom)                   # guard /0
     p2    = p1 / denom                                          # (e1, nc)
@@ -233,7 +237,9 @@ def mnl_hessian(
     Returns
     -------
     hess : NDArray, shape (numunord, numunord)
-        Negative Hessian (positive semi-definite).
+        The log-likelihood Hessian (negative semi-definite). The observed
+        information matrix is ``-hess`` (positive semi-definite); negate
+        before inverting for inverse-Hessian standard errors.
     """
     e1 = dta.shape[0]
     p2, _ = _compute_probabilities(x, dta, indxivunord, davunord, nc, numunord)
@@ -257,4 +263,4 @@ def mnl_hessian(
         w       = (uno * p2[:, k])[:, np.newaxis]              # (e1, 1)
         hess   += dev.T @ (w * dev)
 
-    return -hess                                                # negative Hessian
+    return -hess                                                # LL Hessian (NSD)

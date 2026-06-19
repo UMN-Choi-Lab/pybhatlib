@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import scipy.optimize as sopt
 from numpy.typing import NDArray
-from scipy.stats import norm
+from scipy.special import ndtr
 
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
@@ -166,11 +166,13 @@ class MNLModel(BaseModel):
         method_map = {"newton": "Newton-CG", "bfgs": "BFGS", "lbfgsb": "L-BFGS-B"}
         method = method_map.get(ctrl.optimizer, "Newton-CG")
 
+        # Newton-CG reads the tolerance from "xtol"; BFGS/CG use "gtol".
+        tol_key = "xtol" if method == "Newton-CG" else "gtol"
         opt_kwargs: dict = dict(
             fun=neg_ll,
             x0=b0,
             method=method,
-            options={"maxiter": ctrl.maxiter, "gtol": ctrl.tol,
+            options={"maxiter": ctrl.maxiter, tol_key: ctrl.tol,
                      "disp": ctrl.verbose >= 2},
         )
         if ctrl.analytic_grad:
@@ -182,7 +184,9 @@ class MNLModel(BaseModel):
         x_opt = res.x                                           # (numunord,)
 
         # ---- Covariance via cross-product of gradients ---------------
-        # Mirrors GAUSS _max_CovPar = 2 (outer-product / BHHH estimator)
+        # BHHH (outer-product of scores) estimator. Note: GAUSS MAXLIK
+        # defaults to the inverse-Hessian (_max_CovPar = 3) when the
+        # driver sets nothing, so these SEs differ from that default.
         if ctrl.want_covariance:
             g_obs = mnl_gradient(
                 x_opt, dta, indxivunord, davunord, dvunord, nc, numunord,
@@ -214,9 +218,9 @@ class MNLModel(BaseModel):
         ).sum(axis=0)
 
         # ---- t-stats and p-values ------------------------------------
-        with np.errstate(invalid="ignore"):
+        with np.errstate(invalid="ignore", divide="ignore"):
             t_stat = np.where(se > 0, x_opt / se, 0.0)
-        p_value = 2.0 * (1.0 - norm.cdf(np.abs(t_stat)))
+        p_value = 2.0 * (1.0 - ndtr(np.abs(t_stat)))
 
         t_elapsed = (time.time() - t_start) / 60.0
 
