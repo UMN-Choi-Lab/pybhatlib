@@ -6,6 +6,7 @@ import pytest
 
 from pybhatlib.models.mdcev._mdcev_model import MDCEVModel
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
+from pybhatlib.models.mdcev import mdcev_forecast, mdcev_predict_choice
 
 @pytest.fixture
 def synthetic_mdcev_data():
@@ -81,6 +82,98 @@ class TestMDCEVModel:
         assert results.se is not None
         assert np.all(np.isfinite(results.se))
         assert results.n_obs == len(df)
+
+    def test_forecast_function_accepts_results_keyword(self, synthetic_mdcev_data):
+        df = synthetic_mdcev_data
+        model = MDCEVModel(
+            data=df,
+            alternatives=["alt_out", "alt1", "alt2"],
+            utility_spec=_USPEC,
+            gamma_spec=_GSPEC,
+            control=MDCEVControl(maxiter=5, verbose=0),
+        )
+        results = model.fit()
+        X_new = np.zeros((len(df), 3, 3), dtype=np.float64)
+        X_gam_new = np.zeros((len(df), 3, 3), dtype=np.float64)
+        price_new = np.ones((len(df), 3), dtype=np.float64)
+        budget = np.ones(len(df), dtype=np.float64)
+
+        forecasts = mdcev_forecast(
+            results=results,
+            X_new=X_new,
+            X_gam_new=X_gam_new,
+            price_new=price_new,
+            budget=budget,
+            n_replications=3,
+            seed=123,
+        )
+
+        assert forecasts.shape == (3 * len(df), 3)
+        assert np.all(forecasts >= 0)
+
+    def test_forecast_with_raw_parameters(self, synthetic_mdcev_data):
+        df = synthetic_mdcev_data
+        model = MDCEVModel(
+            data=df,
+            alternatives=["alt_out", "alt1", "alt2"],
+            utility_spec=_USPEC,
+            gamma_spec=_GSPEC,
+            control=MDCEVControl(maxiter=5, verbose=0),
+        )
+        results = model.fit()
+
+        X_new = np.zeros((len(df), 3, 3), dtype=np.float64)
+        X_gam_new = np.zeros((len(df), 3, 3), dtype=np.float64)
+        price_new = np.ones((len(df), 3), dtype=np.float64)
+        budget = np.ones(len(df), dtype=np.float64)
+
+        # Call forecasting by supplying raw parameter vector and sigma
+        forecasts = mdcev_forecast(
+            results=None,
+            X_new=X_new,
+            X_gam_new=X_gam_new,
+            price_new=price_new,
+            budget=budget,
+            n_replications=2,
+            seed=123,
+            b_reported=results.b_reported,
+            sigma=results.sigma,
+        )
+
+        assert forecasts.shape == (2 * len(df), 3)
+        assert np.all(forecasts >= 0)
+
+    def test_forecast_with_full_raw_vector_and_implicit_sigma(self, synthetic_mdcev_data):
+        df = synthetic_mdcev_data
+        model = MDCEVModel(
+            data=df,
+            alternatives=["alt_out", "alt1", "alt2"],
+            utility_spec=_USPEC,
+            gamma_spec=_GSPEC,
+            control=MDCEVControl(maxiter=5, verbose=0),
+        )
+        results = model.fit()
+
+        X_new = np.zeros((len(df), 3, 3), dtype=np.float64)
+        X_gam_new = np.zeros((len(df), 3, 3), dtype=np.float64)
+        price_new = np.ones((len(df), 3), dtype=np.float64)
+        budget = np.ones(len(df), dtype=np.float64)
+
+        raw_params = results.b_reported
+        forecasts = mdcev_forecast(
+            results=None,
+            b_reported=raw_params,
+            sigma=None,
+            X_new=X_new,
+            X_gam_new=X_gam_new,
+            price_new=price_new,
+            budget=budget,
+            n_replications=2,
+            seed=123,
+        )
+
+        assert forecasts.shape == (2 * len(df), 3)
+        assert np.all(forecasts >= 0)
 
 
 _ALTS = ["alt_out", "alt1", "alt2"]

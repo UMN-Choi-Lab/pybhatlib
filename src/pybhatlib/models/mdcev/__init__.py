@@ -14,8 +14,10 @@ from pybhatlib.models.mdcev._mdcev_ate import (
     mdcev_ate_from_params,
 )
 from pybhatlib.models.mdcev._mdcev_forecast import (
+    mdcev_forecast,
     mdcev_predict,
     mdcev_predict_choice,
+    prepare_mdcev_forecast_data,
 )
 
 __all__ = [
@@ -25,6 +27,8 @@ __all__ = [
     "MDCEVATEResult",
     "mdcev_ate",
     "mdcev_ate_from_params",
+    "mdcev_forecast",
     "mdcev_predict",
     "mdcev_predict_choice",
+    "prepare_mdcev_forecast_data",
 ]
