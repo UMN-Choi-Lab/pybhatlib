@@ -28,6 +28,8 @@ class MNLControl:
         also supported.
     tol : float
         Convergence tolerance (gradient norm).
+    tol_check: float
+        Tolerance for checking convergence
     want_covariance : bool
         If True, compute the parameter covariance matrix at convergence
         (_max_CovPar in GAUSS).
@@ -37,6 +39,9 @@ class MNLControl:
     analytic_hess : bool
         If True, use the analytic Hessian (``lhs`` procedure in GAUSS).
         Only used when optimizer = "newton".
+    se_method : str
+        Standard-error method: "bhhh" (default), "hessian" (inverse observed
+        information), or "sandwich" (robust).
     verbose : int
         Verbosity: 0 = silent, 1 = summary, 2 = per-iteration.
     seed : int or None
@@ -48,10 +53,12 @@ class MNLControl:
 
     maxiter: int = 2000
     optimizer: Literal["newton", "bfgs", "lbfgsb"] = "newton"
-    tol: float = 1e-5
+    tol: float = 1e-8
+    tol_check: float = 1e-5
     want_covariance: bool = True
     analytic_grad: bool = True
     analytic_hess: bool = True
+    se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh"
     verbose: int = 1
     seed: int | None = None
     startb: NDArray | None = None

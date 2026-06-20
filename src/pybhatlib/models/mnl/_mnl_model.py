@@ -183,27 +183,45 @@ class MNLModel(BaseModel):
         res = sopt.minimize(**opt_kwargs)
         x_opt = res.x                                           # (numunord,)
 
-        # ---- Covariance via cross-product of gradients ---------------
-        # BHHH (outer-product of scores) estimator. Note: GAUSS MAXLIK
-        # defaults to the inverse-Hessian (_max_CovPar = 3) when the
-        # driver sets nothing, so these SEs differ from that default.
+        # ---- Covariance via requested standard-error method -------------
         if ctrl.want_covariance:
             g_obs = mnl_gradient(
                 x_opt, dta, indxivunord, davunord, dvunord, nc, numunord,
             )                                                   # (n_obs, numunord)
             B = g_obs.T @ g_obs                                # (numunord, numunord)
             try:
-                cov = np.linalg.inv(B)
+                cov_bhhh = np.linalg.inv(B)
             except np.linalg.LinAlgError:
-                cov = np.linalg.pinv(B)
+                cov_bhhh = np.linalg.pinv(B)
+
+            se_method = ctrl.se_method.lower()
+            if se_method == "bhhh":
+                cov = cov_bhhh
+            else:
+                hess_obs = -mnl_hessian(
+                    x_opt, dta, indxivunord, davunord, dvunord, ddind, nc, numunord,
+                )                                               # observed information
+                try:
+                    hess_inv = np.linalg.inv(hess_obs)
+                except np.linalg.LinAlgError:
+                    hess_inv = np.linalg.pinv(hess_obs)
+
+                if se_method == "hessian":
+                    cov = hess_inv
+                elif se_method == "sandwich":
+                    cov = hess_inv @ B @ hess_inv
+                else:
+                    raise ValueError(
+                        "se_method must be one of 'bhhh', 'hessian', or 'sandwich'"
+                    )
 
             se = np.sqrt(np.maximum(np.diag(cov), 0.0))
             with np.errstate(invalid="ignore"):
                 corr = cov / np.outer(se, se)
             corr = np.nan_to_num(corr, nan=0.0)
         else:
-            cov  = np.zeros((numunord, numunord))
-            se   = np.zeros(numunord)
+            cov = np.zeros((numunord, numunord))
+            se = np.zeros(numunord)
             corr = np.zeros((numunord, numunord))
 
         # ---- Final LL and gradient -----------------------------------
@@ -215,7 +233,9 @@ class MNLModel(BaseModel):
 
         g_final = mnl_gradient(
             x_opt, dta, indxivunord, davunord, dvunord, nc, numunord,
-        ).sum(axis=0)
+        ).mean(axis=0)
+        grad_norm = float(np.linalg.norm(g_final))
+        converged = grad_norm < ctrl.tol_check
 
         # ---- t-stats and p-values ------------------------------------
         with np.errstate(invalid="ignore", divide="ignore"):
@@ -225,10 +245,11 @@ class MNLModel(BaseModel):
         t_elapsed = (time.time() - t_start) / 60.0
 
         if ctrl.verbose >= 1:
-            converged_msg = "converged" if res.success else "NOT converged"
+            converged_msg = "converged" if converged else "NOT converged"
             print(
                 f"  Optimisation {converged_msg} in {res.nit} iterations "
-                f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}"
+                f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}, "
+                #f"||grad|| = {grad_norm:.3e}, tol = {ctrl.tol_check:.3e}"
             )
 
         return MNLResults(
@@ -245,10 +266,11 @@ class MNLModel(BaseModel):
             cov_matrix=cov,
             n_iterations=res.nit,
             convergence_time=t_elapsed,
-            converged=res.success,
-            return_code=0 if res.success else 1,
+            converged=converged,
+            return_code=0 if converged else 1,
             control=ctrl,
             data_path=self.data_path,
+            message=getattr(res, "message", None),
         )
 
     # ------------------------------------------------------------------

@@ -57,6 +57,8 @@ class MNLResults:
         Control structure used for estimation.
     data_path : str
         Path to the data file used.
+    message : str | None
+        Solver message from the optimizer.
     """
 
     b: NDArray
@@ -76,6 +78,7 @@ class MNLResults:
     return_code: int
     control: MNLControl | None = None
     data_path: str = ""
+    message: str | None = None
 
     def summary(self) -> str:
         """Print formatted estimation results.
@@ -106,7 +109,10 @@ class MNLResults:
         lines.append(
             "  Covariance matrix of the parameters computed by the following method:"
         )
-        lines.append("  Cross-product of first derivatives")
+        if self.control is not None:
+            lines.append(f"  {self.control.se_method}")
+        else:
+            lines.append("  Cross-product of first derivatives")
         lines.append("")
 
         header = (
@@ -141,7 +147,9 @@ class MNLResults:
         lines.append("")
         lines.append(f"  Number of iterations   {self.n_iterations:>10d}")
         lines.append(f"  Minutes to convergence {self.convergence_time:>10.5f}")
-        lines.append(sep)
+        #if self.message is not None:
+        #    lines.append(f"  Optimizer message: {self.message}")
+        #lines.append(sep)
 
         text = "\n".join(lines)
         print(text)
