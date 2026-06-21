@@ -272,8 +272,12 @@ class MNPResults:
                 raise ValueError(f"kernel_cov must be square, got {Lambda.shape}")
             if n_alts is None:
                 n_alts = dim + 1
+            # GAUSS homogeneous form: kernel_cov is the differenced kernel K with
+            # K[0,0] PINNED to 1. Encode only the I-2 FREE scales (scales[1:]) as
+            # log-scales; the first scale is implicit (pinned to 1).
             scales = np.sqrt(np.clip(np.diag(Lambda), 1e-300, None))
-            theta.extend(np.log(scales).tolist())
+            free_scales = scales[1:]  # length I-2 (drop pinned scale01)
+            theta.extend(np.log(free_scales).tolist())
             if not control.heteronly:
                 corr = Lambda / np.outer(scales, scales)
                 theta.extend(corr_to_theta(corr, dim).tolist())

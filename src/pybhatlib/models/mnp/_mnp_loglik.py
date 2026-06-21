@@ -196,16 +196,14 @@ def _batch_loglik_shared_cov(
     """
     dim = I - 1  # all alternatives available, so dim = I-1
 
-    # Pre-compute Lambda_diff once (shared across all observations)
-    if control.iid:
-        Lambda_diff = np.ones((dim, dim), dtype=np.float64) + np.eye(dim, dtype=np.float64)
-    else:
-        # Build differencing matrix for the "worst case" ordering
-        # Since all alts are available, avail_alts for chosen=c is all j != c
-        # We compute Lambda_diff per unique chosen alternative
-        Lambda_full = np.eye(I, dtype=np.float64)
-        Lambda_full[1:, 1:] = Lambda + np.eye(I - 1)
-        Lambda_diff = None  # Will be computed per unique chosen alt
+    # GAUSS homogeneous form (lpr1): kernel covariance in the already-differenced
+    # (I-1) space is ``covker = blockdiag(0, K)`` with covker[0,0] = 0 and K[0,0]
+    # pinned to 1. Per-chosen-alternative differenced covariance is
+    # Lambda_diff = M_c @ covker @ M_c.T. IID routes through the SAME covker
+    # path (K = eye(I-1)). The differencing matrix M_c depends on chosen alt,
+    # so we group observations by chosen alternative and batch each group.
+    covker = np.zeros((I, I), dtype=np.float64)
+    covker[1:, 1:] = Lambda
 
     # Compute utilities for all observations: V = X @ beta, shape (N, I)
     V_all = np.einsum('nij,j->ni', X_np, beta)
@@ -213,46 +211,33 @@ def _batch_loglik_shared_cov(
     # Group observations by chosen alternative for vectorized diff_V computation
     unique_chosen = np.unique(y_np)
 
-    if control.iid:
-        # IID: Lambda_diff is the same regardless of chosen alt
-        # Build diff_V_all: shape (N, dim)
-        # For each observation q with chosen=c:
-        #   avail_alts = [0, 1, ..., c-1, c+1, ..., I-1]  (sorted)
-        #   diff_V[k] = V[q, c] - V[q, avail_alts[k]]
-        diff_V_all = _compute_diff_V_all(V_all, y_np, I, N, dim)
-        log_probs = mvncd_log_batch(diff_V_all, Lambda_diff, method="me")
-        return float(np.sum(log_probs))
-    else:
-        # Flexible cov: Lambda_diff depends on which alt is chosen
-        # (because the differencing matrix M depends on chosen)
-        # Group by chosen alt and batch each group
-        total_ll = 0.0
-        for c in unique_chosen:
-            mask = y_np == c
-            N_c = int(np.sum(mask))
-            if N_c == 0:
-                continue
+    total_ll = 0.0
+    for c in unique_chosen:
+        mask = y_np == c
+        N_c = int(np.sum(mask))
+        if N_c == 0:
+            continue
 
-            # Build differencing matrix for chosen=c
-            avail_alts_c = [j for j in range(I) if j != c]
-            M_c = np.zeros((dim, I), dtype=np.float64)
-            for k, j in enumerate(avail_alts_c):
-                M_c[k, j] = 1.0
-                M_c[k, c] = -1.0
+        # Build differencing matrix for chosen=c
+        avail_alts_c = [j for j in range(I) if j != c]
+        M_c = np.zeros((dim, I), dtype=np.float64)
+        for k, j in enumerate(avail_alts_c):
+            M_c[k, j] = 1.0
+            M_c[k, c] = -1.0
 
-            Lambda_diff_c = M_c @ Lambda_full @ M_c.T
-            Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
+        Lambda_diff_c = M_c @ covker @ M_c.T
+        Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
 
-            # Compute diff_V for this group
-            V_group = V_all[mask]  # (N_c, I)
-            diff_V_group = np.empty((N_c, dim), dtype=np.float64)
-            for k, j in enumerate(avail_alts_c):
-                diff_V_group[:, k] = V_group[:, c] - V_group[:, j]
+        # Compute diff_V for this group
+        V_group = V_all[mask]  # (N_c, I)
+        diff_V_group = np.empty((N_c, dim), dtype=np.float64)
+        for k, j in enumerate(avail_alts_c):
+            diff_V_group[:, k] = V_group[:, c] - V_group[:, j]
 
-            log_probs = mvncd_log_batch(diff_V_group, Lambda_diff_c, method="me")
-            total_ll += float(np.sum(log_probs))
+        log_probs = mvncd_log_batch(diff_V_group, Lambda_diff_c, method="me")
+        total_ll += float(np.sum(log_probs))
 
-        return total_ll
+    return total_ll
 
 
 def _compute_diff_V_all(
@@ -325,12 +310,11 @@ def _batch_loglik_mixed(
     # Compute utilities for all observations
     V_all = np.einsum('nij,j->ni', X_np, beta)
 
-    # Build Lambda_full
-    if control.iid:
-        Lambda_full = np.eye(I, dtype=np.float64)
-    else:
-        Lambda_full = np.eye(I, dtype=np.float64)
-        Lambda_full[1:, 1:] = Lambda + np.eye(I - 1)
+    # GAUSS homogeneous form: the kernel contribution is ``covker = blockdiag(0, K)``
+    # (covker[0,0] = 0, K[0,0] pinned to 1), added to the random-coefficient
+    # covariance in the UNDIFFERENCED I-space: Xi_full = Omega_tilde + covker.
+    covker = np.zeros((I, I), dtype=np.float64)
+    covker[1:, 1:] = Lambda
 
     # Group by chosen alternative
     unique_chosen = np.unique(y_np)
@@ -361,7 +345,7 @@ def _batch_loglik_mixed(
         for qi in range(N_c):
             X_rand_q = X_group[qi][:, ranvar_indices]  # (I, n_rand)
             Omega_tilde_q = X_rand_q @ Omega @ X_rand_q.T  # (I, I)
-            Xi_full_q = Omega_tilde_q + Lambda_full
+            Xi_full_q = Omega_tilde_q + covker
             Xi_diff_q = M_c @ Xi_full_q @ M_c.T
             Xi_diff_q = 0.5 * (Xi_diff_q + Xi_diff_q.T)
             sigma_all[qi] = Xi_diff_q
@@ -509,13 +493,16 @@ def _unpack_params(
     idx += n_beta
 
     if not control.iid:
-        # Lambda (kernel error covariance) parameters
+        # Lambda (kernel error covariance) parameters.
+        # GAUSS homogeneous form (lpr1): the first differenced-alternative
+        # variance K[0,0] is PINNED to 1, so there are only I-2 free scales
+        # (xscal = [1] + free_scales) plus (I-1)(I-2)/2 correlations.
+        n_scale = max(I - 2, 0)
         if control.heteronly:
-            # Only variances: I-1 scale parameters (first alt is reference)
-            n_lambda = I - 1
+            # Only variances: I-2 free scale parameters (first diff var pinned).
+            n_lambda = n_scale
         else:
-            # Full: (I-1) scale params + (I-1)*(I-2)/2 correlation params
-            n_scale = I - 1
+            # Full: (I-2) free scales + (I-1)*(I-2)/2 correlation params.
             n_corr = (I - 1) * (I - 2) // 2
             n_lambda = n_scale + n_corr
         params["lambda_params"] = theta[idx: idx + n_lambda]
@@ -564,22 +551,40 @@ def _build_lambda(
     n_alts: int,
     control: MNPControl,
 ) -> np.ndarray:
-    """Build the (I-1) x (I-1) differenced kernel error covariance matrix."""
+    """Build the (I-1) x (I-1) DIFFERENCED kernel error covariance ``K``.
+
+    GAUSS homogeneous "first-differenced-variance = 1" form (lpr1):
+        xscal     = [1] + exp(free_log_scales)   (length I-1, first pinned to 1)
+        W1        = diag(xscal)
+        omegastar = unit-diagonal (I-1)x(I-1) correlation
+        K         = W1 @ omegastar @ W1           (so K[0,0] == 1)
+
+    The number of FREE scales is I-2 (the first is pinned), and the number of
+    correlations is (I-1)(I-2)/2. IID returns the identity directly.
+    """
     I = n_alts
     dim = I - 1  # differenced dimension
 
     if control.iid or lambda_params is None:
-        # IID: Lambda = I (identity)
-        return np.eye(dim, dtype=np.float64)
+        # IID kernel (GAUSS homogeneous form): the differenced kernel of an
+        # IID original error (variance 0.5 so the first differenced variance
+        # equals 1) is K = 0.5*(eye + ones), i.e. K[0,0] == 1 and unit
+        # off-diagonal correlation 0.5. This matches GAUSS startker =
+        # 0.5*eye(nc-1) + 0.5*ones(nc-1) (MNP_TRAVELMODE.gss line 119), which
+        # is frozen for IID. No free kernel params.
+        return 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+
+    n_scale = max(dim - 1, 0)  # I-2 free scales (first diff variance pinned)
 
     if control.heteronly:
-        # Only heteroscedastic: Lambda = diag(exp(params))
-        scales = np.exp(lambda_params[:dim])
-        return np.diag(scales**2)
+        # Heteroscedastic only: xscal = [1, exp(free_1), ...]; corr = I.
+        free = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+        xscal = np.concatenate([[1.0], free])
+        return np.diag(xscal ** 2)
 
-    # Full covariance: scales + correlations via spherical parameterization
-    n_scale = dim
-    scales = np.exp(lambda_params[:n_scale])
+    # Full covariance: free scales + correlations via spherical parameterization.
+    free = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+    xscal = np.concatenate([[1.0], free])
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params) > n_scale:
@@ -588,9 +593,9 @@ def _build_lambda(
     else:
         corr = np.eye(dim)
 
-    # Omega = diag(scales) @ corr @ diag(scales)
-    D = np.diag(scales)
-    return D @ corr @ D
+    # K = W1 @ omegastar @ W1, W1 = diag(xscal); K[0,0] == 1.
+    W1 = np.diag(xscal)
+    return W1 @ corr @ W1
 
 
 def _build_omega_cholesky(
@@ -668,16 +673,24 @@ def _build_lambda_direct(
     dim = I - 1
 
     if control.iid or lambda_params_unpar is None:
-        return np.eye(dim, dtype=np.float64)
+        # IID kernel: GAUSS frozen startker = 0.5*(eye + ones); K[0,0] == 1.
+        return 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+
+    # GAUSS homogeneous form (lpr1): xscal = [1] + free_scales (free length I-2),
+    # so the first differenced variance K[0,0] is pinned to 1. The direct
+    # (unparameterized) layout stores the I-2 FREE scales then the strict-upper
+    # correlation entries.
+    n_scale = max(dim - 1, 0)  # I-2 free scales
 
     if control.heteronly:
-        # Heteroscedastic only: lambda_params_unpar = [scale_1, ..., scale_dim]
-        scales = lambda_params_unpar[:dim]
-        return np.diag(scales ** 2)
+        # Heteroscedastic only: lambda_params_unpar = [free_scale_1, ...].
+        free = lambda_params_unpar[:n_scale] if n_scale > 0 else np.empty(0)
+        xscal = np.concatenate([[1.0], free])
+        return np.diag(xscal ** 2)
 
-    # Full: scales (length dim) + strict-upper correlations (length n_corr).
-    n_scale = dim
-    scales = lambda_params_unpar[:n_scale]
+    # Full: free scales (length I-2) + strict-upper correlations (length n_corr).
+    free = lambda_params_unpar[:n_scale] if n_scale > 0 else np.empty(0)
+    xscal = np.concatenate([[1.0], free])
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params_unpar) > n_scale:
@@ -686,8 +699,8 @@ def _build_lambda_direct(
     else:
         corr = np.eye(dim)
 
-    D = np.diag(scales)
-    return D @ corr @ D
+    W1 = np.diag(xscal)
+    return W1 @ corr @ W1
 
 
 def _matndupdiagonefull(corrs_upper: np.ndarray, p: int) -> np.ndarray:
@@ -870,19 +883,24 @@ def _lambda_par_to_unpar(
     n_alts: int,
     control: MNPControl,
 ) -> np.ndarray:
-    """Convert parameterized lambda block to direct [scales, corrs_upper]."""
+    """Convert parameterized lambda block to direct [free_scales, corrs_upper].
+
+    GAUSS homogeneous form: the first differenced scale is pinned to 1, so the
+    block carries only I-2 FREE scales (then the strict-upper correlations).
+    """
     I = n_alts
     dim = I - 1
     if lambda_params is None or lambda_params.size == 0:
         return np.zeros(0, dtype=np.float64)
 
+    n_scale = max(dim - 1, 0)  # I-2 free scales
+
     if control.heteronly:
-        scales = np.exp(lambda_params[:dim])
+        scales = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
         return scales
 
-    # Full: log-scales + angle-thetas -> scales + corrs.
-    n_scale = dim
-    scales = np.exp(lambda_params[:n_scale])
+    # Full: log free-scales + angle-thetas -> free-scales + corrs.
+    scales = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params) > n_scale:
@@ -970,38 +988,31 @@ def _compute_choice_prob(
     # Differenced utilities: V_chosen - V_j for each available j != chosen
     diff_V = np.array([V_q[chosen] - V_q[j] for j in avail_alts])
 
-    # Differenced covariance: Lambda_diff for the differences (eps_j - eps_chosen)
-    # For IID: Lambda_diff = 2 * I (since Var(eps_j - eps_chosen) = 2*sigma^2)
-    # For general Lambda (already differenced w.r.t. first alternative):
-    # Need to apply appropriate differencing transformation
+    # GAUSS homogeneous form (lpr1): the kernel covariance lives in the
+    # ALREADY-DIFFERENCED (I-1)-dim space as ``covker = blockdiag(0, K)`` with
+    # covker[0,0] = 0 and K[0,0] pinned to 1. The chosen-vs-others differences
+    # are formed as Lambda_diff = M @ covker @ M.T, where M maps the I-dim
+    # alternative space to the chosen-vs-others differenced space. IID routes
+    # through this same path (K = eye(I-1)).
+    #
+    # Build differencing matrix M (dim x I): M[k, chosen] = -1, M[k, j] = 1.
+    M = np.zeros((dim, I), dtype=np.float64)
+    for k, j in enumerate(avail_alts):
+        M[k, j] = 1.0
+        M[k, chosen] = -1.0
 
-    if control.iid:
-        # IID errors: Var(eps_j - eps_chosen) = 2, Cov(eps_j-eps_c, eps_k-eps_c) = 1
-        Lambda_diff = np.ones((dim, dim), dtype=np.float64) + np.eye(dim, dtype=np.float64)
-    else:
-        # Build differencing matrix M such that diff_eps = M @ eps
-        # where eps ~ MVN(0, Lambda_full)
-        # M is dim x I, M[k, chosen] = -1, M[k, avail_alts[k]] = 1
-        M = np.zeros((dim, I), dtype=np.float64)
-        for k, j in enumerate(avail_alts):
-            M[k, j] = 1.0
-            M[k, chosen] = -1.0
+    # covker = blockdiag(0, K): I x I, first row/col zero.
+    covker = np.zeros((I, I), dtype=np.float64)
+    covker[1:, 1:] = Lambda
 
-        # Full Lambda: need I x I covariance
-        # The Lambda we have is (I-1) x (I-1) differenced w.r.t. first alt
-        # Reconstruct full I x I covariance (first alt has variance 1, no correlation)
-        Lambda_full = np.eye(I, dtype=np.float64)
-        # Place the estimated covariance for alts 1..I-1
-        Lambda_full[1:, 1:] = Lambda + np.eye(I - 1)  # add back reference variance
-
-        Lambda_diff = M @ Lambda_full @ M.T
+    Lambda_diff = M @ covker @ M.T
 
     # Symmetrize
     Lambda_diff = 0.5 * (Lambda_diff + Lambda_diff.T)
 
-    # PD check skipped: Lambda_diff = M @ Lambda_full @ M.T is always PD
-    # because Lambda_full is PD (constructed from exp(params)) and M has full row rank.
-    # For IID, Lambda_diff = I + 11^T has eigenvalues dim+1 and 1.
+    # PD check skipped: Lambda_diff = M @ covker @ M.T is PD because covker is
+    # PSD with a single null direction (the reference alternative) that M
+    # removes, and M has full row rank over the remaining alternatives.
 
     # P(diff_eps < diff_V) = P(Z < diff_V) for Z ~ MVN(0, Lambda_diff)
     prob = mvncd(xp.array(diff_V), xp.array(Lambda_diff), method=control.method, xp=xp)
@@ -1058,15 +1069,14 @@ def _compute_mixed_choice_prob(
         M[k, j] = 1.0
         M[k, chosen] = -1.0
 
-    # Full error covariance
-    if control.iid:
-        Lambda_full = np.eye(I, dtype=np.float64)
-    else:
-        Lambda_full = np.eye(I, dtype=np.float64)
-        Lambda_full[1:, 1:] = Lambda + np.eye(I - 1)
+    # GAUSS homogeneous form: kernel contribution is covker = blockdiag(0, K)
+    # (covker[0,0] = 0, K[0,0] pinned to 1). IID routes through this same path
+    # (K = eye(I-1)). The random-coef covariance stays in undifferenced I-space.
+    covker = np.zeros((I, I), dtype=np.float64)
+    covker[1:, 1:] = Lambda
 
     # Total covariance in utility space
-    Xi_full = Omega_tilde + Lambda_full
+    Xi_full = Omega_tilde + covker
 
     # Differenced covariance
     Xi_diff = M @ Xi_full @ M.T
@@ -1386,10 +1396,11 @@ def _unpack_params_unpar(
     idx += n_beta
 
     if not control.iid:
+        # GAUSS homogeneous form: I-2 free scales (first diff variance pinned).
+        n_scale = max(I - 2, 0)
         if control.heteronly:
-            n_lambda = I - 1
+            n_lambda = n_scale
         else:
-            n_scale = I - 1
             n_corr = (I - 1) * (I - 2) // 2
             n_lambda = n_scale + n_corr
         params["lambda_params"] = theta[idx: idx + n_lambda]
@@ -1667,10 +1678,12 @@ def count_params(
 
     if not control.iid:
         dim = I - 1
+        # GAUSS homogeneous form: I-2 free scales (first diff variance pinned).
+        n_scale = max(dim - 1, 0)
         if control.heteronly:
-            n += dim  # scales only
+            n += n_scale  # free scales only
         else:
-            n += dim + dim * (dim - 1) // 2  # scales + correlations
+            n += n_scale + dim * (dim - 1) // 2  # free scales + correlations
 
     if control.mix and ranvar_indices is not None:
         n_rand = len(ranvar_indices)
