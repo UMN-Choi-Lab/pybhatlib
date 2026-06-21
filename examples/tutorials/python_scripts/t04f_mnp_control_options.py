@@ -10,7 +10,7 @@ What you will learn:
   - correst: restricting specific correlations to zero
   - optimizer: BFGS vs L-BFGS-B
   - analytic_grad / se_method: analytic BHHH scores and SE source
-  - reporting a fitted model with b_original (GAUSS/paper-normalized)
+  - reporting a fitted model with b_original (the readable reported view)
   - ATE scenarios on a control-tuned model
 
 Prerequisites: t00 (quickstart), t04c (heteronly).
@@ -243,11 +243,12 @@ print("  Step 8: Reporting Estimates with b_original")
 print("=" * 60)
 
 print("""
-  For REPORTING, use results.b_original -- the BHATLIB/GAUSS-normalized
-  estimates that match the published paper tables. results.params is the
-  raw theta-space vector used internally for prediction; under an IID
-  model the two scales differ by a factor of 1/sqrt(2), so never print
-  params in a results table.
+  For REPORTING, use results.b_original -- the readable reported view of
+  the estimates, which match the published GAUSS tables. pybhatlib reports
+  on the GAUSS first-differenced-variance=1 scale, so b_original and
+  results.params share one scale and are equal for the mean coefficients;
+  b_original is preferred because it additionally spells out the readable
+  kernel block (parker / scale rows) aligned with the std errors / t / p.
 """)
 
 model = MNPModel(
@@ -267,8 +268,9 @@ for name, b, se, t, p in zip(results.param_names, results.b_original,
                              results.se, results.t_stat, results.p_value):
     print(f"  {name:<12s} {b:>10.4f} {se:>10.4f} {t:>9.2f} {p:>9.3f}")
 
-print(f"\n  params (prediction scale) : {results.params}")
-print(f"  b_original (report scale) : {results.b_original}")
+print(f"\n  params     : {results.params}")
+print(f"  b_original : {results.b_original}")
+print(f"  (same scale; equal for the mean coefficients under this IID model)")
 
 # ============================================================
 #  Step 9: ATE via scenarios on a control-tuned model

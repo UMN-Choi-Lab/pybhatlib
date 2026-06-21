@@ -288,10 +288,10 @@ for H in H_VALUES:
     print(f"    LL = {results.loglik * results.n_obs:.3f}")
     print(f"    Converged: {results.converged} ({results.n_iter} iterations)")
     print(f"    Time: {elapsed:.1f}s")
-    # Report BHATLIB-normalized values (results.b_original) so output matches
-    # the GAUSS Bhat-2018 Table 2 reference; results.params remains raw theta
-    # for downstream predictor / serialization use below.
-    print(f"    Parameters (BHATLIB-normalized): ", end="")
+    # pybhatlib reports on the GAUSS first-differenced-variance=1 scale, so
+    # results.b_original (the readable reported view) matches the GAUSS Bhat-2018
+    # Table 2 reference; it shares one scale with results.params.
+    print(f"    Parameters (reported): ", end="")
     for name, val in zip(results.param_names, results.b_original):
         print(f"{name}={val:.4f}  ", end="")
     print()
@@ -549,7 +549,7 @@ print("""
   agreement.  To close that loop, we now re-estimate two of the actual
   TRAVELMODE choice models distributed in the GAUSS BHATLIB driver set
   ("Gauss Files and Comparison/MNP/Table2/MNP Table2 ai.gss" and
-  "... aii.gss") and compare PyBhatLib's BHATLIB-normalized coefficients
+  "... aii.gss") and compare PyBhatLib's reported coefficients
   (results.b_original) and total log-likelihood against the validated
   GAUSS / published reference values.
 
@@ -557,10 +557,13 @@ print("""
     (a)(i)  IID kernel       -> LL = -670.956
     (a)(ii) Flexible kernel  -> LL = -661.111
 
-  Reporting note: we print results.b_original (BHATLIB/GAUSS-normalized),
-  NOT results.params.  Under the IID identification the two differ by a
-  1/sqrt(2) scale factor; only b_original matches the GAUSS output and the
-  paper table.  Standard errors / t-stats come from results.se / .t_stat.
+  Reporting note: pybhatlib reports on the GAUSS first-differenced-
+  variance=1 scale, so results.b_original and results.params share one
+  scale and are equal for the mean coefficients.  We print b_original
+  because it additionally spells out the readable kernel block (the
+  parker / scale rows, with scale01 = 1.0 the pinned first differenced
+  variance) and matches the GAUSS coefficient block exactly.  Standard
+  errors / t-stats come from results.se / .t_stat.
 """)
 
 # TRAVELMODE data ships with the tutorials; resolve its path the same way
@@ -596,9 +599,9 @@ gauss_reference = {
         "iid": False,
         "ll": -661.111,
         "coeffs": {
-            "CON_SR": -0.4446, "CON_TR": -0.2403, "IVTT": -0.3988,
-            "OVTT": -0.4627, "COST": -0.2692,
-            "parker01": 0.4731, "scale01": 0.4497, "scale02": 0.8932,
+            "CON_SR": -0.9884, "CON_TR": -0.5341, "IVTT": -0.8869,
+            "OVTT": -1.0292, "COST": -0.5985,
+            "parker01": 0.4731, "scale01": 1.0000, "scale02": 1.9862,
         },
     },
 }

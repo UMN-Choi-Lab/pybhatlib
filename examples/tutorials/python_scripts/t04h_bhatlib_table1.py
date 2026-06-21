@@ -350,22 +350,23 @@ print("""
   policy work you also need the estimated coefficients with standard
   errors.  We report Model (b) here as a representative specification.
 
-  IMPORTANT reporting convention: an MNP model carries TWO coefficient
-  vectors.
+  Reporting convention: pybhatlib reports on the GAUSS first-differenced-
+  variance=1 scale.
 
-    - results.params     : the raw theta-space vector used INTERNALLY
-                           for prediction.  Do NOT report these.
-    - results.b_original  : the BHATLIB/GAUSS-normalized estimates.
-                           These are what match the published paper
-                           Table and what you should report.
+    - results.params     : the estimated parameter vector used internally
+                           for prediction.
+    - results.b_original  : the readable reported view of the same
+                           estimates.  These match the published paper
+                           Table and are what you should report.
 
-  Under flexible covariance the two differ by the scale normalization
-  applied to the kernel error covariance.  We print b_original with
-  the standard errors, t-statistics, and p-values from the fitted
-  results object.
+  The two share one scale and are equal for the mean coefficients;
+  b_original additionally spells out the readable kernel block (the
+  parker / scale rows, with scale01 = 1.0 the pinned first differenced
+  variance).  We print b_original with the standard errors, t-statistics,
+  and p-values from the fitted results object.
 """)
 
-# Report the fitted Model (b) using the BHATLIB-normalized estimates.
+# Report the fitted Model (b) using the readable reported estimates.
 b_rep = res_b.b_original                # reporting-scale coefficients
 names = res_b.param_names
 se = res_b.se
