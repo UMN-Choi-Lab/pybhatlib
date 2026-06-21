@@ -76,6 +76,9 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
   random coefficients, mixture-of-normals
 - **Multivariate Ordered Response Probit (MORP)** — multiple ordinal outcomes
   with shared covariance; per-outcome `spec` mapping
+- **Multiple Discrete-Continuous Extreme Value (MDCEV)** — traditional
+  (Bhat 2008) and linear (Bhat 2018) outside-good utility specifications,
+  selected via `MDCEVControl.utility`
 
 **Numerical core**
 - `vecup` — vecdup, matdupfull, LDLT decomposition, truncated MVN moments
@@ -100,6 +103,11 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 **Post-estimation**
 - Average Treatment Effects (ATE) with scenario-matrix support, forecasting,
   per-category MORP probability prediction.
+- MORP ATEs from supplied coefficients without re-fitting:
+  `MORPResults.from_estimates(beta, thresholds, correlation)` rebuilds a results
+  object from natural-space estimates, and `morp_ate_from_params` /
+  `morp_joint_probs` (mean joint category-combination probabilities, the GAUSS
+  `ate1.csv` equivalent) compute effects directly from them.
 
 ## Verification
 
@@ -144,6 +152,7 @@ matching `.py` script under `python_scripts/`):
 | MVNCD | `t03a_mvncd_methods`, `t03b_mvncd_gradients`, `t03c_mvncd_rect`, `t03d_univariate_cdfs`, `t03e_bhat2018_table1` |
 | MNP | `t04a_mnp_iid` … `t04g_mnp_forecasting`, `t04h_bhatlib_table1`, `t04i_bhat2018_table2` |
 | MORP | `t05b_morp_ate_predict` |
+| MDCEV | `t07a_mdcev_trad`, `t07b_mdcev_lin` |
 | Backends & verification | `t06a_backend_switching`, `t06b_custom_specs`, `t06c_gradient_verification` |
 
 ## Contributing

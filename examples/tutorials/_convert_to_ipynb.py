@@ -389,6 +389,17 @@ def fix_paths_for_notebook(code):
         'os.path.join(os.path.dirname(__file__), "..", "..", "data", "TRAVELMODE.csv")',
         'str(pathlib.Path.cwd().parent / "data" / "TRAVELMODE.csv")',
     )
+    # General fallback for any remaining __file__-relative path (other data
+    # files, GAUSS reference files under "Gauss Files and Comparison/", or a
+    # non-standard src line). Notebooks have no __file__; they run from
+    # tutorials/ while scripts run from tutorials/python_scripts/. Rebasing
+    # dirname(__file__) onto cwd()/"python_scripts" makes every script-relative
+    # ".." join resolve identically from the notebook. Uses os (always imported
+    # in these tutorials), so no extra dependency is introduced.
+    code = code.replace(
+        "os.path.dirname(__file__)",
+        'os.path.join(os.getcwd(), "python_scripts")',
+    )
     return code
 
 

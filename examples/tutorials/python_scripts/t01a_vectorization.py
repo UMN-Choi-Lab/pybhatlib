@@ -102,18 +102,37 @@ print("=" * 60)
 
 S = vecsymmetry(np.zeros((3, 3)))
 print(f"\n  vecsymmetry for K=3: shape = {S.shape}")
-print(f"  S is the elimination matrix: vecdup(A) = S @ vec(A)")
-print(f"  (maps K^2 = 9 full elements to K*(K+1)/2 = 6 unique elements)")
+print(f"  S relates the K*(K+1)/2 = 6 unique elements to the K^2 = 9 full ones.")
+print(f"  Each row of S marks BOTH symmetric positions of one upper element,")
+print(f"  so S acts as the duplication pattern (not a plain selection matrix).")
 print(f"\n  S =\n{S}")
 
-# Verify
-vec_A = A.T.ravel()   # column-major vectorization
+print("""
+Two exact identities follow from how S is built. Read carefully: S has a 1
+in *both* symmetric slots for each off-diagonal element, so multiplying S by
+the full row-vectorized symmetric matrix would double the off-diagonals. The
+correct relationships are:
+
+  (1) Selection from the upper triangle:    S @ vec(triu(A)) = vecdup(A)
+  (2) Duplication back to the full matrix:  reshape(S.T @ vecdup(A)) = A
+
+Identity (2) is the classic "duplication matrix" property: S.T expands the
+unique elements back into the full symmetric matrix.
+""")
+
+# Identity (1): select unique elements from the upper-triangular vec
+vec_triu_A = np.triu(A).T.ravel()    # row-vectorize, lower part zeroed
 vecdup_A = vecdup(A)
-reconstructed = S @ vec_A
-print(f"\n  vec(A)          = {vec_A}")
-print(f"  S @ vec(A)      = {reconstructed}")
-print(f"  vecdup(A)       = {vecdup_A}")
-print(f"  Match: {np.allclose(vecdup_A, reconstructed)}")
+selected = S @ vec_triu_A
+print(f"  vec(triu(A))     = {vec_triu_A}")
+print(f"  S @ vec(triu(A)) = {selected}")
+print(f"  vecdup(A)        = {vecdup_A}")
+print(f"  Identity (1) holds: {np.allclose(vecdup_A, selected)}")
+
+# Identity (2): duplicate the unique elements back into the full matrix
+A_full = (S.T @ vecdup_A).reshape(3, 3)
+print(f"\n  reshape(S.T @ vecdup(A)) =\n{A_full}")
+print(f"  Identity (2) holds: {np.allclose(A, A_full)}")
 
 # ============================================================
 #  Step 6: nondiag — All non-diagonal elements

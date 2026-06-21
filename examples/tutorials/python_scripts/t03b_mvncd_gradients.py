@@ -104,14 +104,23 @@ grad_sigma_fd = np.zeros(n_upper)
 idx = 0
 for i in range(K_dim):
     for j in range(i, K_dim):
+        # Perturb element (i, j).  For OFF-diagonal entries we must mirror
+        # the perturbation to (j, i) to keep sigma symmetric -- mvncd_grad's
+        # vecdup grad_sigma already represents the derivative w.r.t. the
+        # symmetric pair, so this gives the matching value.  For DIAGONAL
+        # entries (i == j) the cell is its own mirror; perturbing it twice
+        # would double the step and inflate the FD gradient by 2x.
         sigma_plus = sigma.copy()
         sigma_plus[i, j] += eps
-        sigma_plus[j, i] += eps  # keep symmetric
-        p_plus = mvncd(a, sigma_plus, method="me")
+        if i != j:
+            sigma_plus[j, i] += eps  # keep symmetric
 
         sigma_minus = sigma.copy()
         sigma_minus[i, j] -= eps
-        sigma_minus[j, i] -= eps
+        if i != j:
+            sigma_minus[j, i] -= eps
+
+        p_plus = mvncd(a, sigma_plus, method="me")
         p_minus = mvncd(a, sigma_minus, method="me")
 
         grad_sigma_fd[idx] = (p_plus - p_minus) / (2 * eps)
@@ -144,9 +153,14 @@ print("""
     d(log P_qi)/d(beta) uses grad_a (through da/dbeta = X differences)
     d(log P_qi)/d(Lambda) uses grad_sigma (through chain rules from t02c)
 
-  mvncd_grad computes these via finite differences of a deterministic
-  MVNCD method (ME by default), providing stable gradients for optimization.
-  Note: do NOT use scipy for FD — its CDF is stochastic for K>=3.
+  By default mvncd_grad uses ANALYTIC (backward/adjoint) gradients of the
+  deterministic Bhat (2018) ME approximation -- that is why grad_a and
+  grad_sigma agree with finite differences to ~1e-12 above.  When ME is not
+  used it falls back to numerical FD.  Either way the result is a stable,
+  deterministic gradient suitable for optimization.
+  Note: do NOT use scipy itself for FD -- its CDF is stochastic for K>=3,
+  so finite-differencing scipy would give noisy gradients (see Step 3 above,
+  which deliberately uses method="me", not scipy).
 """)
 
 print(f"  Next: t03c_mvncd_rect.py — Rectangular MVNCD for ordered probit")

@@ -96,6 +96,10 @@ max_err = np.max(np.abs(J - J_fd))
 print(f"\n  Finite difference verification:")
 print(f"  Max error: {max_err:.2e}")
 print(f"  Passed: {max_err < 1e-4}")
+print(f"\n  Note: the analytic Jacobian mirrors the GAUSS BHATLIB procedure")
+print(f"  cholspherparmunconst (matgradient.src). There is no published")
+print(f"  estimation table for this low-level primitive, so the finite-")
+print(f"  difference agreement above (< 1e-4) is the correctness check.")
 
 # ============================================================
 #  Step 4: K=4 example

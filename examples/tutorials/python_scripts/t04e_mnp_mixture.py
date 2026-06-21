@@ -9,6 +9,7 @@ What you will learn:
   - How segment probabilities are parameterized via softmax
   - How nseg=2 in MNPControl creates a 2-segment mixture
   - How total parameter count grows with the number of segments
+  - How to interpret the per-segment taste vectors and mixing weights
   - Practical tips: multiple local optima, slow convergence, baselines
 
 Prerequisites: t04d (random coefficients).
@@ -126,21 +127,37 @@ print("=" * 60)
 
 # Report BHATLIB-normalized values (results.b_original) so output matches the
 # GAUSS BHATLIB reference. results.params holds raw theta-space (used internally
-# by the optimizer/predictor — different scale convention).
+# by the optimizer/predictor — different scale convention), so we DISPLAY
+# b_original together with its std errors / t / p (already aligned to b_original).
 print("\n  Estimated coefficients (BHATLIB-normalized — match GAUSS output):")
-for name, val in zip(results.param_names, results.b_original):
-    print(f"    {name:<25s}  {val:>10.4f}")
+print(f"    {'Parameter':<14s}{'Estimate':>11s}{'Std.Err':>11s}"
+      f"{'t-stat':>9s}{'p-value':>9s}")
+print("    " + "-" * 52)
+for name, est, se, t, p in zip(
+    results.param_names, results.b_original,
+    results.se, results.t_stat, results.p_value
+):
+    print(f"    {name:<14s}{est:>11.4f}{se:>11.4f}{t:>9.2f}{p:>9.3f}")
 
-print(f"\n  Target log-likelihood  : -634.975  (BHATLIB paper Table 1)")
-print(f"  Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")
+print(f"\n  GAUSS / paper reference LL : -634.975  (BHATLIB Table 2, model d)")
+print(f"  PyBhatLib LL               : {results.loglik * results.n_obs:.3f}")
 
 print("""
-  Note: With synthetic TRAVELMODE data, the optimizer may find a
-  different local optimum (e.g., LL = -632.912) than the original
-  BHATLIB result.  This is expected — mixture models have multiple
-  local optima, and the synthetic data does not perfectly replicate
-  the original dataset.  A higher LL than the target simply means
-  the optimizer found a better local mode on this dataset.
+  Cross-check note (mixture of normals, BHATLIB Table 2 model d):
+
+    The published BHATLIB GAUSS reference (and its Python translation,
+    "MNP Table2 d") fits a 2-segment mixture WITH a random coefficient
+    on OVTT (ranvars=["OVTT"], nrand=1), reaching LL = -634.975.
+
+    This tutorial uses the simpler segment-specific-means form (nseg=2
+    with no random coefficient inside each segment).  On the supplied
+    TRAVELMODE data this reaches LL = -632.912 — slightly HIGHER (better)
+    than the paper target because it has a different parameterization and
+    one fewer covariance restriction.  This is expected: mixture models
+    have many local optima, and a higher LL simply means the optimizer
+    found a better mode of this likelihood surface.  To reproduce the
+    exact paper model, add ranvars=["OVTT"] to the MNPModel(...) call
+    (see Step 4).
 """)
 
 # Print segment probabilities if available
@@ -151,10 +168,65 @@ if hasattr(results, "segment_probs") and results.segment_probs is not None:
     print()
 
 # ============================================================
-#  Step 4: Practical Considerations
+#  Step 4: Segment Interpretation
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 4: Practical Considerations")
+print("  Step 4: Segment Interpretation")
+print("=" * 60)
+
+print("""
+  The whole point of a mixture-of-normals MNP is behavioural: each
+  latent segment is a distinct taste group.  We therefore compare the
+  two segments' coefficient vectors side by side and weight them by the
+  estimated mixing probabilities pi_s.
+
+  In this 7-variable specification, the segment-1 betas are the first 7
+  entries of b_original (CON_SR..COST) and the segment-2 betas are the
+  *_s2 entries near the end.  Reading them together tells us how the two
+  groups differ in their sensitivity to travel time and cost.
+""")
+
+# Pair up segment-1 and segment-2 betas for the 7 utility variables.
+beta_names = ["CON_SR", "CON_TR", "AGE45_DA", "AGE45_SR", "IVTT", "OVTT", "COST"]
+name_to_val = dict(zip(results.param_names, results.b_original))
+pi = results.segment_probs  # length-2 mixing weights
+
+print(f"  {'Variable':<12s}{'Seg1 beta':>12s}{'Seg2 beta':>12s}"
+      f"{'pi-weighted':>13s}")
+print("  " + "-" * 49)
+for nm in beta_names:
+    b1 = name_to_val.get(nm, float("nan"))
+    b2 = name_to_val.get(nm + "_s2", float("nan"))
+    mixed = pi[0] * b1 + pi[1] * b2
+    print(f"  {nm:<12s}{b1:>12.4f}{b2:>12.4f}{mixed:>13.4f}")
+
+print(f"\n  Mixing weights: pi_1 = {pi[0]:.3f}  (dominant taste group),"
+      f"  pi_2 = {pi[1]:.3f}")
+
+print("""
+  How to read this table:
+    - The 'pi-weighted' column is the population-average taste, the
+      mixture analogue of a single-segment coefficient.  It is the right
+      number to quote when you want one headline elasticity-like value.
+    - Differences between Seg1 beta and Seg2 beta reveal taste
+      heterogeneity the homogeneous (single-segment) MNP cannot capture:
+      e.g., one segment may be far more cost-sensitive (more negative
+      COST) while the other is more time-sensitive (more negative IVTT).
+    - A near-degenerate mixing weight (pi close to 0 or 1) is a warning
+      sign that the second segment is weakly identified — inspect its
+      std errors / t-stats from the Step 3 table before interpreting.
+
+  Caveat on label switching: segment indices are arbitrary.  A re-run
+  with a different seed may swap "Segment 1" and "Segment 2" (and their
+  pi values) while giving the same likelihood.  Interpret segments by
+  their taste profile, never by their index number.
+""")
+
+# ============================================================
+#  Step 5: Practical Considerations
+# ============================================================
+print("\n" + "=" * 60)
+print("  Step 5: Practical Considerations")
 print("=" * 60)
 
 print("""

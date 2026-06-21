@@ -37,9 +37,12 @@ A = np.array([
 
 L, D = ldlt_decompose(A)
 
+# NOTE: ldlt_decompose returns D as a 1-D vector of the diagonal
+# elements (NOT a full diagonal matrix). To reconstruct A you must
+# build the diagonal matrix with np.diag(D).
 print(f"\n  A =\n{A}")
 print(f"\n  L (unit lower triangular) =\n{L}")
-print(f"\n  D (diagonal) = {np.diag(D)}")
+print(f"\n  D (diagonal elements, 1-D vector) = {D}")
 
 # ============================================================
 #  Step 2: Verify properties
@@ -53,10 +56,10 @@ print(f"\n  L diagonal (should be all 1s): {np.diag(L)}")
 print(f"  L upper triangle (should be all 0s): {L[np.triu_indices(4, k=1)]}")
 
 # D is positive (since A is PD)
-print(f"  D diagonal (should be all positive): {np.diag(D)}")
+print(f"  D diagonal (should be all positive): {D}")
 
-# Reconstruction: A = L @ D @ L.T
-A_recon = L @ D @ L.T
+# Reconstruction: A = L @ diag(D) @ L.T  (D is a 1-D vector, so np.diag)
+A_recon = L @ np.diag(D) @ L.T
 print(f"\n  Reconstruction error: {np.max(np.abs(A - A_recon)):.2e}")
 print(f"  L @ D @ L.T == A: {np.allclose(A, A_recon)}")
 
@@ -75,7 +78,7 @@ A_new = A + alpha * np.outer(v, v)
 
 # Efficient update using existing LDLT
 L_new, D_new = ldlt_rank1_update(L, D, v, alpha=alpha)
-A_new_recon = L_new @ D_new @ L_new.T
+A_new_recon = L_new @ np.diag(D_new) @ L_new.T
 
 print(f"\n  v = {v}")
 print(f"  alpha = {alpha}")

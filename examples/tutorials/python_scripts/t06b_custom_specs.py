@@ -107,23 +107,27 @@ print(f"""
   Alternative-specific variable: different coefficient per alternative,
   often from the same data column.
 
-  Example: If income affects mode choice differently:
+  Example: the TRAVELMODE data has a HIGHINC dummy (1 = high income).
+  To let high income shift the SR and TR utilities by different amounts
+  (relative to the DA reference), enter HIGHINC in its own row for each
+  non-reference alternative. Each row becomes its own coefficient.
 """)
 
 spec_altspec = {
-    "INC_DA": {"Alt1_ch": "INCOME", "Alt2_ch": "sero",   "Alt3_ch": "sero"},
-    "INC_SR": {"Alt1_ch": "sero",   "Alt2_ch": "INCOME", "Alt3_ch": "sero"},
+    "HINC_SR": {"Alt1_ch": "sero", "Alt2_ch": "HIGHINC", "Alt3_ch": "sero"},
+    "HINC_TR": {"Alt1_ch": "sero", "Alt2_ch": "sero",    "Alt3_ch": "HIGHINC"},
 }
 
-# Only show this if INCOME column exists
-if "INCOME" in data.columns:
-    X_alt, vn_alt = parse_spec(spec_altspec, data, alternatives)
-    print(f"  Alternative-specific income spec gives:")
-    print(f"  Variables: {vn_alt}")
-    print(f"  X shape: {X_alt.shape}")
-else:
-    print(f"  (INCOME column not in TRAVELMODE data — shown as example pattern)")
-    print(f"  Alternative-specific specs use the same column in different rows.")
+X_alt, vn_alt = parse_spec(spec_altspec, data, alternatives)
+print(f"  Alternative-specific HIGHINC spec gives:")
+print(f"  Variables: {vn_alt}  (one coefficient each)")
+print(f"  X shape: {X_alt.shape}")
+print(f"  X_alt[0, :, :] (HIGHINC={int(data['HIGHINC'].iloc[0])} for obs 0):")
+for a in range(3):
+    alt_label = ["DA", "SR", "TR"][a]
+    print(f"    {alt_label:>2s}: {X_alt[0, a, :]}")
+print(f"  Note: same HIGHINC column appears in two rows -> two coefficients,")
+print(f"  whereas a generic variable (e.g. IVTT) shares one coefficient.")
 
 # ============================================================
 #  Step 4: parse_ivunord — GAUSS-style specification
