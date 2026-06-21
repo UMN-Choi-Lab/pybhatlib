@@ -109,8 +109,16 @@ class MNLResults:
         lines.append(
             "  Covariance matrix of the parameters computed by the following method:"
         )
+        method_labels = {
+            "bhhh": "Cross-product of first derivatives (BHHH)",
+            "hessian": "Inverse of observed information (Hessian)",
+            "sandwich": "Huber-White robust sandwich",
+        }
         if self.control is not None:
-            lines.append(f"  {self.control.se_method}")
+            label = method_labels.get(
+                self.control.se_method.lower(), self.control.se_method
+            )
+            lines.append(f"  {label}")
         else:
             lines.append("  Cross-product of first derivatives")
         lines.append("")
@@ -147,9 +155,9 @@ class MNLResults:
         lines.append("")
         lines.append(f"  Number of iterations   {self.n_iterations:>10d}")
         lines.append(f"  Minutes to convergence {self.convergence_time:>10.5f}")
-        #if self.message is not None:
-        #    lines.append(f"  Optimizer message: {self.message}")
-        #lines.append(sep)
+        if self.message is not None:
+            lines.append(f"  Optimizer message: {self.message}")
+        lines.append(sep)
 
         text = "\n".join(lines)
         print(text)

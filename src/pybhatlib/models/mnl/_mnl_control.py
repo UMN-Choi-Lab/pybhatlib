@@ -27,9 +27,10 @@ class MNLControl:
         (``_max_Options = { newton stepbt }``); "bfgs" and "lbfgsb" are
         also supported.
     tol : float
-        Convergence tolerance (gradient norm).
-    tol_check: float
-        Tolerance for checking convergence
+        Optimizer tolerance passed to scipy (``xtol`` for Newton-CG,
+        ``gtol`` for BFGS/CG).
+    tol_check : float
+        Gradient-norm threshold used to flag convergence after the fit.
     want_covariance : bool
         If True, compute the parameter covariance matrix at convergence
         (_max_CovPar in GAUSS).

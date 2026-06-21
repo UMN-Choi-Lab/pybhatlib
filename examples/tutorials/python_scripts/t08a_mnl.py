@@ -1,13 +1,11 @@
 #MNL Example
-import numpy as np
 import pandas as pd
 import os
-import sys
 
 from pybhatlib.models.mnl import MNLControl, MNLModel
 
 # Load data
-data_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "modedata.csv")
+data_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "modeData.csv")
 data = pd.read_csv(data_path)
 
 # Add neessary columns for MNL
@@ -17,14 +15,6 @@ data["MODE3"] = (data["chosen"] == 3).astype(int)
 
 # Define model specification
 alternatives = ["MODE1", "MODE2", "MODE3"]
-
-spec= {
-    "ASC_AIR": {"MODE1": "SERO", "MODE2": "UNO", "MODE3": "SERO"},
-    "ASC_RAIL": {"MODE1": "SERO", "MODE2": "SERO", "MODE3": "UNO"},
-    "IVTT": {"MODE1": "IVTT_CAR", "MODE2": "IVTT_AIR", "MODE3": "IVTT_RAIL"},
-    "OVTT": {"MODE1": "SERO", "MODE2": "OVTT_AIR", "MODE3": "OVTT_RAIL"},
-    "FREQ": {"MODE1": "SERO", "MODE2": "FREQ_AIR", "MODE3": "FREQ_RAIL"}}
-
 
 spec= {
     "ASC_AIR": {"MODE1": "SERO", "MODE2": "UNO", "MODE3": "SERO"},

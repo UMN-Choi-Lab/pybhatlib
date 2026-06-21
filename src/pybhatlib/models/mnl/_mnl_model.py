@@ -188,15 +188,19 @@ class MNLModel(BaseModel):
             g_obs = mnl_gradient(
                 x_opt, dta, indxivunord, davunord, dvunord, nc, numunord,
             )                                                   # (n_obs, numunord)
-            B = g_obs.T @ g_obs                                # (numunord, numunord)
-            try:
-                cov_bhhh = np.linalg.inv(B)
-            except np.linalg.LinAlgError:
-                cov_bhhh = np.linalg.pinv(B)
-
             se_method = ctrl.se_method.lower()
+            if se_method not in ("bhhh", "hessian", "sandwich"):
+                raise ValueError(
+                    "se_method must be one of 'bhhh', 'hessian', or 'sandwich'"
+                )
+
+            B = g_obs.T @ g_obs                                # (numunord, numunord)
+
             if se_method == "bhhh":
-                cov = cov_bhhh
+                try:
+                    cov = np.linalg.inv(B)
+                except np.linalg.LinAlgError:
+                    cov = np.linalg.pinv(B)
             else:
                 hess_obs = -mnl_hessian(
                     x_opt, dta, indxivunord, davunord, dvunord, ddind, nc, numunord,
@@ -208,12 +212,8 @@ class MNLModel(BaseModel):
 
                 if se_method == "hessian":
                     cov = hess_inv
-                elif se_method == "sandwich":
+                else:  # sandwich
                     cov = hess_inv @ B @ hess_inv
-                else:
-                    raise ValueError(
-                        "se_method must be one of 'bhhh', 'hessian', or 'sandwich'"
-                    )
 
             se = np.sqrt(np.maximum(np.diag(cov), 0.0))
             with np.errstate(invalid="ignore"):
