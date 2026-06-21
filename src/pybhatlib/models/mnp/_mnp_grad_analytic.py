@@ -117,11 +117,11 @@ def mnp_analytic_gradient(
     n_corr = 0
     n_lambda = 0
     if not control.iid:
+        # GAUSS homogeneous form: I-2 FREE scales (first diff variance pinned).
+        n_scale = max(dim_lambda - 1, 0)
         if control.heteronly:
-            n_scale = dim_lambda
             n_lambda = n_scale
         else:
-            n_scale = dim_lambda
             n_corr = dim_lambda * (dim_lambda - 1) // 2
             n_lambda = n_scale + n_corr
         lambda_params = theta[idx:idx + n_lambda]
@@ -140,6 +140,7 @@ def mnp_analytic_gradient(
         idx += n_omega
 
     # ---- Build covariance components ----
+    # ``Lambda`` here is the DIFFERENCED kernel K (K[0,0] == 1 pinned).
     Lambda, scales, corr = _build_lambda_components(
         lambda_params, dim_lambda, control
     )
@@ -164,12 +165,13 @@ def mnp_analytic_gradient(
     # Pre-compute utilities for all observations: V_all = X @ beta
     V_all = np.einsum('nij,j->ni', X, beta)
 
-    # Pre-compute Lambda_full (shared, built once)
-    Lambda_full = None
-    if need_sigma_chain or (not control.iid):
-        Lambda_full = np.eye(I, dtype=np.float64)
-        if not control.iid:
-            Lambda_full[1:, 1:] = Lambda + np.eye(dim_lambda)
+    # GAUSS homogeneous form: kernel covariance lives in the undifferenced
+    # I-space as ``covker = blockdiag(0, K)`` (covker[0,0] = 0, K[0,0] pinned
+    # to 1). This replaces the old floor ``Lambda_full = eye; [1:,1:]=Lambda+eye``.
+    # Built ALWAYS (incl. IID, which routes the frozen startker K through the
+    # same covker path), so the gradient's Lambda_diff matches the forward model.
+    Lambda_full = np.zeros((I, I), dtype=np.float64)
+    Lambda_full[1:, 1:] = Lambda
 
     # ---- Dispatch to batched or sequential path ----
     if all_avail and not has_random_coeff:
@@ -254,11 +256,11 @@ def mnp_per_obs_scores(
     n_corr = 0
     n_lambda = 0
     if not control.iid:
+        # GAUSS homogeneous form: I-2 FREE scales (first diff variance pinned).
+        n_scale = max(dim_lambda - 1, 0)
         if control.heteronly:
-            n_scale = dim_lambda
             n_lambda = n_scale
         else:
-            n_scale = dim_lambda
             n_corr = dim_lambda * (dim_lambda - 1) // 2
             n_lambda = n_scale + n_corr
         lambda_params = theta[idx:idx + n_lambda]
@@ -276,6 +278,7 @@ def mnp_per_obs_scores(
         omega_params = theta[idx:idx + n_omega]
         idx += n_omega
 
+    # ``Lambda`` here is the DIFFERENCED kernel K (K[0,0] == 1 pinned).
     Lambda, scales, corr = _build_lambda_components(
         lambda_params, dim_lambda, control
     )
@@ -293,11 +296,10 @@ def mnp_per_obs_scores(
     has_random_coeff = control.mix and Omega is not None
     need_sigma_chain = (not control.iid) or has_random_coeff
 
-    Lambda_full = None
-    if need_sigma_chain or (not control.iid):
-        Lambda_full = np.eye(I, dtype=np.float64)
-        if not control.iid:
-            Lambda_full[1:, 1:] = Lambda + np.eye(dim_lambda)
+    # GAUSS homogeneous form: covker = blockdiag(0, K) (covker[0,0] = 0,
+    # K[0,0] pinned). Built ALWAYS (incl. IID) so Lambda_diff matches forward.
+    Lambda_full = np.zeros((I, I), dtype=np.float64)
+    Lambda_full[1:, 1:] = Lambda
 
     V_all = np.einsum('nij,j->ni', X, beta)
     lam_lo = n_beta
@@ -328,20 +330,17 @@ def mnp_per_obs_scores(
         diff_V = np.array([V_all[q, chosen] - V_all[q, j] for j in avail_alts])
         X_diff = np.array([X[q, chosen] - X[q, j] for j in avail_alts])
 
-        if control.iid and not has_random_coeff:
-            Lambda_diff = (
-                np.ones((dim_q, dim_q), dtype=np.float64)
-                + np.eye(dim_q, dtype=np.float64)
-            )
+        # GAUSS homogeneous form: covker = blockdiag(0, K). IID routes through
+        # the same covker path. Random coefficients add Omega_tilde in the
+        # undifferenced I-space: Xi_full = Omega_tilde + covker.
+        Xi_base = Lambda_full if Lambda_full is not None else np.eye(I)
+        if has_random_coeff:
+            X_rand = X[q][:, ranvar_indices]
+            Xi_full = X_rand @ Omega @ X_rand.T + Xi_base
         else:
-            Xi_base = Lambda_full if Lambda_full is not None else np.eye(I)
-            if has_random_coeff:
-                X_rand = X[q][:, ranvar_indices]
-                Xi_full = X_rand @ Omega @ X_rand.T + Xi_base
-            else:
-                Xi_full = Xi_base
-            Lambda_diff = M @ Xi_full @ M.T
-            Lambda_diff = 0.5 * (Lambda_diff + Lambda_diff.T)
+            Xi_full = Xi_base
+        Lambda_diff = M @ Xi_full @ M.T
+        Lambda_diff = 0.5 * (Lambda_diff + Lambda_diff.T)
 
         if control.method == "ovus":
             prob, grad_a, grad_sigma_vech = mvncd_grad_ovus_analytic(
@@ -446,11 +445,11 @@ def _mixture_analytic_gradient(
     n_scale = 0
     n_corr = 0
     if not control.iid:
+        # GAUSS homogeneous form: I-2 FREE scales (first diff variance pinned).
+        n_scale = max(dim_lambda - 1, 0)
         if control.heteronly:
-            n_scale = dim_lambda
             n_lambda = n_scale
         else:
-            n_scale = dim_lambda
             n_corr = dim_lambda * (dim_lambda - 1) // 2
             n_lambda = n_scale + n_corr
 
@@ -521,11 +520,10 @@ def _mixture_analytic_gradient(
         corr_theta = lambda_params[n_scale:n_scale + n_corr]
         corr_jac = grad_corr_theta(corr_theta, dim_lambda)
 
-    Lambda_full = None
-    if (not control.iid) or (control.mix and ranvar_indices is not None):
-        Lambda_full = np.eye(I, dtype=np.float64)
-        if not control.iid:
-            Lambda_full[1:, 1:] = Lambda + np.eye(dim_lambda)
+    # GAUSS homogeneous form: covker = blockdiag(0, K) (covker[0,0] = 0,
+    # K[0,0] pinned). Built ALWAYS (incl. IID) so Lambda_diff matches forward.
+    Lambda_full = np.zeros((I, I), dtype=np.float64)
+    Lambda_full[1:, 1:] = Lambda
 
     # ---- Build per-segment Omega components ----
     Omega_Ls = []
@@ -623,22 +621,19 @@ def _mixture_analytic_gradient(
             V_h = X[q] @ beta_h  # (I,)
             diff_V = np.array([V_h[chosen] - V_h[j] for j in avail_alts])
 
-            # Build differenced covariance for this segment
+            # Build differenced covariance for this segment.
+            # GAUSS homogeneous form: covker = blockdiag(0, K) (covker[0,0]=0,
+            # K[0,0] pinned). IID routes through the same covker path; random
+            # coefficients add Omega_tilde in the undifferenced I-space.
             has_random = Omega_h is not None
-            if control.iid and not has_random:
-                Lambda_diff = (
-                    np.ones((dim_q, dim_q), dtype=np.float64)
-                    + np.eye(dim_q, dtype=np.float64)
-                )
+            Xi_base = Lambda_full if Lambda_full is not None else np.eye(I)
+            if has_random:
+                Omega_tilde = X_rand @ Omega_h @ X_rand.T  # (I, I)
+                Xi_full = Omega_tilde + Xi_base
             else:
-                if has_random:
-                    Omega_tilde = X_rand @ Omega_h @ X_rand.T  # (I, I)
-                    Xi_base = Lambda_full if Lambda_full is not None else np.eye(I)
-                    Xi_full = Omega_tilde + Xi_base
-                else:
-                    Xi_full = Lambda_full if Lambda_full is not None else np.eye(I)
-                Lambda_diff = M @ Xi_full @ M.T
-                Lambda_diff = 0.5 * (Lambda_diff + Lambda_diff.T)
+                Xi_full = Xi_base
+            Lambda_diff = M @ Xi_full @ M.T
+            Lambda_diff = 0.5 * (Lambda_diff + Lambda_diff.T)
 
             # MVNCD probability + gradient
             if control.method == "ovus":
@@ -795,15 +790,11 @@ def _mixture_vectorized_k2(
                 M_c[k, j] = 1.0
                 M_c[k, c] = -1.0
 
-            if control.iid:
-                Lambda_diff_c = (
-                    np.ones((dim, dim), dtype=np.float64)
-                    + np.eye(dim, dtype=np.float64)
-                )
-            else:
-                Xi_full = Lambda_full if Lambda_full is not None else np.eye(I)
-                Lambda_diff_c = M_c @ Xi_full @ M_c.T
-                Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
+            # GAUSS homogeneous form: covker = blockdiag(0, K). IID routes
+            # through the same covker path (K = 0.5*(eye+ones)).
+            Xi_full = Lambda_full if Lambda_full is not None else np.eye(I)
+            Lambda_diff_c = M_c @ Xi_full @ M_c.T
+            Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
 
             # Vectorized diff_V
             V_group = V_all_h[obs_indices]
@@ -930,15 +921,12 @@ def _batched_gradient_shared_cov(
             M_c[k, j] = 1.0
             M_c[k, c] = -1.0
 
-        if control.iid:
-            Lambda_diff_c = (
-                np.ones((dim, dim), dtype=np.float64)
-                + np.eye(dim, dtype=np.float64)
-            )
-        else:
-            Xi_full = Lambda_full if Lambda_full is not None else np.eye(I)
-            Lambda_diff_c = M_c @ Xi_full @ M_c.T
-            Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
+        # GAUSS homogeneous form: Lambda_diff = M @ covker @ M.T with
+        # covker = blockdiag(0, K). IID routes through the SAME covker path
+        # (K = 0.5*(eye+ones)), matching _mnp_loglik._batch_loglik_shared_cov.
+        Xi_full = Lambda_full if Lambda_full is not None else np.eye(I)
+        Lambda_diff_c = M_c @ Xi_full @ M_c.T
+        Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
 
         # Vectorized diff_V: shape (N_c, dim)
         V_group = V_all[obs_indices]  # (N_c, I)
@@ -1189,15 +1177,11 @@ def _sequential_gradient(
                 M_c[k, j] = 1.0
                 M_c[k, c] = -1.0
 
-            if control.iid and not has_random_coeff:
-                Lambda_diff_c = (
-                    np.ones((dim, dim), dtype=np.float64)
-                    + np.eye(dim, dtype=np.float64)
-                )
-            else:
-                Xi_base = Lambda_full if Lambda_full is not None else np.eye(I)
-                Lambda_diff_c = M_c @ Xi_base @ M_c.T
-                Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
+            # GAUSS homogeneous form: covker = blockdiag(0, K). IID routes
+            # through the same covker path (K = 0.5*(eye+ones)).
+            Xi_base = Lambda_full if Lambda_full is not None else np.eye(I)
+            Lambda_diff_c = M_c @ Xi_base @ M_c.T
+            Lambda_diff_c = 0.5 * (Lambda_diff_c + Lambda_diff_c.T)
 
             precomputed[c] = {
                 'avail_alts': avail_alts_c,
@@ -1245,23 +1229,21 @@ def _sequential_gradient(
                 M[k, j] = 1.0
                 M[k, chosen] = -1.0
 
-            if control.iid and not has_random_coeff:
-                Lambda_diff = (
-                    np.ones((dim_q, dim_q), dtype=np.float64)
-                    + np.eye(dim_q, dtype=np.float64)
-                )
+            # GAUSS homogeneous form: covker = blockdiag(0, K). IID routes
+            # through the same covker path. Random coefficients add
+            # Omega_tilde in the undifferenced I-space: Xi_full = Omega_tilde
+            # + covker.
+            if Lambda_full is None:
+                Lambda_full_local = np.eye(I, dtype=np.float64)
             else:
-                if Lambda_full is None:
-                    Lambda_full_local = np.eye(I, dtype=np.float64)
-                else:
-                    Lambda_full_local = Lambda_full
-                if has_random_coeff:
-                    X_rand = X[q][:, ranvar_indices]
-                    Omega_tilde = X_rand @ Omega @ X_rand.T
-                    Xi_full = Omega_tilde + Lambda_full_local
-                else:
-                    Xi_full = Lambda_full_local
-                Lambda_diff = M @ Xi_full @ M.T
+                Lambda_full_local = Lambda_full
+            if has_random_coeff:
+                X_rand = X[q][:, ranvar_indices]
+                Omega_tilde = X_rand @ Omega @ X_rand.T
+                Xi_full = Omega_tilde + Lambda_full_local
+            else:
+                Xi_full = Lambda_full_local
+            Lambda_diff = M @ Xi_full @ M.T
 
             Lambda_diff = 0.5 * (Lambda_diff + Lambda_diff.T)
 
@@ -1321,26 +1303,46 @@ def _build_lambda_components(
     dim: int,
     control: MNPControl,
 ) -> tuple[NDArray, NDArray | None, NDArray | None]:
-    """Build Lambda and return (Lambda, scales, corr) for gradient chain."""
+    """Build the differenced kernel ``K`` and return (K, scales, corr).
+
+    GAUSS homogeneous "first-differenced-variance = 1" form (mirrors
+    ``_mnp_loglik._build_lambda``): the first differenced variance ``K[0,0]``
+    is PINNED to 1, so ``scales = [1.0] + exp(free_log_scales)`` (length
+    ``dim``, first entry literally 1.0), and there are only ``dim - 1`` FREE
+    scale parameters. The number of correlations is ``dim*(dim-1)//2``
+    (unchanged). ``K = W1 @ corr @ W1`` with ``W1 = diag(scales)``.
+
+    The returned ``K`` is the (I-1)x(I-1) DIFFERENCED kernel (NOT the old
+    floor ``Lambda + eye``). Callers embed it via ``covker = blockdiag(0, K)``.
+
+    For IID the differenced kernel is the GAUSS frozen ``startker``
+    ``K = 0.5*(eye + ones)`` (so ``K[0,0] == 1``), matching ``_build_lambda``.
+    """
     if control.iid or lambda_params is None:
-        return np.eye(dim, dtype=np.float64), None, None
+        # GAUSS IID kernel (frozen startker): K = 0.5*(eye + ones), K[0,0] == 1.
+        K = 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones(
+            (dim, dim), dtype=np.float64
+        )
+        return K, None, None
+
+    n_scale = max(dim - 1, 0)  # I-2 FREE scales (first diff variance pinned)
+    free = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+    scales = np.concatenate([[1.0], free])  # length dim, scales[0] == 1.0
 
     if control.heteronly:
-        scales = np.exp(lambda_params[:dim])
-        Lambda = np.diag(scales**2)
-        return Lambda, scales, None
+        K = np.diag(scales ** 2)
+        return K, scales, None
 
-    scales = np.exp(lambda_params[:dim])
     n_corr = dim * (dim - 1) // 2
-    if n_corr > 0 and len(lambda_params) > dim:
-        corr_theta = lambda_params[dim:dim + n_corr]
+    if n_corr > 0 and len(lambda_params) > n_scale:
+        corr_theta = lambda_params[n_scale:n_scale + n_corr]
         corr = theta_to_corr(corr_theta, dim)
     else:
         corr = np.eye(dim, dtype=np.float64)
 
-    D = np.diag(scales)
-    Lambda = D @ corr @ D
-    return Lambda, scales, corr
+    W1 = np.diag(scales)
+    K = W1 @ corr @ W1
+    return K, scales, corr
 
 
 def _build_omega_components(
@@ -1390,30 +1392,44 @@ def _adj_lambda_to_params(
     n_corr: int,
     control: MNPControl,
 ) -> NDArray:
-    """Chain adj_Lambda through Lambda = D @ corr @ D to adj_lambda_params.
+    """Chain ``adj_K`` through the differenced kernel ``K = W1 @ corr @ W1`` to
+    ``adj_lambda_params``, in the GAUSS homogeneous "first-differenced-variance
+    = 1" parameterization.
 
-    For heteroscedastic: Lambda = diag(scales^2), scales = exp(lambda_params).
-    For full: Lambda = D @ corr @ D, D = diag(exp(lambda_params[:n_scale])),
-    corr = theta_to_corr(lambda_params[n_scale:]).
+    ``W1 = diag(scales)`` with ``scales = [1.0] + exp(free_log_scales)`` (length
+    ``dim``); the FIRST scale is PINNED to 1 and has NO free theta column, so
+    only the FREE indices ``k = 1..dim-1`` produce a scale-gradient entry. The
+    output length is ``n_scale + n_corr`` with ``n_scale = dim - 1`` (free
+    scales). This mirrors GAUSS ``lgd1``: the first row/col of the scale
+    Jacobian is dropped because the first differenced variance is normalized to
+    1.
+
+    For heteroscedastic: ``K = diag(scales^2)``; only the free diagonal entries
+    ``k = 1..dim-1`` get a gradient. For full: ``K = W1 @ corr @ W1``; the
+    correlation block (``corr_jac @ adj_corr_vech``) is unchanged.
     """
     if control.heteronly:
-        # Lambda = diag(scales^2), d(exp(2x))/dx = 2*exp(2x) = 2*scale^2
+        # K = diag(scales^2), free scales k=1..dim-1: d(exp(2x))/dx = 2*scale^2.
+        # The pinned scale[0] contributes to K but gets NO gradient entry; free
+        # index k maps to output position k-1.
         adj = np.zeros(n_scale, dtype=np.float64)
-        for k in range(dim):
-            adj[k] = adj_Lambda[k, k] * 2.0 * scales[k] ** 2
+        for k in range(1, dim):
+            adj[k - 1] = adj_Lambda[k, k] * 2.0 * scales[k] ** 2
         return adj
 
     adj = np.zeros(n_scale + n_corr, dtype=np.float64)
 
-    # Scale gradient: adj_scales[k] = 2 * sum_j adj_Lambda[k,j]*corr[k,j]*scales[j]
-    # Then chain: adj_log_scale[k] = adj_scales[k] * scales[k]
-    for k in range(dim):
+    # Scale gradient over FREE kernel indices k=1..dim-1 (k=0 is pinned, no
+    # theta column). For free index k: adj_scale[k] = 2 * sum_j adj_K[k,j] *
+    # corr[k,j] * scales[j], chained to log-scale via * scales[k], mapped to
+    # output position k-1.
+    for k in range(1, dim):
         s = 0.0
         for j in range(dim):
             s += adj_Lambda[k, j] * corr[k, j] * scales[j]
-        adj[k] = 2.0 * s * scales[k]
+        adj[k - 1] = 2.0 * s * scales[k]
 
-    # Correlation gradient
+    # Correlation gradient (UNCHANGED).
     if n_corr > 0 and corr_jac is not None:
         # adj_corr[i,j] = adj_Lambda[i,j] * scales[i] * scales[j]
         # Build adj_corr_vech (K*(K+1)//2 upper-tri including diag)
