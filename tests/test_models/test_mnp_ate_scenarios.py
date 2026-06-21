@@ -280,6 +280,39 @@ def test_legacy_path_predicted_shares_equals_base_shares(travelmode_path):
     np.testing.assert_allclose(out.predicted_shares, out.base_shares, atol=1e-12)
 
 
+def test_legacy_path_emits_guidance_warning(travelmode_path):
+    """Legacy ``changevar``/``changeval`` path must warn that
+    ``predicted_shares`` is unconditional, pointing users to
+    ``treatment_shares`` and the ``scenarios=`` API.
+
+    Regression guard for issue #38: users read ``predicted_shares`` expecting
+    the counterfactual shares and silently got 0% ATE.
+    """
+    from pybhatlib.models.mnp import MNPControl, MNPModel
+
+    data = pd.read_csv(travelmode_path)
+    ctrl = MNPControl(maxiter=5, verbose=0, seed=42, iid=True)
+    model = MNPModel(
+        data=travelmode_path,
+        alternatives=ALTERNATIVES,
+        availability="none",
+        spec=SPEC_WITH_AGE45,
+        control=ctrl,
+        ranvars=None,
+    )
+    results = model.fit()
+
+    with pytest.warns(UserWarning, match="treatment_shares"):
+        mnp_ate(
+            results,
+            data=data,
+            spec=SPEC_WITH_AGE45,
+            alternatives=ALTERNATIVES,
+            changevar="AGE45",
+            changeval=1.0,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Test 5: legacy changevar/changeval path still works
 # ---------------------------------------------------------------------------

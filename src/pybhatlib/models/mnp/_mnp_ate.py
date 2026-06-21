@@ -10,6 +10,7 @@ can be evaluated in a single call.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Union
 
@@ -400,6 +401,22 @@ def mnp_ate(
             raise ValueError(
                 "data, spec, and alternatives are required for changevar/changeval ATE"
             )
+
+        # Issue #38: users routinely read ``.predicted_shares`` expecting the
+        # counterfactual (changeval-applied) shares, but that attribute is the
+        # *unconditional* unmodified-data prediction by design — yielding a
+        # confusing 0% ATE when the same attribute is compared across two
+        # calls.  Point them at the right attribute / API instead.
+        warnings.warn(
+            "mnp_ate(changevar=..., changeval=...) sets predicted_shares to the "
+            "UNCONDITIONAL (unmodified-data) shares; the counterfactual shares "
+            "are in .treatment_shares (and the base in .base_shares). Prefer the "
+            "scenarios= API, e.g. scenarios={'base': {'AGE45': 0}, "
+            "'treatment': {'AGE45': 1}}, which returns shares_per_scenario and a "
+            ".comparison(base, treatment) helper.",
+            UserWarning,
+            stacklevel=2,
+        )
 
         # Base shares: from unmodified data
         base_shares = _compute_predicted_shares(
