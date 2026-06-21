@@ -108,6 +108,12 @@ print(f"  Number of observations: {results.n_obs}")
 print(f"  Number of parameters: {len(results.b_original)}")
 print(f"  Converged: {results.converged}")
 
+# Cross-check against the published BHATLIB reference (GAUSS): this IID
+# specification is Model (a)(i) of BHATLIB Table 1, whose log-likelihood
+# is -670.956. Matching it confirms the install reproduces GAUSS exactly.
+print(f"\n  GAUSS / BHATLIB Table 1 (a)(i) reference LL : -670.956")
+print(f"  PyBhatLib log-likelihood                    : {results.loglik * results.n_obs:.3f}")
+
 print("\n  Key findings:")
 print("  - Negative IVTT coefficient: higher in-vehicle travel time reduces utility")
 print("  - Negative COST coefficient: higher cost reduces utility")

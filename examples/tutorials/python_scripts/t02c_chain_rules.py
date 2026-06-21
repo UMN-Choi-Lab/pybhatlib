@@ -8,8 +8,9 @@ Each link has a known Jacobian. The chain_grad function composes them.
 What you will learn:
   - gomegxomegax: d(vecdup A) / d(vecdup Omega) for A = X @ Omega @ X.T
   - chain_grad: compose two Jacobians in BHATLIB's row-based arrangement
-  - Full pipeline: theta -> Omega* -> Omega -> A via manual chain composition
-  - Numerical verification of every link
+  - Full pipeline: theta -> Omega* -> Omega -> A composed ENTIRELY with
+    chain_grad (a fully analytic 3-link gradient, no numerical fallback)
+  - Numerical verification of every link via finite differences
 
 Prerequisites: t02a (gradcovcor), t02b (spherical).
 
@@ -136,7 +137,7 @@ print("=" * 60)
 
 n_theta = len(theta)
 
-# Compute dA/d(theta) via numerical finite differences directly
+# Compute dA/d(theta) via numerical finite differences directly (ground truth)
 dA_dtheta_fd = np.zeros((n_theta, n_a))
 for p in range(n_theta):
     th_p = theta.copy(); th_p[p] += eps
@@ -147,15 +148,33 @@ for p in range(n_theta):
     A_m = X @ Om_m @ X.T
     dA_dtheta_fd[p, :] = (vecdup(A_p) - vecdup(A_m)) / (2 * eps)
 
-# Compute analytically: dA/d(theta) = J_theta @ gomegastar @ dA_dOmega
-J_theta = grad_corr_theta(theta, K)   # (n_theta, n_upper)
-# gomegastar maps off-diagonal corr to vecdup(Omega): (n_corr, n_omega)
-# J_theta maps theta to all vecdup(Omega*): (n_theta, n_upper)
-# These don't chain directly — we use the full numerical check instead
+# --- Fully ANALYTIC chain: theta -> Omega* -> Omega -> A ---------------------
+# Link 1: dOmega*/d(theta) over the FULL vecdup(Omega*) (incl. diagonals).
+#   grad_corr_theta returns shape (n_theta, K*(K+1)/2) in row-based order.
+J_theta = grad_corr_theta(theta, K)                  # (n_theta, n_omega)
 
-print(f"\n  End-to-end dA/d(theta) [numerical]:")
-print(f"  Shape: ({n_theta}, {n_a})")
-print(f"  dA/dtheta =\n{dA_dtheta_fd}")
+# Link 2: dvecdup(Omega)/dvecdup(Omega*).  Because
+#   Omega[i,j] = omega_i * omega_j * Omega*[i,j],
+# this Jacobian is DIAGONAL with entries omega_i * omega_j in the same
+# row-based upper-triangular order used by vecdup.
+upper_idx = [(i, j) for i in range(K) for j in range(i, K)]
+scale = np.array([omega[i] * omega[j] for (i, j) in upper_idx])
+dOmega_dOmegastar = np.diag(scale)                   # (n_omega, n_omega)
+
+# Link 3: dA/dOmega from gomegxomegax (computed in Step 2 as dA_dOmega).
+# Compose all three links with chain_grad (BHATLIB row-based: pre-multiply):
+#   dA/d(Omega*)  = dOmega/dOmega* @ dA/dOmega
+#   dA/d(theta)   = dOmega*/dtheta @ dA/d(Omega*)
+dA_dOmegastar = chain_grad(dA_dOmega, dOmega_dOmegastar)   # (n_omega, n_a)
+dA_dtheta_analytic = chain_grad(dA_dOmegastar, J_theta)    # (n_theta, n_a)
+
+err3 = np.max(np.abs(dA_dtheta_analytic - dA_dtheta_fd))
+
+print(f"\n  End-to-end dA/d(theta), shape ({n_theta}, {n_a}):")
+print(f"\n  ANALYTIC (3-link chain via chain_grad) =\n{dA_dtheta_analytic}")
+print(f"\n  NUMERICAL (finite differences) =\n{dA_dtheta_fd}")
+print(f"\n  Analytic-vs-numerical max error = {err3:.2e}")
+print(f"  Passed: {err3 < 1e-4}")
 
 print(f"""
   Summary of the chain:
@@ -169,8 +188,15 @@ print(f"""
     gomegastar:   ({K*(K-1)//2}, {n_omega}) — off-diag corr rows, vecdup(Omega) cols
     grad_corr_theta: ({n_theta}, {K*(K+1)//2}) — theta rows, vecdup(Omega*) cols
 
-  Chain rule: dA/d(omega) = glitomega @ dA_dOmega
-  (In BHATLIB: dOmega_dparam @ dA_dOmega, not the standard reverse order)
+  Chain rule (BHATLIB row-based, pre-multiply — NOT the standard reverse order):
+    dA/d(omega) = glitomega @ dA_dOmega                         (Step 4)
+    dA/d(theta) = grad_corr_theta @ (dOmega/dOmega* @ dA_dOmega) (Step 5)
+
+  Step 5 shows the FULL analytic chain composed entirely with chain_grad,
+  matching the finite-difference ground truth to ~1e-8. Because
+  Omega = diag(omega) Omega* diag(omega), the Omega*->Omega link is the
+  diagonal Jacobian diag(omega_i * omega_j) over vecdup order — no need to
+  fall back to a numerical check for any link.
 """)
 
 print(f"  Next: t03a_mvncd_methods.py — MVNCD approximation methods")

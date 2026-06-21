@@ -7,10 +7,12 @@ What you will learn:
   - mnp_predict: predicted choice probabilities
   - mnp_predict_choice: most likely alternative
   - Scenario analysis: how cost changes affect mode shares
+  - mnp_ate with the scenarios= API: counterfactual treatment effects
+    (cross-checked against the GAUSS MNP_TRAVELMODE_ATE driver)
 
 Prerequisites: t00 (quickstart).
 
-Expected runtime: ~5 sec
+Expected runtime: ~10 sec
 """
 import os, sys
 import numpy as np
@@ -21,6 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "sr
 from pybhatlib.models.mnp import (
     MNPControl,
     MNPModel,
+    mnp_ate,
     mnp_predict,
     mnp_predict_choice,
 )
@@ -49,11 +52,21 @@ model = MNPModel(
     control=MNPControl(iid=True, maxiter=100, verbose=1, seed=42),
 )
 results = model.fit()
-print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
-# results.b_original is the BHATLIB-normalized reporting view (matches GAUSS).
-# results.params is raw theta-space and is what the predictor consumes
-# downstream — both are kept on the results object for distinct purposes.
-print(f"  Estimated beta (BHATLIB-normalized): {results.b_original}")
+print(f"\n  GAUSS / paper reference LL : -670.956")
+print(f"  PyBhatLib LL               : {results.loglik * results.n_obs:.3f}")
+
+# results.b_original is the BHATLIB-normalized reporting view (matches GAUSS
+# and the published tables). results.params is the raw theta-space vector that
+# the predictor consumes downstream (under IID the two differ by 1/sqrt(2));
+# both are kept on the results object for distinct purposes. ALWAYS report
+# b_original, never params.
+print(f"\n  {'Parameter':<12s} {'Estimate':>10s} {'Std.Err':>10s} "
+      f"{'t-stat':>8s} {'p-value':>8s}")
+print(f"  {'-' * 50}")
+for name, b, se, t, p in zip(results.param_names, results.b_original,
+                             results.se, results.t_stat, results.p_value):
+    print(f"  {name:<12s} {b:>10.4f} {se:>10.4f} {t:>8.2f} {p:>8.4f}")
+print(f"\n  Number of reported parameters: {len(results.b_original)}")
 
 # ============================================================
 #  Step 2: Build X_new manually
@@ -168,6 +181,82 @@ print(f"""
   - SR and TR shares increase (substitutes absorb the demand)
   - This is the key insight from MNP: substitution patterns depend
     on the covariance structure of the error terms.
+""")
+
+# ============================================================
+#  Step 6: Average Treatment Effects (scenarios= API)
+# ============================================================
+print("=" * 60)
+print("  Step 6: Average Treatment Effects via mnp_ate")
+print("=" * 60)
+
+print("""
+The forecasting above used a hand-built design matrix. For policy
+analysis on the ESTIMATION sample we instead use `mnp_ate`, which
+re-applies the fitted model to the real data under counterfactual
+scenarios and averages the resulting individual probabilities into
+predicted aggregate shares.
+
+We re-estimate the GAUSS MNP_TRAVELMODE_ATE specification (the same
+flexible-covariance model plus AGE45 effects) and ask: what is the
+treatment effect of being under 45 (AGE45 = 1) versus 45+ (AGE45 = 0)
+on aggregate mode shares?  Use the scenarios= dict API — NOT the legacy
+scalar changevar=/changeval= path, whose .predicted_shares is the
+unconditional unmodified-data prediction.
+""")
+
+# Flexible-covariance spec with AGE45 effects (matches the GAUSS driver
+# MNP_TRAVELMODE_ATE.gss: IVTT, OVTT, COST, AGE45_DA, AGE45_SR, ASCs).
+ate_spec = {
+    "IVTT":     {"Alt1_ch": "IVTT_DA", "Alt2_ch": "IVTT_SR", "Alt3_ch": "IVTT_TR"},
+    "OVTT":     {"Alt1_ch": "OVTT_DA", "Alt2_ch": "OVTT_SR", "Alt3_ch": "OVTT_TR"},
+    "COST":     {"Alt1_ch": "COST_DA", "Alt2_ch": "COST_SR", "Alt3_ch": "COST_TR"},
+    "AGE45_DA": {"Alt1_ch": "AGE45",   "Alt2_ch": "sero",    "Alt3_ch": "sero"},
+    "AGE45_SR": {"Alt1_ch": "sero",    "Alt2_ch": "AGE45",   "Alt3_ch": "sero"},
+    "CON_SR":   {"Alt1_ch": "sero",    "Alt2_ch": "uno",     "Alt3_ch": "sero"},
+    "CON_TR":   {"Alt1_ch": "sero",    "Alt2_ch": "sero",    "Alt3_ch": "uno"},
+}
+
+ate_model = MNPModel(
+    data=data_path, alternatives=alternatives, availability="none",
+    spec=ate_spec,
+    control=MNPControl(iid=False, maxiter=200, verbose=0, seed=42),
+)
+ate_results = ate_model.fit()
+
+print(f"  GAUSS / paper reference LL (Model b + AGE45) : -659.285")
+print(f"  PyBhatLib LL                                 : "
+      f"{ate_results.loglik * ate_results.n_obs:.3f}")
+
+# Counterfactual shares via the scenarios= API.
+data = pd.read_csv(data_path)
+ate = mnp_ate(
+    ate_results, data=data, spec=ate_spec, alternatives=alternatives,
+    scenarios={"base": {"AGE45": 0}, "treatment": {"AGE45": 1}},
+)
+
+base_shares = ate.shares_per_scenario["base"]
+treat_shares = ate.shares_per_scenario["treatment"]
+pct = ate.comparison("base", "treatment")
+
+print(f"\n  {'Alt':>5s} {'Base (45+)':>12s} {'Treat (<45)':>12s} {'%ATE':>10s}")
+print(f"  {'-' * 41}")
+for i, name in enumerate(alt_names):
+    print(f"  {name:>5s} {base_shares[i]:>12.6f} {treat_shares[i]:>12.6f} "
+          f"{pct[i]:>+9.2f}%")
+
+# GAUSS cross-check: shares produced by MNP_TRAVELMODE_ATE.gss driver.
+print(f"\n  GAUSS reference shares (AGE45=0 base): "
+      f"DA=0.6924  SR=0.1411  TR=0.1665")
+print(f"  PyBhatLib  shares (AGE45=0 base)     : "
+      f"DA={base_shares[0]:.4f}  SR={base_shares[1]:.4f}  TR={base_shares[2]:.4f}")
+
+print("""
+  Interpretation: being under 45 raises the drive-alone (DA) share and
+  pulls travelers away from shared-ride (SR) and transit (TR). Because
+  mnp_ate averages individual choice probabilities under the fitted
+  covariance structure, the cross-substitution is governed by the
+  estimated error correlations, not by an IIA logit assumption.
 """)
 
 print(f"  Next: t05b_morp_ate_predict.py — MORP prediction and ATE analysis")

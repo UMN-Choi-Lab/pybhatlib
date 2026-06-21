@@ -36,3 +36,30 @@ jobs:
 
       - name: Run tests
         run: pytest tests/ -m "not slow" -v
+
+  notebooks:
+    name: tutorial notebooks are in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Regenerate notebooks from source scripts
+        run: python examples/tutorials/_convert_to_ipynb.py
+
+      - name: Fail if notebooks are stale or missing
+        run: |
+          # --porcelain catches both modified tracked notebooks and brand-new
+          # untracked ones (a .py script added without its generated .ipynb).
+          changed=$(git status --porcelain -- examples/tutorials/'*.ipynb')
+          if [ -n "$changed" ]; then
+            echo "::error::Tutorial notebooks are out of sync with their python_scripts/*.py sources."
+            echo "Run 'python examples/tutorials/_convert_to_ipynb.py' and commit the result."
+            echo "$changed"
+            exit 1
+          fi
+          echo "All tutorial notebooks are in sync."

@@ -71,6 +71,15 @@ print(f"  = P(a <= X <= b)   = {p_incl_excl:>10.6f}")
 print(f"\n  mvncd_rect result  = {p_rect:>10.6f}")
 print(f"  Match: {abs(p_rect - p_incl_excl) < 1e-4}")
 
+print("""
+  GAUSS cross-check: this is exactly the algorithm BHATLIB uses.
+  The procedure cdrectmvnanl (gradients mvn.src) calls rectcombs to
+  enumerate the 2^K box corners with alternating signs, then sums the
+  orthant CDFs at each corner -- identical to the inclusion-exclusion
+  above. For K<=4, mvncd_rect(method="scipy") dispatches to scipy's
+  exact rectangle CDF, matching GAUSS's cdorrectmvn dispatch.
+""")
+
 # ============================================================
 #  Step 3: K=3 with -inf lower bound
 # ============================================================
@@ -132,6 +141,11 @@ print("""
         upper_d = (tau_{jd}   - mu_d) / sigma_d
 
   This is why rectangular MVNCD is essential for ordered probit models.
+
+  GAUSS reference: BHATLIB's MORP likelihood (MORP_WALK.gss,
+  MORP_DINING.gss) builds these per-observation rectangles and evaluates
+  them through cdorrectmvn / cdrectmvnanl -- the same code path exercised
+  by mvncd_rect here.
 """)
 
 # Quick demonstration
