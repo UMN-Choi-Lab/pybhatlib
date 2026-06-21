@@ -351,18 +351,20 @@ def _assert_bhhh_se_parity(
     target, model_label, spec, control_kwargs, ranvars, travelmode_path,
     tol=0.02,
 ):
-    """Validate the sum-of-squared-scales normalization against the published
-    BHATLIB Table-2 values via the known normalization transform.
+    """Validate the GAUSS first-differenced-variance=1 kernel against the
+    published BHATLIB Table-2 values.
 
-    pybhatlib defaults to the sum-of-squared-scales normalization
-    (``sum(scale**2) == 1``; GAUSS ``wker = sqrt(logitmod(xscalker))``). The
-    published table uses first-scale=1; the two differ by a single positive
-    factor, so reported coefficients map exactly to the published ones:
-    beta == reported/scale01, CovCOv == reported/scale01**2, the relative scale
-    == scale02/scale01, and parker/segunpar are invariant. SEs differ by the
-    data-dependent Jacobian (no closed form vs the published marginals), so only
-    SE validity is asserted here; exact SE parity for the unchanged IID
-    normalization is in ``test_bhhh_unpar_matches_paper_iid_a1``.
+    pybhatlib reports on the GAUSS homogeneous kernel convention: the first
+    differenced error variance is pinned to 1, so ``scale01 == 1.0`` exactly (a
+    FIXED reporting row with SE = NaN) and the remaining scale (``scale02``) is
+    the relative variance of alt-3's differenced error term — exactly what the
+    published table reports as its "scale01" entry. Under this convention the
+    reported coefficients equal the published ones DIRECTLY (no un-normalization
+    factor; the old sum-of-squared-scales transform is gone):
+    beta/parker/CovCOv/segunpar == published verbatim, and published "scale01"
+    == reported ``scale02``. SE *validity* (positive, finite) is asserted for
+    each estimated parameter; exact SE parity for IID is in
+    ``test_bhhh_unpar_matches_paper_iid_a1``.
     """
     ctrl = MNPControl(
         maxiter=200, verbose=0, seed=42, se_method="bhhh", **control_kwargs,
@@ -380,34 +382,33 @@ def _assert_bhhh_se_parity(
     coef = dict(zip(results.param_names, results.b_original))
     se = dict(zip(results.param_names, results.se))
 
-    scale_vals = [coef[n] for n in results.param_names if n.startswith("scale")]
-    assert scale_vals, f"{model_label}: no kernel scales reported"
-    ss = sum(s * s for s in scale_vals)
-    assert abs(ss - 1.0) < 1e-6, (
-        f"{model_label}: sum of squared scales = {ss:.6f}, expected 1.0"
+    # First-diff-var=1 property: scale01 is pinned to 1.0 (fixed row, SE=NaN).
+    assert "scale01" in coef, f"{model_label}: scale01 not reported"
+    assert coef["scale01"] == pytest.approx(1.0, abs=1e-9), (
+        f"{model_label}: scale01 should be pinned to 1.0, got {coef['scale01']}"
+    )
+    assert np.isnan(se["scale01"]), (
+        f"{model_label}: SE for the fixed scale01 row should be NaN, "
+        f"got {se['scale01']}"
     )
 
-    scale01 = coef["scale01"]
     for param, tdata in target["params"].items():
         if tdata["status"] != "estimated":
             continue
-        got = coef.get(param)
-        assert got is not None, f"{model_label}: param {param} missing"
-        s = se.get(param)
-        assert s is not None and np.isfinite(s) and s > 0, (
-            f"{model_label}: SE for {param} not positive-finite: {s}"
+        # Published "scale01" (relative alt-3 scale) maps to reported scale02.
+        result_key = "scale02" if param.startswith("scale") else param
+        got = coef.get(result_key)
+        assert got is not None, (
+            f"{model_label}: param {param} (->{result_key}) missing"
         )
-        if param.startswith("parker") or param == "segunpar":
-            expected, actual = tdata["coef"], got
-        elif param.startswith("scale"):
-            expected, actual = tdata["coef"], coef["scale02"] / coef["scale01"]
-        elif param.startswith("CovCOv"):
-            expected, actual = tdata["coef"], got / (scale01 ** 2)
-        else:
-            expected, actual = tdata["coef"], got / scale01
+        s = se.get(result_key)
+        assert s is not None and np.isfinite(s) and s > 0, (
+            f"{model_label}: SE for {result_key} not positive-finite: {s}"
+        )
+        expected, actual = tdata["coef"], got
         assert abs(actual - expected) < tol, (
-            f"{model_label} coef mismatch for {param}: un-normalized "
-            f"{actual:.4f}, published {expected:.4f}"
+            f"{model_label} coef mismatch for {param} (->{result_key}): "
+            f"reported {actual:.4f}, published {expected:.4f}"
         )
 
 

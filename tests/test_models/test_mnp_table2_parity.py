@@ -110,15 +110,24 @@ def test_table2_model_c_random_coef(table2_targets, travelmode_path):
 
 
 # Current Python baseline for Model (d) mixture — pins refactor drift.
-# Paper target is -634.975 (±2); current Python gives ~-627.885 with the
+# Paper target is -634.975 (±2); current Python gives ~-624.403 with the
 # MNP-006 (M1) ranvars auto-expansion (replicates each base ranvar across
-# segments). The residual gap to the paper target (~7 LL units) is
-# structural — the GAUSS run has a 1-D random coefficient per segment with
-# segment-specific OVTT columns (one zeroed per segment in ivunord), while
-# pybhatlib's shared X forces a 2-D random coefficient over duplicate
-# columns. Closing this requires the shared/varying refactor in
+# segments) under the GAUSS first-diff-var=1 homogeneous kernel.
+#
+# The baseline moved from -627.885 to -624.403 when the kernel convention
+# changed to first-diff-var=1 (one fewer free scale per segment, scale01
+# pinned to 1.0). This is a local-optimum shift driven by the new
+# parameterization, NOT a regression: the analytic gradient matches finite
+# differences at the converged theta, and all five published-table LL anchors
+# (IID/flexible/+AGE45/random-coef) are preserved exactly. The rank-deficient
+# mixture (shared X duplicates the OVTT column across segments) has multiple
+# nearby optima, so the converged point depends on the kernel geometry. The
+# residual gap to the paper target remains structural — the GAUSS run has a
+# 1-D random coefficient per segment with segment-specific OVTT columns, while
+# pybhatlib's shared X forces a 2-D coefficient over duplicate columns. Closing
+# it requires the shared/varying refactor in
 # ``docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md`` (a separate phase).
-_MODEL_D_BASELINE_LL = -627.885
+_MODEL_D_BASELINE_LL = -624.403
 
 
 @pytest.mark.slow
@@ -150,7 +159,13 @@ def test_table2_model_d_mixture_paper_target(table2_targets, travelmode_path):
 @pytest.mark.slow
 @pytest.mark.parametrize("se_method", ["bhhh", "hessian", "sandwich"])
 def test_se_methods_produce_valid_errors(se_method, travelmode_path):
-    """Each SE method must produce positive finite standard errors on Model (b)."""
+    """Each SE method must produce positive finite standard errors on Model (b).
+
+    Under the GAUSS first-diff-var=1 kernel, ``scale01`` is a FIXED reporting
+    row (pinned to 1.0) and therefore carries SE = NaN by design. The validity
+    check applies to every *estimated* parameter; the single fixed scale01 row
+    is excluded.
+    """
     ctrl = MNPControl(
         iid=False, maxiter=200, verbose=0, seed=42, se_method=se_method,
     )
@@ -163,36 +178,46 @@ def test_se_methods_produce_valid_errors(se_method, travelmode_path):
     )
     results = model.fit()
     import numpy as np
-    assert (results.se > 0).all(), f"{se_method}: non-positive SE entries"
-    assert np.isfinite(results.se).all(), f"{se_method}: non-finite SE entries"
+
+    # Exclude the fixed scale01 row (pinned, SE=NaN by the first-diff-var=1
+    # convention); all estimated parameters must have positive, finite SEs.
+    estimated = np.array(
+        [n != "scale01" for n in results.param_names], dtype=bool
+    )
+    se_est = results.se[estimated]
+    assert np.isnan(results.se[~estimated]).all(), (
+        f"{se_method}: fixed scale01 SE should be NaN"
+    )
+    assert (se_est > 0).all(), f"{se_method}: non-positive SE entries"
+    assert np.isfinite(se_est).all(), f"{se_method}: non-finite SE entries"
 
 
 def _assert_bhhh_se_parity(
     target, model_label, spec, control_kwargs, ranvars, travelmode_path,
     tol=0.02,
 ):
-    """Validate the sum-of-squared-scales normalization against the published
-    BHATLIB Table-2 values.
+    """Validate the GAUSS first-differenced-variance=1 kernel against the
+    published BHATLIB Table-2 values.
 
-    pybhatlib reports the sum-of-squared-scales normalization
-    (``sum(scale**2) == 1``; GAUSS ``wker = sqrt(logitmod(xscalker))``), which
-    differs from the published table's first-scale=1 normalization. The two
-    differ by a single positive factor, so the reported COEFFICIENTS map to the
-    published ones exactly (no fabricated values — published targets are
-    transformed by the known relation):
+    pybhatlib now reports on the GAUSS homogeneous kernel convention: the first
+    differenced error variance is pinned to 1, so ``scale01 == 1.0`` exactly (a
+    FIXED reporting row with SE = NaN) and the remaining scale (``scale02``) is
+    the relative variance of alt-3's differenced error term — which is precisely
+    what the published table reports under its "scale01" entry. Under this
+    convention the reported coefficients equal the published ones DIRECTLY (no
+    un-normalization factor; the old sum-of-squared-scales transform is gone):
 
-      * log-likelihood, ``parker`` correlation, ``segunpar`` : invariant
-      * beta   : reported / scale01         == published beta
-      * CovCOv : reported / scale01**2       == published variance
-      * scales : reported scale02 / scale01  == published scale01 (rel. scale);
-                 ``sum(scale_i**2) == 1``
+      * beta / parker / CovCOv / segunpar : reported == published (verbatim)
+      * published "scale01" (rel. alt-3 variance) == reported ``scale02``
+      * reported ``scale01`` == 1.0 (fixed row, SE = NaN — not compared)
 
-    SEs are not asserted here: under the new normalization they differ by the
-    data-dependent Jacobian and have no closed-form relation to the published
-    marginal SEs. SE *validity* (positive, finite) is checked; exact SE parity
-    against the published table is covered for the one unchanged normalization
-    by ``test_bhhh_unpar_matches_paper_iid_a1`` (IID). The function name is kept
-    for history; it now checks coefficient parity, not SE parity.
+    SEs are not asserted to match the published marginals param-by-param here;
+    SE *validity* (positive, finite) is checked for every estimated parameter.
+    (Empirically the BHHH SEs now also land on the published values to ~3 d.p.
+    because this IS the GAUSS reporting convention, but the function's contract
+    is coefficient parity.) Exact SE parity for IID is covered by
+    ``test_bhhh_unpar_matches_paper_iid_a1``. The function name is kept for
+    history; it now checks coefficient parity, not SE parity.
     """
     import numpy as np
 
@@ -212,39 +237,35 @@ def _assert_bhhh_se_parity(
     coef = dict(zip(results.param_names, results.b_original))
     se = dict(zip(results.param_names, results.se))
 
-    # New-normalization property: sum of squared kernel scales == 1.
-    scale_vals = [coef[n] for n in results.param_names if n.startswith("scale")]
-    assert scale_vals, f"{model_label}: no kernel scales reported"
-    ss = sum(s * s for s in scale_vals)
-    assert abs(ss - 1.0) < 1e-6, (
-        f"{model_label}: sum of squared scales = {ss:.6f}, expected 1.0"
+    # First-diff-var=1 property: scale01 is pinned to 1.0 (a fixed row, SE=NaN).
+    assert "scale01" in coef, f"{model_label}: scale01 not reported"
+    assert coef["scale01"] == pytest.approx(1.0, abs=1e-9), (
+        f"{model_label}: scale01 should be pinned to 1.0, got {coef['scale01']}"
     )
-
-    scale01 = coef["scale01"]  # first kernel scale (un-normalization factor)
+    assert np.isnan(se["scale01"]), (
+        f"{model_label}: SE for the fixed scale01 row should be NaN, "
+        f"got {se['scale01']}"
+    )
 
     for param, tdata in target["params"].items():
         if tdata["status"] != "estimated":
             continue
-        got = coef.get(param)
-        assert got is not None, f"{model_label}: param {param} missing from results"
-        s = se.get(param)
-        assert s is not None and np.isfinite(s) and s > 0, (
-            f"{model_label}: SE for {param} not positive-finite: {s}"
+        # The published table reports its relative alt-3 scale under "scale01";
+        # under first-diff-var=1 that maps to the reported ``scale02``.
+        result_key = "scale02" if param.startswith("scale") else param
+        got = coef.get(result_key)
+        assert got is not None, (
+            f"{model_label}: param {param} (->{result_key}) missing from results"
         )
-
-        if param.startswith("parker") or param == "segunpar":
-            expected, actual = tdata["coef"], got          # scale-invariant
-        elif param.startswith("scale"):
-            # published scale01 is the relative 2nd-alt scale (first=1);
-            # under sum-sq norm that equals scale02 / scale01.
-            expected, actual = tdata["coef"], coef["scale02"] / coef["scale01"]
-        elif param.startswith("CovCOv"):
-            expected, actual = tdata["coef"], got / (scale01 ** 2)
-        else:                                              # beta
-            expected, actual = tdata["coef"], got / scale01
+        s = se.get(result_key)
+        assert s is not None and np.isfinite(s) and s > 0, (
+            f"{model_label}: SE for {result_key} not positive-finite: {s}"
+        )
+        # All estimated parameters compare DIRECTLY to the published values.
+        expected, actual = tdata["coef"], got
         assert abs(actual - expected) < tol, (
-            f"{model_label} coef mismatch for {param}: un-normalized "
-            f"{actual:.4f}, published {expected:.4f}"
+            f"{model_label} coef mismatch for {param} (->{result_key}): "
+            f"reported {actual:.4f}, published {expected:.4f}"
         )
 
 

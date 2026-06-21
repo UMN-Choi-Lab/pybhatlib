@@ -27,12 +27,13 @@ SPEC_BASE = {
     "COST":   {"Alt1_ch": "COST_DA", "Alt2_ch": "COST_SR", "Alt3_ch": "COST_TR"},
 }
 
-# BHATLIB Table 1 Model (a)(ii) flexible: 5 betas + 2 scales + 1 corr = 8 params.
-# In theta-space:   [b0..b4, scale0, scale1, parker01]
-# parker01 is at index 7 (0-based).
-# For n_alts=3, dim=2: scales at idx 5,6 and corr at idx 7.
-FLEXIBLE_N_PARAMS = 8  # 5 betas + 2 scales + 1 corr
-PARKER01_IDX = 7  # theta-space index of the single correlation parameter
+# BHATLIB Table 1 Model (a)(ii) flexible under the GAUSS first-diff-var=1
+# kernel: 5 betas + (I-2)=1 free scale + 1 corr = 7 params (the first
+# differenced variance is pinned to 1, so only one scale is free/estimated).
+# In theta-space:   [b0..b4, scale02_raw, parker01]
+# For n_alts=3, dim=2: the single free scale is at idx 5 and corr at idx 6.
+FLEXIBLE_N_PARAMS = 7  # 5 betas + 1 free scale (I-2) + 1 corr
+PARKER01_IDX = 6  # theta-space index of the single correlation parameter
 
 
 # ---------------------------------------------------------------------------
@@ -81,17 +82,16 @@ def test_active_mask_no_mask_matches_baseline(travelmode_path):
 def test_active_mask_freezes_parker01(travelmode_path):
     """Freezing parker01 at 0.5 via active_mask keeps its value exact and SE=NaN."""
     # Build startb: run a quick IID fit to get betas, then manually set
-    # scales to 0 (exp(0)=1) and parker01 to 0.5.
+    # the single free scale to 0 (exp(0)=1) and parker01 to 0.5.
     startb = np.zeros(FLEXIBLE_N_PARAMS, dtype=np.float64)
     # betas: small init values
     startb[:5] = 0.0
-    # scales at indices 5,6: 0.0 → exp(0)=1
+    # single free scale at index 5: 0.0 → exp(0)=1
     startb[5] = 0.0
-    startb[6] = 0.0
-    # parker01 at index 7: set to 0.5 (frozen value)
+    # parker01 at index 6: set to 0.5 (frozen value)
     startb[PARKER01_IDX] = 0.5
 
-    # active_mask: freeze parker01 (index 7)
+    # active_mask: freeze parker01 (theta index 6)
     mask = np.ones(FLEXIBLE_N_PARAMS, dtype=bool)
     mask[PARKER01_IDX] = False
 
@@ -121,8 +121,11 @@ def test_active_mask_freezes_parker01(travelmode_path):
     # SE is in reporting space (b_original), but parker01 maps to
     # the first (and only) reporting-space correlation entry.
     # Find the index in b_original corresponding to parker01:
-    # For flexible IID=False model, _build_report_names gives:
-    #   [CON_SR, CON_TR, IVTT, OVTT, COST, parker01, scale01]
+    # For flexible IID=False model under the first-diff-var=1 kernel,
+    # _build_report_names gives:
+    #   [CON_SR, CON_TR, IVTT, OVTT, COST, parker01, scale01, scale02]
+    # where scale01 == 1.0 is itself a fixed row (SE=NaN). parker01 still
+    # leads the kernel block at report index 5.
     parker_report_idx = 5  # position of parker01 in report space
     assert np.isnan(results.se[parker_report_idx]), (
         f"SE for frozen parker01 should be NaN, got {results.se[parker_report_idx]}"
@@ -179,10 +182,11 @@ def test_frozen_se_is_nan(travelmode_path):
     startb = np.zeros(FLEXIBLE_N_PARAMS, dtype=np.float64)
     startb[PARKER01_IDX] = 0.5
 
-    # Freeze parker01 AND scale02 (theta index 6; scale01 is theta index 5)
+    # Freeze parker01 AND the single free scale.
+    # theta-space layout: betas[0..4], free_scale=5, parker01=6.
     mask = np.ones(FLEXIBLE_N_PARAMS, dtype=bool)
-    mask[6] = False          # freeze scale02
-    mask[PARKER01_IDX] = False  # freeze parker01
+    mask[5] = False             # freeze the free scale (reported as scale02)
+    mask[PARKER01_IDX] = False  # freeze parker01 (theta index 6)
 
     ctrl = MNPControl(
         iid=False,
@@ -201,14 +205,15 @@ def test_frozen_se_is_nan(travelmode_path):
     )
     results = model.fit()
 
-    # Frozen theta indices: 6 (scale02) and 7 (parker01).
-    # theta-space layout:  betas[0..4], scale01=5, scale02=6, parker01=7.
+    # Frozen theta indices: 5 (free scale) and 6 (parker01).
+    # theta-space layout:  betas[0..4], free_scale=5, parker01=6.
     # report-space layout: [CON_SR, CON_TR, IVTT, OVTT, COST, parker01,
-    #                       scale01, scale02]  (parker before scales).
+    #                       scale01, scale02]  (parker before scales;
+    #                       scale01 is the pinned first-diff-var=1 row).
     # So the theta->report map sends the *frozen* params to:
-    #   theta 7 (parker01) -> report idx 5
-    #   theta 6 (scale02)  -> report idx 7
-    # (theta 5 / scale01 is NOT frozen, so report idx 6 stays finite.)
+    #   theta 6 (parker01)    -> report idx 5
+    #   theta 5 (free scale)  -> report idx 7 (scale02)
+    # report idx 6 (scale01) is the pinned fixed row — always SE=NaN.
     for report_idx, label in [(5, "parker01"), (7, "scale02")]:
         assert np.isnan(results.se[report_idx]), (
             f"SE for frozen {label} should be NaN"

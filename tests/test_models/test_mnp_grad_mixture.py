@@ -98,11 +98,14 @@ class TestMixtureNLLConsistency:
         """nseg=2, flexible covariance: NLL from analytic matches mnp_loglik."""
         N, I, n_vars = 10, 3, 2
         X, y, avail = _make_data(N, I, n_vars)
-        # Layout: beta_1(2) + lambda(3) + seg_params(1) + beta_2(2) = 8
+        # GAUSS first-diff-var=1 kernel: dim=I-1=2, free scales = I-2 = 1
+        # (the first differenced variance is pinned to 1, not estimated).
+        # Layout: beta_1(2) + lambda(scale01 + corr01 = 2) + seg_params(1)
+        #         + beta_2(2) = 7
         control = MNPControl(iid=False, heteronly=False, nseg=2, method="me")
         n_params = count_params(n_vars, I, control)
-        assert n_params == 8
-        theta = np.array([0.3, -0.2, 0.1, 0.2, 0.0, 0.5, 0.1, -0.3])
+        assert n_params == 7
+        theta = np.array([0.3, -0.2, 0.1, 0.0, 0.5, 0.1, -0.3])
 
         nll_analytic, _ = mnp_analytic_gradient(
             theta, X, y, avail, I, n_vars, control,
@@ -198,8 +201,9 @@ class TestMixtureFlexibleGradient:
     def test_3alt_heteronly(self):
         N, I, n_vars = 10, 3, 2
         X, y, avail = _make_data(N, I, n_vars)
-        # Layout: beta_1(2) + scale(2) + seg_params(1) + beta_2(2) = 7
-        theta = np.array([0.3, -0.2, 0.1, 0.2, 0.5, 0.1, -0.3])
+        # GAUSS first-diff-var=1 heteronly kernel: free scales = I-2 = 1.
+        # Layout: beta_1(2) + scale02(1) + seg_params(1) + beta_2(2) = 6
+        theta = np.array([0.3, -0.2, 0.1, 0.5, 0.1, -0.3])
         control = MNPControl(iid=False, heteronly=True, nseg=2, method="me")
 
         nll, grad = mnp_analytic_gradient(
@@ -213,8 +217,9 @@ class TestMixtureFlexibleGradient:
     def test_3alt_full_cov(self):
         N, I, n_vars = 10, 3, 2
         X, y, avail = _make_data(N, I, n_vars)
-        # Layout: beta_1(2) + scale(2) + corr(1) + seg_params(1) + beta_2(2) = 8
-        theta = np.array([0.3, -0.2, 0.1, 0.2, 0.0, 0.5, 0.1, -0.3])
+        # GAUSS first-diff-var=1 kernel: free scales = I-2 = 1 (scale01 pinned).
+        # Layout: beta_1(2) + scale02(1) + corr(1) + seg_params(1) + beta_2(2) = 7
+        theta = np.array([0.3, -0.2, 0.1, 0.0, 0.5, 0.1, -0.3])
         control = MNPControl(iid=False, heteronly=False, nseg=2, method="me")
 
         nll, grad = mnp_analytic_gradient(
@@ -228,8 +233,10 @@ class TestMixtureFlexibleGradient:
     def test_4alt_full_cov(self):
         N, I, n_vars = 12, 4, 2
         X, y, avail = _make_data(N, I, n_vars, seed=77)
-        # Layout: beta_1(2) + scale(3) + corr(3) + seg_params(1) + beta_2(2) = 11
-        theta = np.array([0.3, -0.2, 0.1, 0.2, -0.1, 0.0, 0.0, 0.0, 0.5, 0.4, -0.1])
+        # GAUSS first-diff-var=1 kernel: dim=I-1=3, free scales = I-2 = 2
+        # (scale01 pinned), corr = dim*(dim-1)/2 = 3.
+        # Layout: beta_1(2) + scale(2) + corr(3) + seg_params(1) + beta_2(2) = 10
+        theta = np.array([0.3, -0.2, 0.2, -0.1, 0.0, 0.0, 0.0, 0.5, 0.4, -0.1])
         control = MNPControl(iid=False, heteronly=False, nseg=2, method="me")
 
         nll, grad = mnp_analytic_gradient(
@@ -325,16 +332,19 @@ class TestMixtureFlexibleMixedGradient:
         N, I, n_vars = 10, 3, 2
         X, y, avail = _make_data(N, I, n_vars, seed=33)
         ranvar_indices = [0, 1]
-        # Layout: beta_1(2) + scale(2) + corr(1) + omega_1(3) + seg_params(1) +
-        #         beta_2(2) + omega_2(3) = 14
+        # GAUSS first-diff-var=1 kernel: dim=I-1=2, free scales = I-2 = 1
+        # (scale01 pinned to 1). Layout per segment kernel is now
+        # scale02(1) + corr(1) = 2 (one fewer scale than the old convention).
+        # Layout: beta_1(2) + scale(1) + corr(1) + omega_1(3) + seg_params(1) +
+        #         beta_2(2) + omega_2(3) = 13
         control = MNPControl(
             iid=False, heteronly=False, mix=True, randdiag=False, nseg=2, method="me",
         )
         n_params = count_params(n_vars, I, control, ranvar_indices)
-        assert n_params == 14
+        assert n_params == 13
         theta = np.array([
             0.3, -0.2,         # beta_1
-            0.1, 0.2, 0.0,     # scale + corr
+            0.1, 0.0,          # scale02 + corr
             0.5, 0.1, 0.4,     # omega_1
             0.5,                # seg_param
             0.1, -0.3,         # beta_2
