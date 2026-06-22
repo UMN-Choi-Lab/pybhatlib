@@ -685,7 +685,8 @@ class MNPModel(BaseModel):
         # SCALES normalization (divide by trace, so trace(lambda_hat) == 1);
         # IID keeps the reference normalization (Sigma_diff[0,0] == 2).
         if self.control.iid:
-            scale_norm_sq = 2.0
+            Sigma_diff = np.ones((dim, dim)) + np.eye(dim)
+            scale_norm_sq = float(np.trace(Sigma_diff))
         else:
             Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
             scale_norm_sq = float(np.trace(Sigma_diff))
@@ -955,33 +956,36 @@ class MNPModel(BaseModel):
         # reporting the unparameterized wker and their SEs. IID kernels have no
         # free scales, so they keep the reference normalization
         # (sigma_1**2 == Sigma_diff[0,0] == 2; betas / sqrt(2)).
-        if self.control.iid:
-            scale_norm_sq = float(Sigma_diff[0, 0])
-        else:
-            scale_norm_sq = float(np.trace(Sigma_diff))
+        # Use TRACE-based overall-scale normalization for reporting for both
+        # IID and non-IID kernels (sum-of-squared-scales convention). This
+        # ensures reported kernel scales satisfy ``sum(wker**2) == 1`` even
+        # when the model is IID (no free scale params in theta-space).
+        scale_norm_sq = float(np.trace(Sigma_diff))
         scale_norm = np.sqrt(scale_norm_sq)
         report: list[float] = []
 
         # --- Betas ---
         report.extend(params["beta"] / scale_norm)
 
-        # --- Covariance parameters (non-IID) ---
-        if not self.control.iid:
-            Sigma_norm = Sigma_diff / scale_norm_sq  # trace(Sigma_norm) == 1
-            wker = np.sqrt(np.diag(Sigma_norm))      # scales; sum(wker**2) == 1
-            Corr_norm = Sigma_norm / np.outer(wker, wker)
+        # --- Covariance parameters (parkers) and kernel scales (wker) ---
+        # Compute normalized differenced covariance and derived scales.
+        Sigma_norm = Sigma_diff / scale_norm_sq  # trace(Sigma_norm) == 1
+        wker = np.sqrt(np.diag(Sigma_norm))      # scales; sum(wker**2) == 1
+        Corr_norm = Sigma_norm / np.outer(wker, wker)
 
-            if not self.control.heteronly:
-                for i in range(dim):
-                    for j in range(i + 1, dim):
-                        report.append(float(Corr_norm[i, j]))
-
-            # All (I-1) kernel scales (wker) are reported. Unlike the old
-            # reference normalization (first scale pinned to 1), every scale is
-            # now free up to the single sum-of-squares constraint, so each
-            # carries an estimated SE.
+        # Parker correlations are reported only for flexible (non-IID)
+        # models when they are estimated (heteronly controls whether off-
+        # diagonal parkers exist). For IID, parkers are not appended.
+        if not self.control.iid and not self.control.heteronly:
             for i in range(dim):
-                report.append(float(wker[i]))
+                for j in range(i + 1, dim):
+                    report.append(float(Corr_norm[i, j]))
+
+        # Always report the (I-1) kernel scales derived from Sigma_norm so
+        # that reported scales obey the sum-of-squares normalization even
+        # when the kernel is IID (these are derived, not theta-space params).
+        for i in range(dim):
+            report.append(float(wker[i]))
 
         # --- Random-coefficient Omega (variance/covariance entries) ---
         # GAUSS reference: MNP_TRAVELMODE.gss line 211 reports
@@ -1059,35 +1063,39 @@ class MNPModel(BaseModel):
             theta_idx += 1
             report_idx += 1
 
+        dim = self.n_alts - 1
+
+        # Determine counts for parker/report blocks. Parkers exist only when
+        # the model is non-IID and heteronly is False; scales are reported
+        # for both IID and non-IID models (derived for IID when absent in
+        # theta-space).
+        n_scale = dim
+        n_corr_theta = 0
         if not self.control.iid:
-            dim = self.n_alts - 1
+            # In theta-space parkers are present only for non-IID models
+            n_corr_theta = dim * (dim - 1) // 2 if not self.control.heteronly else 0
 
-            # --- Scale params in theta-space: scale01..scale0{dim} ---
-            # All dim scales are reported (sum-of-squared-scales norm); they
-            # map to report-space *after* all parker params, so we compute
-            # their report indices later.
-            n_scale = dim
-            scale_theta_start = theta_idx
-            theta_idx += n_scale  # advance past all scales
+        # Reserve report-space slots: parkers (reported only when non-IID)
+        # followed by all dim scales (always reported)
+        parker_report_count = 0 if self.control.iid else (dim * (dim - 1) // 2 if not self.control.heteronly else 0)
+        parker_report_start = report_idx
+        report_idx += parker_report_count
 
-            # --- Parker (correlations) in theta-space ---
-            n_corr = dim * (dim - 1) // 2 if not self.control.heteronly else 0
+        scale_report_start = report_idx
+        report_idx += n_scale
+
+        # If parker theta params exist, map them to report-space indices
+        if n_corr_theta > 0:
             parker_theta_start = theta_idx
-            theta_idx += n_corr
-
-            # In report space: parkers come first (after betas), then all dim
-            # scales.
-            parker_report_start = report_idx
-            report_idx += n_corr  # advance past parkers in report space
-
-            scale_report_start = report_idx
-            report_idx += dim  # all dim scales in report space
-
-            # Fill mapping for parkers: direct 1:1
-            for k in range(n_corr):
+            theta_idx += n_corr_theta
+            for k in range(n_corr_theta):
                 mapping[parker_theta_start + k] = parker_report_start + k
 
-            # Fill mapping for scales: direct 1:1 (none absorbed).
+        # If scale theta params exist (non-IID), map them; otherwise leave
+        # report-only scale slots unmapped (no theta -> report entry).
+        if not self.control.iid:
+            scale_theta_start = theta_idx
+            theta_idx += n_scale
             for k in range(n_scale):
                 mapping[scale_theta_start + k] = scale_report_start + k
 
@@ -1140,18 +1148,18 @@ class MNPModel(BaseModel):
         names = list(self.var_names)
         dim = self.n_alts - 1
 
-        if not self.control.iid:
-            # Parker (correlations)
-            if not self.control.heteronly:
-                idx = 0
-                for i in range(dim):
-                    for j in range(i + 1, dim):
-                        idx += 1
-                        names.append(f"parker{idx:02d}")
-
-            # All I-1 kernel scales (sum of squares == 1); none absorbed.
+        # Parker (correlations): only for non-IID flexible models
+        if not self.control.iid and not self.control.heteronly:
+            idx = 0
             for i in range(dim):
-                names.append(f"scale{i + 1:02d}")
+                for j in range(i + 1, dim):
+                    idx += 1
+                    names.append(f"parker{idx:02d}")
+
+        # All I-1 kernel scales (sum of squares == 1); report them for both
+        # IID and non-IID so the reporting convention is consistent.
+        for i in range(dim):
+            names.append(f"scale{i + 1:02d}")
 
         if self.control.mix and self.ranvar_indices is not None:
             n_rand = len(self.ranvar_indices)
