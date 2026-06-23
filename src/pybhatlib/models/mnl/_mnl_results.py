@@ -80,6 +80,60 @@ class MNLResults:
     data_path: str = ""
     message: str | None = None
 
+    @classmethod
+    def from_estimates(
+        cls,
+        beta: NDArray,
+        *,
+        param_names: list[str] | None = None,
+    ) -> "MNLResults":
+        """Construct a minimal ``MNLResults`` from externally supplied coefficients.
+
+        Intended for post-estimation use (e.g. computing ATEs from GAUSS
+        estimates) where a full fit object is not available.  All
+        estimation-specific fields (standard errors, test statistics,
+        log-likelihood, etc.) are filled with sentinel values (``nan`` or
+        ``0``) and should not be interpreted.
+
+        Parameters
+        ----------
+        beta : ndarray, shape (n_params,)
+            Slope coefficients in natural (non-transformed) space.
+        param_names : list[str] or None
+            Names for each element of *beta*.  Defaults to
+            ``["b1", "b2", ...]`` when not provided.
+
+        Returns
+        -------
+        MNLResults
+        """
+        beta = np.asarray(beta, dtype=np.float64).ravel()
+        n = len(beta)
+
+        names = param_names if param_names is not None else [f"b{i + 1}" for i in range(n)]
+
+        nan_vec  = np.full(n, np.nan)
+        nan_mat  = np.full((n, n), np.nan)
+
+        return cls(
+            b                 = beta,
+            se                = nan_vec.copy(),
+            t_stat            = nan_vec.copy(),
+            p_value           = nan_vec.copy(),
+            gradient          = nan_vec.copy(),
+            ll                = float("nan"),
+            ll_total          = float("nan"),
+            n_obs             = 0,
+            param_names       = list(names),
+            corr_matrix       = nan_mat.copy(),
+            cov_matrix        = nan_mat.copy(),
+            n_iterations      = 0,
+            convergence_time  = 0.0,
+            converged         = False,
+            return_code       = -1,
+            control           = None,
+        )
+
     def summary(self) -> str:
         """Print formatted estimation results.
 
