@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -102,3 +104,77 @@ class TestMNLSeMethod:
             assert np.all(np.isfinite(results.se))
             assert np.all(results.se >= 0.0)
             assert np.isfinite(results.ll)
+
+
+class TestMNLRegression:
+    def test_covariance_methods_agree_at_converged_optimum(
+        self,
+        synthetic_mnl_data: pd.DataFrame,
+    ):
+        fit_results = []
+        for method in ("bhhh", "hessian", "sandwich"):
+            results = _fit_mnl(
+                synthetic_mnl_data,
+                se_method=method,
+                optimizer="newton",
+                analytic_grad=True,
+                analytic_hess=True,
+            )
+            assert results.converged is True
+            fit_results.append(results)
+
+        np.testing.assert_allclose(
+            fit_results[0].cov_matrix,
+            fit_results[1].cov_matrix,
+            rtol=0.05,
+            atol=0.06,
+        )
+        np.testing.assert_allclose(
+            fit_results[1].cov_matrix,
+            fit_results[2].cov_matrix,
+            rtol=0.05,
+            atol=0.06,
+        )
+
+    def test_published_workshop_log_likelihood(self):
+        data_path = (
+            Path(__file__).resolve().parents[2]
+            / "examples"
+            / "data"
+            / "modeData.csv"
+        )
+        data = pd.read_csv(data_path)
+
+        data["MODE1"] = (data["chosen"] == 1).astype(int)
+        data["MODE2"] = (data["chosen"] == 2).astype(int)
+        data["MODE3"] = (data["chosen"] == 3).astype(int)
+        data["UNO"] = 1
+        data["SERO"] = 0
+
+        alternatives = ["MODE1", "MODE2", "MODE3"]
+        spec = {
+            "ASC_AIR": {"MODE1": "SERO", "MODE2": "UNO", "MODE3": "SERO"},
+            "ASC_RAIL": {"MODE1": "SERO", "MODE2": "SERO", "MODE3": "UNO"},
+            "IVTT": {"MODE1": "IVTT_CAR", "MODE2": "IVTT_AIR", "MODE3": "IVTT_RAIL"},
+            "OVTT": {"MODE1": "SERO", "MODE2": "OVTT_AIR", "MODE3": "OVTT_RAIL"},
+            "FREQ": {"MODE1": "SERO", "MODE2": "FREQ_AIR", "MODE3": "FREQ_RAIL"},
+            "COST": {"MODE1": "TCCAR", "MODE2": "TCAIR", "MODE3": "TCRAIL"},
+            "FEM_AIR": {"MODE1": "SERO", "MODE2": "FEMSEX", "MODE3": "SERO"},
+            "FEM_RAIL": {"MODE1": "SERO", "MODE2": "SERO", "MODE3": "FEMSEX"},
+        }
+
+        results = MNLModel(
+            data=data,
+            alternatives=alternatives,
+            spec=spec,
+            control=MNLControl(
+                verbose=0,
+                maxiter=100,
+                optimizer="newton",
+                analytic_grad=True,
+                analytic_hess=True,
+            ),
+        ).fit()
+
+        assert results.converged is True
+        assert results.ll_total == pytest.approx(-2392.9286, abs=1e-4)

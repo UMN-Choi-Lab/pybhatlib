@@ -231,6 +231,7 @@ class MNLModel(BaseModel):
         ll_total = float(ll_obs_final.sum())
         ll_mean  = ll_total / n_obs
 
+        # Use the mean per-observation gradient for convergence and reporting.
         g_final = mnl_gradient(
             x_opt, dta, indxivunord, davunord, dvunord, nc, numunord,
         ).mean(axis=0)
