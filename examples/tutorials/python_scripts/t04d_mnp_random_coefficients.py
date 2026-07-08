@@ -137,11 +137,11 @@ print("\n" + "=" * 60)
 print("  Step 3: Interpreting Results")
 print("=" * 60)
 
-# Report BHATLIB-normalized values (results.b_original) so output matches the
-# GAUSS BHATLIB reference and the published paper tables. results.params holds
-# the raw theta-space values used internally by the optimizer/predictor (under
-# IID they differ from b_original by a factor of 1/sqrt(2)).
-print("\n  Estimated coefficients (BHATLIB-normalized — match GAUSS output):")
+# pybhatlib reports on the GAUSS first-differenced-variance=1 scale, so
+# results.b_original (the readable reported view) and results.params share one
+# scale and are equal for the mean coefficients. We DISPLAY b_original: it
+# spells out the readable kernel block and is aligned with the std errors / t / p.
+print("\n  Estimated coefficients (match GAUSS output):")
 print(f"    {'Parameter':<25s} {'Estimate':>10s} {'StdErr':>10s} "
       f"{'t-stat':>9s} {'p-val':>8s}")
 print("    " + "-" * 64)

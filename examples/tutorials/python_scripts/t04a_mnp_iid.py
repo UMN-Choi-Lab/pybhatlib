@@ -10,8 +10,7 @@ What you will learn:
   - How the differenced covariance matrix Sigma_diff is constructed
   - How to set up and estimate an IID MNP model with MNPControl(iid=True)
   - How to read the estimated coefficients from results.b_original
-    (BHATLIB-normalized; matches GAUSS output) vs results.params
-    (raw theta-space, used internally for prediction)
+    (the readable reported view, with the kernel scales spelled out)
   - How to compute an Average Treatment Effect (ATE) on predicted mode
     shares with the scenarios= API of mnp_ate
   - When to use (and not use) the IID specification
@@ -128,11 +127,12 @@ print("\n" + "=" * 60)
 print("  Step 3: Interpreting Results")
 print("=" * 60)
 
-# Report BHATLIB-normalized coefficients (Sigma_diff[0,0]=1) so output
-# matches the GAUSS BHATLIB reference and the published paper tables.
-# `results.params` holds the raw theta-space values used internally by
-# the optimizer/predictor (differs by sqrt(Sigma_diff[0,0]) under IID).
-print("\n  Estimated coefficients (BHATLIB-normalized — match GAUSS output):")
+# pybhatlib reports on the GAUSS first-differenced-variance=1 scale, so
+# results.b_original (the readable reported view) and results.params share
+# one scale; for the mean coefficients they are equal. Use b_original for
+# reporting: it carries the readable kernel block and is aligned with the
+# standard errors / t / p.
+print("\n  Estimated coefficients (match GAUSS output):")
 for name, val, se, t, p in zip(
     results.param_names, results.b_original, results.se, results.t_stat, results.p_value
 ):

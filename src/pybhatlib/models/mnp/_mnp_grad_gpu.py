@@ -79,10 +79,10 @@ def mnp_gradient_gpu(
     lambda_params = None
     if not control.iid:
         if control.heteronly:
-            n_scale = dim
+            n_scale = max(dim - 1, 0)
             n_lambda = n_scale
         else:
-            n_scale = dim
+            n_scale = max(dim - 1, 0)
             n_corr = dim * (dim - 1) // 2
             n_lambda = n_scale + n_corr
         lambda_params = theta[idx:idx + n_lambda]
@@ -121,9 +121,12 @@ def mnp_gradient_gpu(
     if has_random:
         Omega_L_np, Omega_np = _build_omega_components(omega_params, n_rand, control)
 
-    Lambda_full_np = np.eye(I, dtype=np.float64)
-    if not control.iid:
-        Lambda_full_np[1:, 1:] = Lambda_np + np.eye(dim)
+    # GAUSS homogeneous form: embed the differenced kernel covariance as
+    # covker = blockdiag(0, K) (covker[0,0]=0, K[0,0]=1 pinned). K is the
+    # _build_lambda_components output and is valid for IID too (=0.5*(eye+ones)).
+    # No +ones/+eye floor — that fixed term broke scale-homogeneity.
+    Lambda_full_np = np.zeros((I, I), dtype=np.float64)
+    Lambda_full_np[1:, 1:] = Lambda_np
 
     need_sigma_chain = (not control.iid) or has_random
 
@@ -280,10 +283,10 @@ def _mixture_gradient_gpu(
     n_lambda = 0
     if not control.iid:
         if control.heteronly:
-            n_scale = dim
+            n_scale = max(dim - 1, 0)
             n_lambda = n_scale
         else:
-            n_scale = dim
+            n_scale = max(dim - 1, 0)
             n_corr = dim * (dim - 1) // 2
             n_lambda = n_scale + n_corr
 
@@ -317,9 +320,12 @@ def _mixture_gradient_gpu(
         corr_theta = lambda_params[n_scale:n_scale + n_corr]
         corr_jac = grad_corr_theta(corr_theta, dim)
 
-    Lambda_full_np = np.eye(I, dtype=np.float64)
-    if not control.iid:
-        Lambda_full_np[1:, 1:] = Lambda_np + np.eye(dim)
+    # GAUSS homogeneous form: embed the differenced kernel covariance as
+    # covker = blockdiag(0, K) (covker[0,0]=0, K[0,0]=1 pinned). K is the
+    # _build_lambda_components output and is valid for IID too (=0.5*(eye+ones)).
+    # No +ones/+eye floor — that fixed term broke scale-homogeneity.
+    Lambda_full_np = np.zeros((I, I), dtype=np.float64)
+    Lambda_full_np[1:, 1:] = Lambda_np
 
     need_sigma_chain = not control.iid
 

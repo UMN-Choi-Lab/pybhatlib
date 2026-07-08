@@ -8,9 +8,9 @@ What you will learn:
   - heteronly=True: different error variances, zero correlations
   - How to compare IID vs heteronly vs full covariance models
   - Model selection: when each specification is appropriate
-  - Reporting GAUSS/BHATLIB-normalized coefficients (results.b_original)
+  - Reporting the fitted coefficients (results.b_original)
     with std errors / t / p
-  - The sum-of-squared-scales identification (sum(scale^2) = 1)
+  - The first-differenced-variance=1 scale identification (scale01 = 1.0)
 
 GAUSS / paper cross-check (BHATLIB Table 1):
   - Model (a)(i)  IID      : LL = -670.956
@@ -42,12 +42,13 @@ spec = {
 
 
 def print_coefs(res):
-    """Print GAUSS/BHATLIB-normalized coefficients with std errors / t / p.
+    """Print the fitted coefficients with std errors / t / p.
 
-    For MNP, results.b_original holds the BHATLIB-normalized estimates that
-    match GAUSS and the published paper tables (results.params is the raw
-    theta-space vector used internally for prediction; under IID the two
-    differ by a factor of 1/sqrt(2)). Always REPORT b_original.
+    pybhatlib reports on the GAUSS first-differenced-variance=1 scale, so
+    results.b_original (the readable reported view) and results.params share
+    one scale and are equal for the mean coefficients. Report b_original: it
+    spells out the readable kernel block (parker / scale rows) and is aligned
+    with the standard errors / t / p.
     """
     print(f"\n  {'Parameter':<12s} {'Estimate':>10s} {'Std.Err':>10s}"
           f" {'t-stat':>9s} {'p-value':>9s}")
@@ -174,7 +175,7 @@ print(f"  LR test full vs heteronly: LR={lr_full:.3f}, df={df_full},"
       f" p={chi2.sf(lr_full, df_full):.4f}")
 
 # ============================================================
-#  Step 5: Scale identification (sum-of-squared-scales = 1)
+#  Step 5: Scale identification (first differenced variance = 1)
 # ============================================================
 print("\n" + "=" * 60)
 print("  Step 5: Heteroscedastic Scale Identification")
@@ -183,16 +184,17 @@ print("=" * 60)
 print("""
 The MNP likelihood depends only on UTILITY DIFFERENCES, so the overall
 scale and one variance of the error vector are not identified. PyBhatLib
-fixes this with the sum-of-squared-scales normalization:
+fixes this with the GAUSS first-differenced-variance=1 normalization:
+the first differenced error variance is pinned to 1, i.e.
 
-      sum_i scale_i^2 = 1
+      lambda_hat[0, 0] = 1   <=>   scale01 = 1.0
 
-For the heteroscedastic-only kernel the scale parameters (scale01,
-scale02, ...) are exactly the per-alternative standard deviations of the
-DIFFERENCED error vector, with this unit-sum-of-squares constraint
-applied. This is the modern default (see the IID tutorial's note that
-under IID b_original and params differ by 1/sqrt(2)); it keeps the
-reported scales directly comparable across specifications.
+scale01 is therefore a FIXED row in the reported coefficients (SE=NaN);
+the remaining scale parameters (scale02, ...) are freely estimated on
+that homogeneous kernel scale, with scale_i = sqrt(lambda_hat[i, i]).
+This is the modern default and is the same identification PyBhatLib uses
+for the flexible kernel, so the reported scales are directly comparable
+across specifications.
 """)
 
 scale_names = [n for n in res_het.param_names if n.startswith("scale")]
@@ -201,8 +203,9 @@ scales = res_het.b_original[scale_idx]
 
 print(f"  Reported scale parameters : {scale_names}")
 print(f"  Scale estimates           : {scales}")
-print(f"  sum(scale^2)              : {np.sum(scales ** 2):.6f}")
-print(f"  Normalization holds (==1) : {np.isclose(np.sum(scales ** 2), 1.0)}")
+print(f"  scale01 (pinned to 1.0)   : {scales[0]:.6f}")
+print(f"  lambda_hat[0,0] (==1)     : {res_het.lambda_hat[0, 0]:.6f}")
+print(f"  Normalization holds       : {np.isclose(res_het.lambda_hat[0, 0], 1.0)}")
 
 print("\n  Differenced kernel covariance (lambda_hat):")
 print(res_het.lambda_hat)

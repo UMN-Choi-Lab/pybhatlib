@@ -55,11 +55,11 @@ results = model.fit()
 print(f"\n  GAUSS / paper reference LL : -670.956")
 print(f"  PyBhatLib LL               : {results.loglik * results.n_obs:.3f}")
 
-# results.b_original is the BHATLIB-normalized reporting view (matches GAUSS
-# and the published tables). results.params is the raw theta-space vector that
-# the predictor consumes downstream (under IID the two differ by 1/sqrt(2));
-# both are kept on the results object for distinct purposes. ALWAYS report
-# b_original, never params.
+# results.b_original is the readable reported view (matches GAUSS and the
+# published tables). pybhatlib reports on the GAUSS first-differenced-
+# variance=1 scale, so b_original and results.params share one scale and are
+# equal for the mean coefficients; report b_original because it additionally
+# spells out the readable kernel block (parker / scale rows).
 print(f"\n  {'Parameter':<12s} {'Estimate':>10s} {'Std.Err':>10s} "
       f"{'t-stat':>8s} {'p-value':>8s}")
 print(f"  {'-' * 50}")

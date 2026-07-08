@@ -680,26 +680,19 @@ class MNPModel(BaseModel):
         )
         dim = self.n_alts - 1
 
-        # Overall-scale normalizer for the reported structural matrices.
-        # Matches _unpar_to_report: non-IID kernels use the SUM-OF-SQUARED-
-        # SCALES normalization (divide by trace, so trace(lambda_hat) == 1);
-        # IID keeps the reference normalization (Sigma_diff[0,0] == 2).
-        if self.control.iid:
-            scale_norm_sq = 2.0
-        else:
-            Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
-            scale_norm_sq = float(np.trace(Sigma_diff))
-
-        if not self.control.iid and "lambda_params" in params:
-            Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
-            lambda_hat = Sigma_diff / scale_norm_sq  # normalized
+        # GAUSS homogeneous "first-differenced-variance = 1" form: the reported
+        # kernel covariance IS the differenced kernel K returned by _build_lambda
+        # (K[0,0] == 1 pinned). No overall-scale renormalization is applied —
+        # betas and Omega are reported on the raw (GAUSS/reported) scale.
+        # For IID the kernel is the frozen GAUSS startker (K[0,0] == 1 too).
+        lambda_hat = Lambda  # K, with lambda_hat[0,0] == 1
 
         if self.control.mix and self.ranvar_indices and "omega_params" in params:
             L_raw = _build_omega_cholesky(
                 params["omega_params"], self.ranvar_indices, self.control,
             )
-            cholesky_L = L_raw / np.sqrt(scale_norm_sq)
-            omega_hat = cholesky_L @ cholesky_L.T
+            cholesky_L = L_raw
+            omega_hat = L_raw @ L_raw.T
 
         if self.control.nseg > 1:
             seg_params = params.get("segment_params", np.array([]))
@@ -746,8 +739,9 @@ class MNPModel(BaseModel):
 
         if not self.control.iid:
             dim = self.n_alts - 1
-            # Scales: start at 0 (exp(0)=1)
-            n_scale = dim
+            # GAUSS homogeneous form: I-2 FREE scales (first diff variance pinned
+            # to 1). Free scales start at 0 (exp(0)=1).
+            n_scale = max(dim - 1, 0)
             theta0[idx:idx + n_scale] = 0.0
             idx += n_scale
             # Correlations: start at moderate positive correlation
@@ -900,26 +894,23 @@ class MNPModel(BaseModel):
     def _unpar_to_report(self, theta_unpar: np.ndarray) -> np.ndarray:
         """Map unparameterized theta to the MNP reporting convention.
 
-        For non-IID kernels the differenced error covariance is normalized so
-        that the SUM OF SQUARED SCALES equals 1 (``trace(Sigma_diff) == 1``),
-        matching the GAUSS likelihood normalization
-        ``wker = sqrt(logitmod(xscalker))``. All betas are divided by
-        ``scale_norm = sqrt(trace(Sigma_diff))``; the kernel block reports the
-        (scale-invariant) correlations (``parker``) and all I-1 scales
-        (``scale``, with ``sum(scale**2) == 1``); the random-coefficient block
-        reports the Omega variance/covariance entries divided by
-        ``scale_norm**2``. IID kernels have no free scales and keep the
-        reference normalization (``scale_norm**2 == Sigma_diff[0,0] == 2``).
+        GAUSS homogeneous "first-differenced-variance = 1" form (lpr1): the
+        reported kernel covariance IS the differenced kernel ``K`` with
+        ``K[0,0] == 1`` PINNED. No overall-scale renormalization is applied:
+
+          - betas are reported RAW (the GAUSS/reported scale);
+          - the kernel block reports the raw correlations (``parker``) followed
+            by the I-1 scales, where ``scale01`` is LITERALLY 1.0 (pinned, no
+            free theta column) and ``scale0k = sqrt(K[k-1, k-1])`` for k >= 2;
+          - the random-coefficient Omega entries are reported RAW.
 
         Notes
         -----
-        This is the only Jacobian step we keep on the SE path: a single
-        scalar normalization (``scale_norm``) per block. It is NOT the
-        delta-method through the spherical-Cholesky parameterization that
-        the MNP-002 SE machinery used; the unparameterized theta and the
-        reporting theta are identical except for the scale_norm scaling, and
-        the Jacobian of that scaling is computed in closed form by finite
-        differencing this function only.
+        Because no scalar normalization survives, the Jacobian of this map
+        (``J_norm``) is an identity/selection: every reported entry except the
+        pinned ``scale01`` corresponds 1:1 to an unparameterized theta entry,
+        and ``scale01`` has no theta column (its SE is therefore NaN). This
+        makes ``cov_report == cov_unpar`` on the free block.
         """
         from pybhatlib.models.mnp._mnp_loglik import (
             _build_lambda_direct,
@@ -936,59 +927,33 @@ class MNPModel(BaseModel):
         )
         dim = self.n_alts - 1
 
-        # Differenced kernel error covariance: Sigma_diff = ones + Lambda + I
-        # (formula matches the parameterized path; identical at convergence
-        # by construction, because _param_to_unpar preserves Lambda exactly).
-        if self.control.iid:
-            Sigma_diff = np.ones((dim, dim)) + np.eye(dim)
-        else:
-            Sigma_diff = np.ones((dim, dim)) + Lambda + np.eye(dim)
-
-        # --- Overall-scale normalization ---------------------------------
-        # For non-IID kernels the scales are normalized so the SUM OF SQUARED
-        # SCALES across the (I-1) differenced alternatives equals 1 — i.e.
-        # divide Sigma_diff by its TRACE. This reproduces the GAUSS likelihood
-        # normalization ``wker = sqrt(logitmod(xscalker))`` (softmax, so
-        # sum(wker**2) == 1), applied here at the reporting layer: the
-        # maximized log-likelihood is invariant to the overall error scale, so
-        # this leaves the fit and every published LL target unchanged while
-        # reporting the unparameterized wker and their SEs. IID kernels have no
-        # free scales, so they keep the reference normalization
-        # (sigma_1**2 == Sigma_diff[0,0] == 2; betas / sqrt(2)).
-        if self.control.iid:
-            scale_norm_sq = float(Sigma_diff[0, 0])
-        else:
-            scale_norm_sq = float(np.trace(Sigma_diff))
-        scale_norm = np.sqrt(scale_norm_sq)
         report: list[float] = []
 
-        # --- Betas ---
-        report.extend(params["beta"] / scale_norm)
+        # --- Betas (raw) ---
+        report.extend(params["beta"])
 
-        # --- Covariance parameters (non-IID) ---
+        # --- Kernel covariance parameters (non-IID) ---
+        # K = W1 @ corr @ W1, W1 = diag(scales). Report parker (raw
+        # correlations) then scales; scale01 == 1.0 by construction.
         if not self.control.iid:
-            Sigma_norm = Sigma_diff / scale_norm_sq  # trace(Sigma_norm) == 1
-            wker = np.sqrt(np.diag(Sigma_norm))      # scales; sum(wker**2) == 1
-            Corr_norm = Sigma_norm / np.outer(wker, wker)
-
+            scales = np.sqrt(np.clip(np.diag(Lambda), 0.0, None))  # scale01 == 1
             if not self.control.heteronly:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    Corr = Lambda / np.outer(scales, scales)
                 for i in range(dim):
                     for j in range(i + 1, dim):
-                        report.append(float(Corr_norm[i, j]))
+                        report.append(float(Corr[i, j]))
 
-            # All (I-1) kernel scales (wker) are reported. Unlike the old
-            # reference normalization (first scale pinned to 1), every scale is
-            # now free up to the single sum-of-squares constraint, so each
-            # carries an estimated SE.
+            # All (I-1) kernel scales. scale01 is the pinned literal 1.0;
+            # scale02.. are the free scales sqrt(K[i,i]).
             for i in range(dim):
-                report.append(float(wker[i]))
+                report.append(float(scales[i]))
 
-        # --- Random-coefficient Omega (variance/covariance entries) ---
+        # --- Random-coefficient Omega (variance/covariance entries, raw) ---
         # GAUSS reference: MNP_TRAVELMODE.gss line 211 reports
         # ``vecdup(newcorker' * newcorker)`` — i.e., upper-tri (with diag)
         # of Omega. This makes ``CovCOv01`` the variance of the random
-        # coefficient (not its standard deviation), matching the BHATLIB
-        # paper's Table 2 fixture.
+        # coefficient (not its standard deviation).
         if (
             self.control.mix
             and self.ranvar_indices is not None
@@ -997,15 +962,14 @@ class MNPModel(BaseModel):
             Omega = _build_omega_direct(
                 params["omega_params"], self.ranvar_indices, self.control,
             )
-            Omega_norm = Omega / scale_norm_sq
             n_rand = len(self.ranvar_indices)
             if self.control.randdiag:
                 for i in range(n_rand):
-                    report.append(float(Omega_norm[i, i]))
+                    report.append(float(Omega[i, i]))
             else:
                 for i in range(n_rand):
                     for j in range(i, n_rand):
-                        report.append(float(Omega_norm[i, j]))
+                        report.append(float(Omega[i, j]))
 
         # --- Segment parameters ---
         if self.control.nseg > 1:
@@ -1014,9 +978,7 @@ class MNPModel(BaseModel):
 
             for h in range(1, self.control.nseg):
                 if h - 1 < len(params.get("segment_betas", [])):
-                    report.extend(
-                        (params["segment_betas"][h - 1] / scale_norm).tolist()
-                    )
+                    report.extend(params["segment_betas"][h - 1].tolist())
                 if (
                     self.control.mix
                     and self.ranvar_indices is not None
@@ -1027,15 +989,14 @@ class MNPModel(BaseModel):
                         self.ranvar_indices,
                         self.control,
                     )
-                    Omega_h_norm = Omega_h / scale_norm_sq
                     n_rand = len(self.ranvar_indices)
                     if self.control.randdiag:
                         for i in range(n_rand):
-                            report.append(float(Omega_h_norm[i, i]))
+                            report.append(float(Omega_h[i, i]))
                     else:
                         for i in range(n_rand):
                             for j in range(i, n_rand):
-                                report.append(float(Omega_h_norm[i, j]))
+                                report.append(float(Omega_h[i, j]))
 
         return np.array(report, dtype=np.float64)
 
@@ -1062,13 +1023,13 @@ class MNPModel(BaseModel):
         if not self.control.iid:
             dim = self.n_alts - 1
 
-            # --- Scale params in theta-space: scale01..scale0{dim} ---
-            # All dim scales are reported (sum-of-squared-scales norm); they
-            # map to report-space *after* all parker params, so we compute
-            # their report indices later.
-            n_scale = dim
+            # --- FREE scale params in theta-space: I-2 free scales ---
+            # GAUSS homogeneous form: scale01 is PINNED (no theta column); the
+            # theta block carries only I-2 free scales (scale02..scale0{dim}).
+            # Theta layout: [betas, free_scales(I-2), parkers(n_corr)].
+            n_free_scale = max(dim - 1, 0)
             scale_theta_start = theta_idx
-            theta_idx += n_scale  # advance past all scales
+            theta_idx += n_free_scale  # advance past free scales
 
             # --- Parker (correlations) in theta-space ---
             n_corr = dim * (dim - 1) // 2 if not self.control.heteronly else 0
@@ -1076,20 +1037,22 @@ class MNPModel(BaseModel):
             theta_idx += n_corr
 
             # In report space: parkers come first (after betas), then all dim
-            # scales.
+            # scales (scale01 pinned, then I-2 free scales).
             parker_report_start = report_idx
             report_idx += n_corr  # advance past parkers in report space
 
             scale_report_start = report_idx
-            report_idx += dim  # all dim scales in report space
+            report_idx += dim  # all dim scales (incl. pinned scale01) in report
 
             # Fill mapping for parkers: direct 1:1
             for k in range(n_corr):
                 mapping[parker_theta_start + k] = parker_report_start + k
 
-            # Fill mapping for scales: direct 1:1 (none absorbed).
-            for k in range(n_scale):
-                mapping[scale_theta_start + k] = scale_report_start + k
+            # Fill mapping for FREE scales: theta free-scale k -> report
+            # scale0{k+2} (report scale_report_start is the PINNED scale01,
+            # which has NO theta column, so free scales start at offset +1).
+            for k in range(n_free_scale):
+                mapping[scale_theta_start + k] = scale_report_start + 1 + k
 
         # --- Random-coefficient Cholesky params ---
         if self.control.mix and self.ranvar_indices is not None:
@@ -1628,6 +1591,21 @@ class MNPModel(BaseModel):
             g_report = np.linalg.pinv(J_par_to_report).T @ gradient
         else:
             g_report = np.zeros(n_report)
+
+        # ------------------------------------------------------------------
+        # Pinned kernel scale01 (GAUSS homogeneous form): the first differenced
+        # scale is fixed at 1.0 by construction (no free theta column), so its
+        # SE/t-stat/p-value are NaN. Its report index is n_beta + n_corr
+        # (betas, then parkers, then scale01 leads the scale block).
+        # ------------------------------------------------------------------
+        if not self.control.iid:
+            dim = self.n_alts - 1
+            n_corr = dim * (dim - 1) // 2 if not self.control.heteronly else 0
+            scale01_ri = self.n_beta + n_corr
+            if scale01_ri < len(se):
+                se[scale01_ri] = np.nan
+                t_stat[scale01_ri] = np.nan
+                p_value[scale01_ri] = np.nan
 
         # ------------------------------------------------------------------
         # MNP-003: mark SE/t-stat/p-value as NaN for frozen report params.

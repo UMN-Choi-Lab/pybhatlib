@@ -162,7 +162,11 @@ def test_mnp_from_estimates_heteronly_roundtrip():
     from pybhatlib.models.mnp._mnp_loglik import _build_lambda
 
     ctrl = MNPControl(iid=False, heteronly=True)
-    Lambda = np.diag([1.3 ** 2, 0.9 ** 2])
+    # GAUSS first-diff-var=1 kernel: the first differenced variance K[0,0] is
+    # pinned to 1.0; only the remaining I-2 scales are free. For I=3 the only
+    # free heteronly scale is K[1,1]. The encoded kernel must therefore have
+    # K[0,0] == 1.
+    Lambda = np.diag([1.0, 0.9 ** 2])
     res = MNPResults.from_estimates(np.array([0.1, 0.2]), kernel_cov=Lambda,
                                     control=ctrl, n_alts=I)
     np.testing.assert_allclose(_build_lambda(res.params[2:], I, ctrl), Lambda, atol=1e-10)

@@ -152,8 +152,22 @@ def test_bhhh_se_unchanged_by_analytic_scores(travelmode_path, monkeypatch, iid)
 
     se_a = res_analytic.se
     se_f = res_fd.se
-    assert np.all(np.isfinite(se_a)) and np.all(np.isfinite(se_f))
-    assert np.allclose(se_a, se_f, rtol=1e-4, atol=1e-6), (
+
+    # Under the GAUSS first-diff-var=1 kernel the flexible model reports a FIXED
+    # scale01 row (pinned to 1.0) whose SE is NaN by design. Both the analytic
+    # and FD score paths must agree on which entries are fixed (same NaN mask),
+    # and the SEs of all *estimated* parameters must match. We compare the
+    # finite entries only; the NaN pattern itself is asserted to be identical.
+    nan_a = np.isnan(se_a)
+    nan_f = np.isnan(se_f)
+    assert np.array_equal(nan_a, nan_f), (
+        f"iid={iid}: analytic/FD disagree on fixed (NaN-SE) parameters: "
+        f"analytic NaN at {np.where(nan_a)[0]}, FD NaN at {np.where(nan_f)[0]}"
+    )
+    finite = ~nan_a
+    assert finite.any(), f"iid={iid}: no finite SEs to compare"
+    assert np.all(np.isfinite(se_a[finite])) and np.all(np.isfinite(se_f[finite]))
+    assert np.allclose(se_a[finite], se_f[finite], rtol=1e-4, atol=1e-6), (
         f"iid={iid}: max rel Δ = "
-        f"{np.max(np.abs(se_a - se_f) / np.maximum(np.abs(se_f), 1e-12)):.2e}"
+        f"{np.max(np.abs(se_a[finite] - se_f[finite]) / np.maximum(np.abs(se_f[finite]), 1e-12)):.2e}"
     )

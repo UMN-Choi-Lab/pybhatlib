@@ -7,7 +7,7 @@ This tutorial walks through estimation, interpretation, and model comparison.
 What you will learn:
   - Flexible covariance parameterization: Omega = omega * Omega_star * omega
   - Spherical coordinates for positive-definite correlation matrices
-  - Reading the BHATLIB-normalized coefficient table (b_original, se, t, p)
+  - Reading the reported coefficient table (b_original, se, t, p)
   - The UNPARAMETERIZED kernel correlation (no 2*atanh transform)
   - How to read the differenced covariance Lambda (lambda_hat)
   - Likelihood ratio test: IID vs flexible covariance
@@ -110,20 +110,23 @@ print("  Step 3: Coefficient Table & Kernel Correlation")
 print("=" * 60)
 
 print("""
-  Report the fitted model using the BHATLIB/GAUSS-normalized
-  estimates (results.b_original), NOT the raw theta-space
-  results.params.  Under the flexible covariance identification
-  the kernel error covariance is normalized so that the first
-  differenced variance equals 1; b_original is aligned with
-  param_names and carries the standard errors, t-stats, and
-  p-values from the delta method.
+  Report the fitted model using results.b_original, the readable
+  reported view of the estimates.  pybhatlib reports on the GAUSS
+  first-differenced-variance=1 scale: the kernel is identified by
+  pinning the first differenced error variance to 1, so the reported
+  scale01 is fixed at 1.0 (a pinned row, SE=NaN).  results.b_original
+  and results.params share one scale and are equal for the mean
+  coefficients; b_original additionally spells out the readable kernel
+  block, is aligned with param_names, and carries the standard errors,
+  t-stats, and p-values from the delta method.
 
   The covariance block of b_original contains:
     parker01  = the UNPARAMETERIZED kernel correlation.  This is
                 reported directly (no 2*atanh re-parameterization),
                 so it reads as an ordinary correlation in [-1, 1].
-    scale01,  = error standard-deviation scales (one alternative's
-    scale02     scale is absorbed by the variance normalization).
+    scale01,  = error standard-deviation scales.  scale01 = 1.0 is
+    scale02     the pinned first differenced variance (SE=NaN);
+                scale02 = sqrt(Lambda[1,1]) is freely estimated.
 """)
 
 print(f"  {'Parameter':<12s} {'Estimate':>10s} {'Std.err':>10s} "
