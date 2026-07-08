@@ -42,6 +42,25 @@ def _fit_iid(travelmode_path: str, se_method: str):
     return model.fit()
 
 
+def _assert_estimated_se_ok(results):
+    """Estimated SEs must be positive & finite.
+
+    Since PR #43, IID models also report the derived kernel scales
+    (``scale0x``); these are fixed by the sum-of-squared-scales identification
+    (not estimated) and are reported with NaN SE.  Only the estimated rows are
+    validated here; any non-finite SE must belong to a derived ``scale`` row.
+    """
+    se = np.asarray(results.se)
+    names = np.asarray(results.param_names)
+    est = np.isfinite(se)
+    assert all(str(n).startswith("scale") for n in names[~est]), (
+        f"Non-finite SE on an estimated parameter: {names[~est].tolist()}"
+    )
+    assert est.any(), "No estimated parameters had finite SE"
+    assert (se[est] > 0).all(), "Estimated SE contains non-positive values"
+    return est
+
+
 @pytest.mark.slow
 def test_observed_hessian_se_close_to_bhhh_on_iid(travelmode_path):
     """On well-identified IID Model (a)(i), observed-Hessian SE and BHHH SE
@@ -64,32 +83,40 @@ def test_observed_hessian_se_close_to_bhhh_on_iid(travelmode_path):
     se_bhhh = results_bhhh.se
     se_hess = results_hess.se
 
-    # Both should be finite and positive
-    assert np.isfinite(se_bhhh).all(), "BHHH SE contains non-finite values"
-    assert np.isfinite(se_hess).all(), "Hessian SE contains non-finite values"
-    assert (se_bhhh > 0).all(), "BHHH SE contains non-positive values"
-    assert (se_hess > 0).all(), "Hessian SE contains non-positive values"
+    # Both should be positive & finite on the estimated rows (derived IID
+    # scale rows carry NaN SE by design since PR #43).
+    est = _assert_estimated_se_ok(results_bhhh)
+    _assert_estimated_se_ok(results_hess)
 
     # Observed Hessian SEs should be in a reasonable range relative to BHHH.
     # The bound is generous (3x) to accommodate QMC noise: the key guarantee
     # is that the Hessian path produces valid (positive, finite) SEs and does
     # not diverge catastrophically. The BHHH path is the reference estimator
     # that matches the published BHATLIB paper (BHATLIB uses _max_CovPar = 2).
-    ratio = se_hess / se_bhhh
+    names_est = np.asarray(results_bhhh.param_names)[est]
+    ratio = se_hess[est] / se_bhhh[est]
     assert (ratio < 3.0).all(), (
         f"Hessian SE is more than 3× larger than BHHH SE for some parameter. "
-        f"Ratios: {dict(zip(results_bhhh.param_names, np.round(ratio, 2)))}"
+        f"Ratios: {dict(zip(names_est, np.round(ratio, 2)))}"
     )
     assert (ratio > 0.3).all(), (
         f"Hessian SE is more than 3× smaller than BHHH SE for some parameter. "
-        f"Ratios: {dict(zip(results_bhhh.param_names, np.round(ratio, 2)))}"
+        f"Ratios: {dict(zip(names_est, np.round(ratio, 2)))}"
     )
 
-    # BHHH should stay close to the BHATLIB paper values (regression guard)
-    paper_se = np.array([0.0655, 0.1071, 0.0596, 0.0407, 0.0286])
+    # BHHH should stay close to the BHATLIB paper values (regression guard).
+    # The published SEs are in the first-scale=1 normalization; pybhatlib now
+    # reports the sum-of-squared-scales normalization for IID as well (PR #43),
+    # and the two differ by the first kernel scale exactly:
+    # ``reported = published * scale01`` (same relation used for the flexible
+    # models in ``_assert_bhhh_se_parity``).  Keep the published values as the
+    # source of truth and apply the known factor rather than hardcoding
+    # rescaled numbers.  paper_se covers the five estimated betas.
+    scale01 = dict(zip(results_bhhh.param_names, results_bhhh.b_original))["scale01"]
+    paper_se = np.array([0.0655, 0.1071, 0.0596, 0.0407, 0.0286]) * scale01
     np.testing.assert_allclose(
-        se_bhhh, paper_se, rtol=0.02,
-        err_msg="BHHH SE drifted from BHATLIB paper values",
+        se_bhhh[est], paper_se, rtol=0.02,
+        err_msg="BHHH SE drifted from BHATLIB paper values (× scale01 factor)",
     )
 
 
@@ -97,16 +124,14 @@ def test_observed_hessian_se_close_to_bhhh_on_iid(travelmode_path):
 def test_hessian_se_finite_iid(travelmode_path):
     """Hessian SE must be positive and finite on IID Model (a)(i)."""
     results = _fit_iid(travelmode_path, se_method="hessian")
-    assert np.isfinite(results.se).all(), "Hessian SE contains non-finite values"
-    assert (results.se > 0).all(), "Hessian SE contains non-positive values"
+    _assert_estimated_se_ok(results)
 
 
 @pytest.mark.slow
 def test_sandwich_se_finite_iid(travelmode_path):
     """Sandwich SE must be positive and finite on IID Model (a)(i)."""
     results = _fit_iid(travelmode_path, se_method="sandwich")
-    assert np.isfinite(results.se).all(), "Sandwich SE contains non-finite values"
-    assert (results.se > 0).all(), "Sandwich SE contains non-positive values"
+    _assert_estimated_se_ok(results)
 
 
 @pytest.mark.slow
@@ -126,15 +151,16 @@ def test_sandwich_se_close_to_bhhh_on_iid(travelmode_path):
     se_bhhh = results_bhhh.se
     se_sand = results_sand.se
 
-    assert np.isfinite(se_sand).all(), "Sandwich SE contains non-finite values"
-    assert (se_sand > 0).all(), "Sandwich SE contains non-positive values"
+    est = _assert_estimated_se_ok(results_bhhh)
+    _assert_estimated_se_ok(results_sand)
 
-    ratio = se_sand / se_bhhh
+    names_est = np.asarray(results_bhhh.param_names)[est]
+    ratio = se_sand[est] / se_bhhh[est]
     assert (ratio < 4.0).all(), (
         f"Sandwich SE is more than 4× larger than BHHH SE for some parameter. "
-        f"Ratios: {dict(zip(results_bhhh.param_names, np.round(ratio, 2)))}"
+        f"Ratios: {dict(zip(names_est, np.round(ratio, 2)))}"
     )
     assert (ratio > 0.25).all(), (
         f"Sandwich SE is more than 4× smaller than BHHH SE for some parameter. "
-        f"Ratios: {dict(zip(results_bhhh.param_names, np.round(ratio, 2)))}"
+        f"Ratios: {dict(zip(names_est, np.round(ratio, 2)))}"
     )

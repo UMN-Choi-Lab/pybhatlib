@@ -1084,20 +1084,23 @@ class MNPModel(BaseModel):
         scale_report_start = report_idx
         report_idx += n_scale
 
-        # If parker theta params exist, map them to report-space indices
-        if n_corr_theta > 0:
-            parker_theta_start = theta_idx
-            theta_idx += n_corr_theta
-            for k in range(n_corr_theta):
-                mapping[parker_theta_start + k] = parker_report_start + k
-
-        # If scale theta params exist (non-IID), map them; otherwise leave
-        # report-only scale slots unmapped (no theta -> report entry).
+        # Theta-space kernel order is [scales, parkers] (see ``_build_lambda``:
+        # ``scales = exp(lambda_params[:n_scale])`` then the correlations),
+        # whereas report-space order is [parkers, scales].  Consume the theta
+        # blocks in *theta* order but map each to its *report* slot, so scale
+        # and parker SEs — and frozen-parameter NaNs — land on the correct
+        # report rows.  (The prior order swapped scales and parkers.)
         if not self.control.iid:
             scale_theta_start = theta_idx
             theta_idx += n_scale
             for k in range(n_scale):
                 mapping[scale_theta_start + k] = scale_report_start + k
+
+            if n_corr_theta > 0:
+                parker_theta_start = theta_idx
+                theta_idx += n_corr_theta
+                for k in range(n_corr_theta):
+                    mapping[parker_theta_start + k] = parker_report_start + k
 
         # --- Random-coefficient Cholesky params ---
         if self.control.mix and self.ranvar_indices is not None:
@@ -1605,6 +1608,23 @@ class MNPModel(BaseModel):
         with np.errstate(divide="ignore", invalid="ignore"):
             t_stat = np.where(se > 0, b_report / se, 0.0)
             p_value = 2.0 * (1.0 - _ndtr(np.abs(t_stat)))
+
+        # Report rows with no theta-space preimage are *derived* deterministic
+        # quantities — e.g. the IID kernel scales, which are fixed by the
+        # sum-of-squared-scales identification (scale = sqrt(1/(I-1))), not
+        # estimated.  They carry no sampling uncertainty, so a delta-method SE
+        # of exactly 0 is misleading.  Report their SE/t/p as NaN — consistent
+        # with frozen parameters (below) and ``from_estimates`` — so downstream
+        # code treats them as non-estimated rather than infinitely precise.
+        _report_preimage = {
+            ri for ri in self._build_theta_to_report_map().values()
+            if ri is not None
+        }
+        for ri in range(n_report):
+            if ri not in _report_preimage:
+                se[ri] = np.nan
+                t_stat[ri] = np.nan
+                p_value[ri] = np.nan
 
         # Correlation matrix of reporting parameters.  PR #4 review P0 #2:
         # gate on ``cov_unpar`` (the actual SE source), not on the observed

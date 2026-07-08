@@ -152,8 +152,16 @@ def test_bhhh_se_unchanged_by_analytic_scores(travelmode_path, monkeypatch, iid)
 
     se_a = res_analytic.se
     se_f = res_fd.se
-    assert np.all(np.isfinite(se_a)) and np.all(np.isfinite(se_f))
-    assert np.allclose(se_a, se_f, rtol=1e-4, atol=1e-6), (
+    # Derived kernel-scale rows (IID reports scale0x since PR #43) carry NaN SE
+    # by design — they are fixed by the sum-of-squared-scales identification,
+    # not estimated.  Compare the estimated (finite-SE) rows only; the NaN
+    # pattern itself must be identical across the two score paths.
+    est_a, est_f = np.isfinite(se_a), np.isfinite(se_f)
+    assert np.array_equal(est_a, est_f), (
+        f"iid={iid}: NaN-SE pattern differs between analytic and FD paths"
+    )
+    assert est_a.any(), "no estimated parameters had finite SE"
+    assert np.allclose(se_a[est_a], se_f[est_f], rtol=1e-4, atol=1e-6), (
         f"iid={iid}: max rel Δ = "
-        f"{np.max(np.abs(se_a - se_f) / np.maximum(np.abs(se_f), 1e-12)):.2e}"
+        f"{np.max(np.abs(se_a[est_a] - se_f[est_f]) / np.maximum(np.abs(se_f[est_f]), 1e-12)):.2e}"
     )
