@@ -86,14 +86,17 @@ class MNLResults:
         beta: NDArray,
         *,
         param_names: list[str] | None = None,
+        control: "MNLControl | None" = None,
     ) -> "MNLResults":
         """Construct a minimal ``MNLResults`` from externally supplied coefficients.
 
         Intended for post-estimation use (e.g. computing ATEs from GAUSS
-        estimates) where a full fit object is not available.  All
-        estimation-specific fields (standard errors, test statistics,
-        log-likelihood, etc.) are filled with sentinel values (``nan`` or
-        ``0``) and should not be interpreted.
+        estimates) where a full fit object is not available.  Inference fields
+        (standard errors, test statistics, log-likelihood) are filled with
+        ``nan`` and should not be interpreted.  Following the cross-model
+        convention (:meth:`MORPResults.from_estimates` /
+        :meth:`MNPResults.from_estimates`), the supplied estimates are treated
+        as a converged solution: ``converged=True`` and ``return_code=0``.
 
         Parameters
         ----------
@@ -102,6 +105,8 @@ class MNLResults:
         param_names : list[str] or None
             Names for each element of *beta*.  Defaults to
             ``["b1", "b2", ...]`` when not provided.
+        control : MNLControl or None
+            Control structure to carry through (defaults to ``MNLControl()``).
 
         Returns
         -------
@@ -128,10 +133,10 @@ class MNLResults:
             corr_matrix       = nan_mat.copy(),
             cov_matrix        = nan_mat.copy(),
             n_iterations      = 0,
-            convergence_time  = 0.0,
-            converged         = False,
-            return_code       = -1,
-            control           = None,
+            convergence_time  = float("nan"),
+            converged         = True,
+            return_code       = 0,
+            control           = control if control is not None else MNLControl(),
         )
 
     def summary(self) -> str:
