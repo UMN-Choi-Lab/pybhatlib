@@ -8,19 +8,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
+from typing import Union
 
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 
 from scipy.special import ndtr as _ndtr
 
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd_rect
+from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models.morp._morp_loglik import (
     _rect_prob_finite_only,
     _unpack_morp_params,
 )
 from pybhatlib.models.morp._morp_results import MORPResults
+
+# Type alias mirroring MNP's ScenarioSpec: dict or DataFrame keyed/indexed by
+# scenario name, values are per-variable overrides (column -> scalar | column).
+ScenarioSpec = Union[
+    "dict[str, dict[str, float | str]]",
+    "pd.DataFrame",
+]
 
 
 @dataclass
@@ -44,48 +54,112 @@ class MORPATEResult:
     predicted_probs: list[NDArray]
     base_probs: list[NDArray] | None = None
     treatment_probs: list[NDArray] | None = None
+    shares_per_scenario: "dict[str, list[NDArray]] | None" = None
+
+    def comparison(self, base: str, treatment: str) -> "list[NDArray]":
+        """Percentage change between two scenarios, per outcome dimension.
+
+        Mirrors :meth:`MNPATEResult.comparison`, but because MORP predicts one
+        ordinal-category distribution per dimension, the result is a list of
+        arrays — one per dimension ``d``, shape ``(n_categories[d],)``:
+        ``100 * (treatment_probs[d] - base_probs[d]) / base_probs[d]``.
+
+        Raises
+        ------
+        ValueError
+            If ``shares_per_scenario`` is None or a scenario name is missing.
+        """
+        if self.shares_per_scenario is None:
+            raise ValueError(
+                "comparison() requires shares_per_scenario; run morp_ate with "
+                "scenarios=..."
+            )
+        if base not in self.shares_per_scenario:
+            raise ValueError(f"Scenario '{base}' not found in shares_per_scenario")
+        if treatment not in self.shares_per_scenario:
+            raise ValueError(
+                f"Scenario '{treatment}' not found in shares_per_scenario"
+            )
+
+        b_list = self.shares_per_scenario[base]
+        t_list = self.shares_per_scenario[treatment]
+        out: list[NDArray] = []
+        for b, t in zip(b_list, t_list):
+            with np.errstate(divide="ignore", invalid="ignore"):
+                out.append(np.where(b > 0, 100.0 * (t - b) / b, np.nan))
+        return out
 
 
-def morp_ate(
-    results: MORPResults,
-    X: NDArray,
+def _apply_scenario_overrides(
+    data: pd.DataFrame,
+    overrides: "dict[str, float | str]",
+) -> pd.DataFrame:
+    """Apply a single scenario's overrides to a copy of *data*.
+
+    Identical semantics to the MNP helper: ``{column: scalar | source_column}``.
+    Scalars broadcast; string values resolve to another real column.  Raises
+    ``ValueError`` if a target or source column is absent.
+    """
+    data_mod = data.copy()
+    for col, val in overrides.items():
+        if col not in data.columns:
+            raise ValueError(
+                f"Scenario override target '{col}' is not a column in data. "
+                + (
+                    f"Available columns: {sorted(data.columns)[:20]}..."
+                    if len(data.columns) > 20
+                    else f"Available columns: {list(data.columns)}"
+                )
+            )
+        if isinstance(val, str):
+            if val not in data.columns:
+                raise ValueError(
+                    f"Scenario override for '{col}' references column '{val}', "
+                    f"which is not present in data. Only real column names are "
+                    f"accepted as string values (no label-mode)."
+                )
+            data_mod[col] = data[val].values
+        else:
+            data_mod[col] = float(val)
+    return data_mod
+
+
+def _scenarios_to_dict(
+    scenarios: ScenarioSpec,
+) -> "dict[str, dict[str, float | str]]":
+    """Normalise *scenarios* to canonical ``{name: {col: val}}`` dict form."""
+    if isinstance(scenarios, pd.DataFrame):
+        out: dict[str, dict[str, float | str]] = {}
+        for name in scenarios.index:
+            row = scenarios.loc[name]
+            out[str(name)] = {col: row[col] for col in scenarios.columns}
+        return out
+    return dict(scenarios)
+
+
+def _compute_morp_predicted_probs(
+    X_np: NDArray,
     n_dims: int,
     n_categories: list[int],
     n_beta: int,
-) -> MORPATEResult:
-    """Compute predicted ordinal probabilities for MORP model.
+    results: MORPResults,
+) -> list[NDArray]:
+    """Mean per-dimension ordinal-category probabilities for one design matrix.
 
-    Parameters
-    ----------
-    results : MORPResults
-        Fitted MORP model results.
-    X : ndarray, shape (N, D, n_vars)
-        Design matrix.
-    n_dims : int
-        Number of dimensions.
-    n_categories : list of int
-        Number of categories per dimension.
-    n_beta : int
-        Number of beta coefficients.
+    Extracted from :func:`morp_ate` so the same computation drives both the
+    single-design path and the per-scenario loop.
 
     Returns
     -------
-    result : MORPATEResult
+    list[NDArray]
+        ``out[d]`` has shape ``(n_categories[d],)`` (mean over observations).
     """
-    xp = get_backend("numpy")
-
-    theta_hat = results.params
     control = results.control
-    method = control.method if control else "ovus"
-
     beta, thresholds, sigma = _unpack_morp_params(
-        theta_hat, n_beta, n_dims, n_categories, control
+        results.params, n_beta, n_dims, n_categories, control
     )
 
-    X_np = np.asarray(X, dtype=np.float64)
     N = X_np.shape[0]
-
-    # Predicted probabilities per dimension and category
     pred_probs = [
         np.zeros((N, n_categories[d]), dtype=np.float64)
         for d in range(n_dims)
@@ -93,35 +167,121 @@ def morp_ate(
 
     for q in range(N):
         mu_q = np.array([X_np[q, d] @ beta for d in range(n_dims)])
-
         for d in range(n_dims):
+            tau_d = thresholds[d]
+            sd_d = np.sqrt(max(sigma[d, d], 1e-30))
             for j in range(n_categories[d]):
-                # P(Y_d = j) = P(tau_{j-1} < Y_d* <= tau_j)
-                # For the univariate marginal of dimension d
-                tau_d = thresholds[d]
-                sd_d = np.sqrt(max(sigma[d, d], 1e-30))
-
-                if j == 0:
-                    z_lower = -np.inf
-                else:
-                    z_lower = (tau_d[j - 1] - mu_q[d]) / sd_d
-
-                if j == n_categories[d] - 1:
-                    z_upper = np.inf
-                else:
-                    z_upper = (tau_d[j] - mu_q[d]) / sd_d
-
+                z_lower = -np.inf if j == 0 else (tau_d[j - 1] - mu_q[d]) / sd_d
+                z_upper = (
+                    np.inf if j == n_categories[d] - 1
+                    else (tau_d[j] - mu_q[d]) / sd_d
+                )
                 p_upper = _ndtr(z_upper) if np.isfinite(z_upper) else 1.0
                 p_lower = _ndtr(z_lower) if np.isfinite(z_lower) else 0.0
                 pred_probs[d][q, j] = max(0.0, p_upper - p_lower)
 
-    # Mean across observations
-    mean_probs = [pred_probs[d].mean(axis=0) for d in range(n_dims)]
+    return [pred_probs[d].mean(axis=0) for d in range(n_dims)]
 
-    return MORPATEResult(
-        n_obs=N,
-        predicted_probs=mean_probs,
+
+def morp_ate(
+    results: MORPResults,
+    X: NDArray | None = None,
+    n_dims: int | None = None,
+    n_categories: list[int] | None = None,
+    n_beta: int | None = None,
+    *,
+    data: "pd.DataFrame | None" = None,
+    spec: dict | None = None,
+    dep_vars: list[str] | None = None,
+    scenarios: "ScenarioSpec | None" = None,
+) -> MORPATEResult:
+    """Compute predicted ordinal probabilities for MORP model.
+
+    Supports two modes, mirroring :func:`mnp_ate`:
+
+    **Single-design mode** (default): pass a pre-built ``X`` (or
+    ``data`` + ``spec`` + ``dep_vars`` to rebuild it) and get mean per-dimension
+    ordinal probabilities in ``predicted_probs``.
+
+    **Scenario mode** (``scenarios=``): pass ``data`` + ``spec`` + ``dep_vars``
+    and a dict/DataFrame of per-variable overrides.  The design matrix is
+    rebuilt for each scenario and mean probabilities are returned in
+    ``shares_per_scenario`` (with a ``.comparison(base, treatment)`` helper).
+
+    Parameters
+    ----------
+    results : MORPResults
+        Fitted MORP model results (or one from ``from_estimates``).
+    X : ndarray, shape (N, D, n_vars), optional
+        Pre-built design matrix.  Optional when ``data``+``spec``+``dep_vars``
+        are given (or in scenario mode).
+    n_dims : int, optional
+        Number of dimensions.  Inferred from ``dep_vars`` when omitted.
+    n_categories : list of int
+        Number of categories per dimension (not stored in ``results``, so it
+        must be supplied even in scenario mode).
+    n_beta : int, optional
+        Number of beta coefficients.  Inferred from ``spec`` when omitted.
+    data : pd.DataFrame, optional
+        Dataset — required to rebuild ``X`` (and for scenario mode).
+    spec : dict, optional
+        Variable specification mapping (as passed to ``MORPModel``).
+    dep_vars : list of str, optional
+        Outcome-dimension column names (the ``parse_spec`` "alternatives" slot).
+    scenarios : dict or pd.DataFrame, optional
+        Per-variable overrides keyed by scenario name (see :func:`mnp_ate`).
+
+    Returns
+    -------
+    result : MORPATEResult
+    """
+    if n_categories is None:
+        raise ValueError(
+            "n_categories is required (MORP does not store it on results)"
+        )
+    if n_dims is None and dep_vars is not None:
+        n_dims = len(dep_vars)
+    if n_beta is None and spec is not None:
+        n_beta = len(spec)
+
+    # --- Scenario mode ---
+    if scenarios is not None:
+        if data is None or spec is None or dep_vars is None:
+            raise ValueError(
+                "data, spec, and dep_vars are required when using scenarios"
+            )
+        X_base, _ = parse_spec(spec, data, dep_vars, nseg=1)
+        X_base_np = np.asarray(X_base, dtype=np.float64)
+        baseline = _compute_morp_predicted_probs(
+            X_base_np, n_dims, n_categories, n_beta, results
+        )
+        shares_per_scenario: dict[str, list[NDArray]] = {}
+        for name, overrides in _scenarios_to_dict(scenarios).items():
+            data_mod = _apply_scenario_overrides(data, overrides)
+            X_mod, _ = parse_spec(spec, data_mod, dep_vars, nseg=1)
+            shares_per_scenario[name] = _compute_morp_predicted_probs(
+                np.asarray(X_mod, dtype=np.float64),
+                n_dims, n_categories, n_beta, results,
+            )
+        return MORPATEResult(
+            n_obs=X_base_np.shape[0],
+            predicted_probs=baseline,
+            shares_per_scenario=shares_per_scenario,
+        )
+
+    # --- Single-design mode ---
+    if X is None:
+        if data is None or spec is None or dep_vars is None:
+            raise ValueError(
+                "Either X, or data+spec+dep_vars, must be provided"
+            )
+        X, _ = parse_spec(spec, data, dep_vars, nseg=1)
+
+    X_np = np.asarray(X, dtype=np.float64)
+    mean_probs = _compute_morp_predicted_probs(
+        X_np, n_dims, n_categories, n_beta, results
     )
+    return MORPATEResult(n_obs=X_np.shape[0], predicted_probs=mean_probs)
 
 
 @dataclass
@@ -227,44 +387,66 @@ def morp_ate_from_params(
     beta: NDArray,
     thresholds: list[NDArray],
     correlation: NDArray | None,
-    X: NDArray,
-    n_dims: int,
-    n_categories: list[int],
-    n_beta: int,
+    X: NDArray | None = None,
+    n_dims: int | None = None,
+    n_categories: list[int] | None = None,
+    n_beta: int | None = None,
     *,
     dep_vars: list[str] | None = None,
     joint: bool = False,
+    data: "pd.DataFrame | None" = None,
+    spec: dict | None = None,
+    scenarios: "ScenarioSpec | None" = None,
 ):
     """Compute MORP ATE predictions directly from natural-space coefficients.
 
     Convenience wrapper that builds a results object via
-    :meth:`MORPResults.from_estimates` and dispatches to either the marginal
-    predicted probabilities (``joint=False``, default) or the full joint
-    distribution (``joint=True``, GAUSS ``ate1.csv`` equivalent).
+    :meth:`MORPResults.from_estimates` and dispatches to :func:`morp_ate`
+    (marginals, default; or the ``scenarios=`` multi-counterfactual API) or to
+    :func:`morp_joint_probs` (``joint=True``, GAUSS ``ate1.csv`` equivalent).
 
     Parameters
     ----------
     beta, thresholds, correlation
         Final reported coefficients (see ``MORPResults.from_estimates``).
-    X : ndarray, shape (N, D, n_vars)
-        Design matrix.
+    X : ndarray, shape (N, D, n_vars), optional
+        Design matrix.  Optional when ``data``+``spec``+``dep_vars`` are given.
     n_dims, n_categories, n_beta
-        Model structure.
+        Model structure (``n_dims`` inferred from ``dep_vars`` when omitted).
     dep_vars : list of str, optional
         Outcome names (defaults to ``y1, y2, ...``).
     joint : bool, default False
         Return the joint combination distribution instead of marginals.
+    data, spec, scenarios
+        Forwarded to :func:`morp_ate` (same counterfactual/scenario API).
 
     Returns
     -------
     MORPATEResult or MORPJointATEResult
     """
+    if n_dims is None and dep_vars is not None:
+        n_dims = len(dep_vars)
     if dep_vars is None:
+        if n_dims is None:
+            raise ValueError("Provide n_dims or dep_vars")
         dep_vars = [f"y{d + 1}" for d in range(n_dims)]
     results = MORPResults.from_estimates(
         beta, thresholds, correlation,
         dep_vars=dep_vars, n_categories=n_categories,
     )
+    if scenarios is not None:
+        if joint:
+            raise ValueError(
+                "joint=True is not supported with scenarios=; call "
+                "morp_joint_probs per scenario instead."
+            )
+        return morp_ate(
+            results, X, n_dims, n_categories, n_beta,
+            data=data, spec=spec, dep_vars=dep_vars, scenarios=scenarios,
+        )
     if joint:
         return morp_joint_probs(results, X, n_dims, n_categories, n_beta)
-    return morp_ate(results, X, n_dims, n_categories, n_beta)
+    return morp_ate(
+        results, X, n_dims, n_categories, n_beta,
+        data=data, spec=spec, dep_vars=dep_vars,
+    )
