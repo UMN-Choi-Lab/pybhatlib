@@ -465,20 +465,23 @@ def mnp_ate_from_params(
     changeval: float | None = None,
     X: NDArray | None = None,
 ) -> MNPATEResult:
-    """Compute MNP ATE predictions directly from natural-space coefficients.
+    """Compute MNP ATE predictions from the model's *reported* coefficients.
 
     Convenience wrapper mirroring :func:`morp_ate_from_params`: it builds a
     results object via :meth:`MNPResults.from_estimates` and dispatches to
-    :func:`mnp_ate`, so ATEs can be computed from manually entered (e.g. GAUSS)
-    estimates without re-fitting.
+    :func:`mnp_ate`, so ATEs can be computed from manually entered estimates —
+    the coefficients exactly as the model reports them (unparameterized,
+    ``sum(scale**2)=1``) — without re-fitting (issue #44).
 
     Parameters
     ----------
     beta : ndarray, shape (n_beta,)
-        Slope coefficients.
+        Reported slope coefficients (``results.b_original`` slope rows).
     kernel_cov : ndarray, shape (I-1, I-1), optional
-        Differenced kernel error covariance (``None`` ⇒ IID).  See
-        :meth:`MNPResults.from_estimates`.
+        The **reported** differenced kernel covariance, built from the reported
+        ``scale*``/``parker*`` rows as ``diag(scales) @ corr @ diag(scales)``
+        (``None`` ⇒ IID).  See :meth:`MNPResults.from_estimates` for the exact
+        reconstruction.  ``n_alts`` is required for IID.
     control : MNPControl, optional
         Control structure (defaults to ``MNPControl(iid=kernel_cov is None)``).
     ranvar_indices, param_names, n_alts

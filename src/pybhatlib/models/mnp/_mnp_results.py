@@ -214,33 +214,46 @@ class MNPResults:
         **reported** coefficients without re-running the optimiser.  Engine
         behind :func:`mnp_ate_from_params`.
 
-        The natural quantities are encoded into a self-consistent raw
+        Inputs are the coefficients **exactly as the model reports them**
+        (unparameterized, ``sum(scale**2)=1`` normalisation — issue #44).  The
+        reported quantities are re-encoded into a self-consistent raw
         (optimiser-space) parameter vector so the object drives
-        :func:`mnp_ate` / :func:`mnp_predict` unchanged.  Because MNP choice
-        probabilities are invariant to the overall scale normalisation, feeding
-        either the raw or the reported (normalised) ``(beta, kernel_cov)`` pair
-        reproduces the same predictions.
+        :func:`mnp_ate` / :func:`mnp_predict` unchanged and reproduces the
+        fitted model's predictions:
+
+        - **IID**: reported slopes are ``beta_theta / sqrt(2*(I-1))`` (the
+          differenced-IID scale), which this method inverts.  ``n_alts`` is
+          required so ``I`` is known.
+        - **Non-IID**: ``kernel_cov`` is the reported differenced kernel
+          covariance ``Sigma_norm`` (``diag(scales) @ corr @ diag(scales)``
+          from the reported ``scale*``/``parker*`` rows).  The theta-space
+          Lambda is recovered as ``K*Sigma_norm - (ones+eye)`` for a
+          conditioning-safe ``K``, with ``beta`` rescaled by ``sqrt(K)``;
+          choice probabilities are invariant to that overall scale ``K``.
 
         Parameters
         ----------
         beta : array-like, shape (n_beta,)
-            Slope coefficients in the model's coefficient order.
+            Reported slope coefficients in the model's coefficient order
+            (``results.b_original`` sliced to the slope rows).
         kernel_cov : array-like, shape (I-1, I-1), optional
-            Differenced kernel error covariance ``Lambda`` (the quantity
-            :func:`~pybhatlib.models.mnp._mnp_loglik._build_lambda` returns).
-            ``None`` (default) builds an IID model (``Lambda = I``).
+            The **reported** differenced kernel covariance ``Sigma_norm``
+            (``sum(scale**2)=1``), built from the reported ``scale*``/``parker*``
+            rows as ``diag(scales) @ corr @ diag(scales)``.  ``None`` (default)
+            builds an IID model.  (This is *not* the theta-space
+            :func:`~pybhatlib.models.mnp._mnp_loglik._build_lambda` output.)
         control : MNPControl, optional
             Control structure.  Defaults to ``MNPControl(iid=kernel_cov is
-            None)``.  Its ``heteronly`` flag selects the variance-only
-            encoding.  ``mix`` / ``nseg > 1`` (random coefficients / mixtures)
-            are not supported and raise ``NotImplementedError``.
+            None)``.  A ``heteronly`` model is decoded as full covariance for
+            the reconstruction (predictions identical).  ``mix`` / ``nseg > 1``
+            (random coefficients / mixtures) raise ``NotImplementedError``.
         ranvar_indices : list of int, optional
             Random-coefficient indices (carried through to ``mnp_ate``).
         param_names : list of str, optional
             Names for ``beta`` (defaults to ``b0, b1, ...``).
         n_alts : int, optional
-            Number of alternatives ``I``.  Inferred from ``kernel_cov`` shape
-            (``I-1``) when not given.
+            Number of alternatives ``I``.  **Required for IID**; inferred from
+            ``kernel_cov`` shape (``I-1``) for non-IID when not given.
 
         Returns
         -------
@@ -255,30 +268,77 @@ class MNPResults:
         iid = (kernel_cov is None) if control is None else control.iid
         control = control if control is not None else _MC(iid=iid)
 
-        theta: list[float] = [float(b) for b in beta]
+        if control.mix or control.nseg > 1:
+            raise NotImplementedError(
+                "from_estimates supports IID and fixed-covariance MNP only; "
+                "random-coefficient (mix=True) and mixture (nseg>1) "
+                "specifications are not yet supported."
+            )
 
-        if not iid:
+        enc_control = control
+
+        if iid:
+            # Reported IID slopes are ``beta_theta / sqrt(trace(Sigma_diff_iid))``
+            # with ``Sigma_diff_iid = ones + eye`` (trace ``= 2*(I-1)``); the
+            # kernel itself is fixed.  Undo that single scale factor so the
+            # reconstructed theta reproduces the fitted choice probabilities.
+            if n_alts is None:
+                raise ValueError(
+                    "n_alts is required for an IID model: the reported->theta "
+                    "scale factor sqrt(2*(n_alts-1)) depends on the number of "
+                    "alternatives."
+                )
+            dim = n_alts - 1
+            theta_arr = (beta * np.sqrt(2.0 * dim)).astype(np.float64)
+        else:
             if kernel_cov is None:
                 raise ValueError("kernel_cov is required for a non-IID model")
-            if control.mix or control.nseg > 1:
-                raise NotImplementedError(
-                    "from_estimates supports IID and fixed-covariance MNP only; "
-                    "random-coefficient (mix=True) and mixture (nseg>1) "
-                    "specifications are not yet supported."
-                )
-            Lambda = np.asarray(kernel_cov, dtype=np.float64)
-            dim = Lambda.shape[0]
-            if Lambda.shape != (dim, dim):
-                raise ValueError(f"kernel_cov must be square, got {Lambda.shape}")
+            # ``kernel_cov`` is the *reported* differenced kernel covariance
+            # (``Sigma_norm``; scales obey ``sum(scale**2)=1``), i.e.
+            # ``diag(scales) @ corr @ diag(scales)`` from the reported
+            # ``scale*``/``parker*`` rows.  Internally the model consumes a
+            # theta-space Lambda via ``Sigma_diff = ones + Lambda + eye``.
+            # Choice probabilities are invariant to the overall kernel scale
+            # ``K`` (verified numerically), so pick any ``K`` making
+            # ``Lambda = K*Sigma_norm - (ones+eye)`` positive definite and
+            # rescale ``beta`` by ``sqrt(K)`` to match.
+            Sig = np.asarray(kernel_cov, dtype=np.float64)
+            dim = Sig.shape[0]
+            if Sig.shape != (dim, dim):
+                raise ValueError(f"kernel_cov must be square, got {Sig.shape}")
             if n_alts is None:
                 n_alts = dim + 1
-            scales = np.sqrt(np.clip(np.diag(Lambda), 1e-300, None))
-            theta.extend(np.log(scales).tolist())
-            if not control.heteronly:
-                corr = Lambda / np.outer(scales, scales)
-                theta.extend(corr_to_theta(corr, dim).tolist())
+            Sig = 0.5 * (Sig + Sig.T)
+            base = np.ones((dim, dim)) + np.eye(dim)
+            try:
+                Lc = np.linalg.cholesky(Sig)
+            except np.linalg.LinAlgError as exc:
+                raise ValueError(
+                    "kernel_cov must be a positive-definite differenced "
+                    "covariance (the reported scale*/parker* kernel)."
+                ) from exc
+            # ``K`` must exceed the largest generalized eigenvalue of
+            # ``(base, Sig)`` for PD; take twice that (plus 1) for conditioning.
+            Linv = np.linalg.inv(Lc)
+            gev_max = float(np.linalg.eigvalsh(Linv @ base @ Linv.T).max())
+            K = gev_max * 2.0 + 1.0
+            Lambda = K * Sig - base
+            Lambda = 0.5 * (Lambda + Lambda.T)
 
-        theta_arr = np.asarray(theta, dtype=np.float64)
+            beta_theta = beta * np.sqrt(K)
+            scales = np.sqrt(np.clip(np.diag(Lambda), 1e-300, None))
+            corr = Lambda / np.outer(scales, scales)
+
+            theta_list = beta_theta.tolist()
+            theta_list.extend(np.log(scales).tolist())
+            theta_list.extend(corr_to_theta(corr, dim).tolist())
+            theta_arr = np.asarray(theta_list, dtype=np.float64)
+
+            # The reconstruction is a full covariance (off-diagonals come from
+            # the ``base`` term), so decode it as full covariance even when the
+            # fitted model was heteroscedastic-only.  Predictions are identical.
+            if control.heteronly:
+                enc_control = dataclasses.replace(control, heteronly=False)
 
         if param_names is None:
             param_names = [f"b{i}" for i in range(n_beta)]
@@ -302,7 +362,7 @@ class MNPResults:
             convergence_time=float("nan"),
             converged=True,
             return_code=0,
-            control=control,
+            control=enc_control,
             ranvar_indices=ranvar_indices,
         )
 
