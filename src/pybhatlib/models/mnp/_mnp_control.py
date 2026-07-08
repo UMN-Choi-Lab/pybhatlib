@@ -24,8 +24,6 @@ class MNPControl:
         If False, estimate flexible covariance structure.
     mix : bool
         If True, include random coefficients (mixed MNP).
-    indep : bool
-        If True, assume independence across ordinal outcomes.
     correst : NDArray or None
         Correlation restriction matrix. Upper-diagonal matrix with 1s on
         diagonal, 1s in off-diagonal positions indicate active correlations.
@@ -58,17 +56,56 @@ class MNPControl:
         Convergence tolerance (gradient norm).
     optimizer : str
         Optimization method: "bfgs", "lbfgsb", "torch_adam", "torch_lbfgs".
+    se_method : str
+        Standard-error method: "bhhh" (default, matches GAUSS _max_CovPar=2),
+        "hessian" (inverse observed information), or "sandwich" (robust).
+        Per-observation scores are computed by finite differencing the
+        per-observation log-likelihood in UNPARAMETERIZED space (the GAUSS
+        lpr1/lgd1 convention) at the converged estimate. The only
+        Jacobian step that survives is the BHATLIB sigma_1 normalization
+        (one scalar per block). There is no delta-method projection through
+        the spherical-Cholesky parameterization. See MNP-002b for the
+        plan-fidelity rationale.
+
+        BHHH is the default to match GAUSS BHATLIB output (which uses
+        ``_max_CovPar = 2`` = cross-product of first derivatives). On
+        BHATLIB Table 1 Model (a)(i), BHHH matches the published GAUSS
+        s.e. to ~0.05 % on every parameter. Set ``se_method="hessian"``
+        to use the inverse observed Hessian instead, or
+        ``se_method="sandwich"`` for the robust estimator that does not
+        assume the information-matrix equality.
+
+        The estimator named here is the one wired to ``.se`` / ``.t_stat`` /
+        ``.p_value``. The other two are computed only when
+        ``se_diagnostic=True`` (see below).
+    se_diagnostic : bool
+        If True, compute all three SE estimators (BHHH, Hessian, sandwich)
+        at the converged MLE and print the side-by-side diagnostic block in
+        ``summary()``; ``se_bhhh`` / ``se_hessian`` / ``se_sandwich`` are then
+        populated for the comparison (large divergence is a misspecification
+        signal). Default ``False``: only the primary ``se_method`` estimator
+        is computed, which skips the observed-Hessian pass (``2 * n_params``
+        extra full gradient evaluations) when the primary is BHHH — the same
+        post-convergence slowdown reported for MORP (UTA report, 2026-06).
     verbose : int
-        Verbosity: 0=silent, 1=summary, 2=per-iteration.
+        Verbosity: 0=silent, 1=summary, 2=per-iteration NLL,
+        3=per-iteration NLL + parameter/gradient/rel-gradient table.
     seed : int or None
         Random seed for reproducibility.
     startb : NDArray or None
         User-supplied starting values for parameters.
+    active_mask : NDArray of bool or None
+        Boolean mask of shape ``(n_params,)``.  ``True`` = parameter is
+        estimated; ``False`` = parameter is frozen at its ``startb`` value
+        (or default starting value when ``startb`` is None).  ``None``
+        (default) estimates all parameters with no overhead.  A
+        ``ValueError`` is raised if the length does not match ``n_params``
+        or if all entries are ``False``.  SE/t-stat/p-value are set to
+        ``np.nan`` for frozen parameters in the results.
     """
 
     iid: bool = False
     mix: bool = False
-    indep: bool = False
     correst: NDArray | None = None
     heteronly: bool = False
     randdiag: bool = False
@@ -83,10 +120,23 @@ class MNPControl:
     maxiter: int = 200
     tol: float = 1e-5
     optimizer: Literal["bfgs", "lbfgsb", "torch_adam", "torch_lbfgs"] = "bfgs"
+    se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh"
+    se_diagnostic: bool = False
     verbose: int = 1
     seed: int | None = None
     analytic_grad: bool = True
     startb: NDArray | None = None
+    active_mask: NDArray | None = None
+    """Boolean mask of shape (n_params,).  True = parameter is estimated,
+    False = parameter is frozen at its ``startb`` value (or at the default
+    starting value when ``startb`` is None).  ``None`` (default) means all
+    parameters are estimated — the fast path with no overhead.
+
+    If provided, ``len(active_mask)`` must equal ``n_params``; a
+    ``ValueError`` is raised at fit-time otherwise.  If all entries are
+    False, a ``ValueError`` is raised (nothing to optimize).
+    SE/t-stat/p-value are set to ``np.nan`` for frozen parameters.
+    """
     device: str = "cpu"
     """Device for computation: "cpu", "cuda", "cuda:0", or "auto".
     "auto" selects GPU when N >= gpu_threshold and CUDA is available."""

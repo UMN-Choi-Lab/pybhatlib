@@ -65,6 +65,79 @@ def theta_to_corr(
     return corr
 
 
+def corr_to_theta(
+    corr: NDArray, K: int, *, constrained: bool = False, xp=None
+) -> NDArray:
+    """Recover spherical angle parameters from a correlation matrix.
+
+    Exact inverse of :func:`theta_to_corr`: given a positive-definite
+    correlation matrix with unit diagonal, recover the unconstrained angle
+    parameters ``theta`` such that ``theta_to_corr(theta, K) == corr``.
+
+    The recovery uses the Cholesky factor ``L`` of ``corr`` (lower triangular,
+    unit row norms because ``corr`` has unit diagonal).  Each row of ``L`` is a
+    point on the unit sphere whose spherical coordinates are read off
+    sequentially via ``arccos`` (giving angles in ``(0, pi)``), then mapped back
+    to the unconstrained line with the inverse-logistic when
+    ``constrained=False`` (matching ``theta_to_corr``'s ``pi * logistic``).
+
+    Parameters
+    ----------
+    corr : ndarray, shape (K, K)
+        Positive-definite correlation matrix with unit diagonal.
+    K : int
+        Dimension of the correlation matrix.
+    constrained : bool, default False
+        If True, return constrained angles in ``(0, pi)`` directly (no
+        inverse-logistic).  Must match the ``constrained`` flag used with
+        ``theta_to_corr``.
+    xp : backend, optional
+        Array backend (computation uses NumPy internally).
+
+    Returns
+    -------
+    theta : ndarray, shape (K*(K-1)//2,)
+        Angle parameters in ``_angle_index`` (row-by-row) order.
+
+    Notes
+    -----
+    Degenerate inputs (``|corr_{ij}| -> 1``, i.e. a near-singular correlation
+    matrix) drive an angle to ``0`` or ``pi`` where the unconstrained mapping
+    diverges; the arccos argument and the logistic argument are clipped to keep
+    the result finite.
+    """
+    corr = np.asarray(corr, dtype=np.float64)
+    if corr.shape != (K, K):
+        raise ValueError(f"corr must be {K}x{K}, got {corr.shape}")
+
+    n_theta = K * (K - 1) // 2
+    theta = np.zeros(n_theta, dtype=np.float64)
+    if n_theta == 0:
+        return theta
+
+    # Cholesky factor (lower triangular); rows have unit norm for a correlation
+    # matrix, so the sequential spherical recovery below stays normalised.
+    L = np.linalg.cholesky(corr)
+
+    for i in range(1, K):
+        remaining = 1.0  # running product of sines = norm left in row i
+        for j in range(i):  # angles theta_{i,0} .. theta_{i,i-1}
+            if remaining <= 1e-300:
+                angle = 0.0
+            else:
+                cos_arg = float(np.clip(L[i, j] / remaining, -1.0, 1.0))
+                angle = float(np.arccos(cos_arg))
+            theta[_angle_index(i, j, K)] = angle
+            remaining *= np.sin(angle)
+
+    if not constrained:
+        # Invert pi * logistic(u): u = logit(angle / pi).
+        frac = np.clip(theta / np.pi, 1e-12, 1.0 - 1e-12)
+        theta = np.log(frac / (1.0 - frac))
+
+    return theta
+
+
 def _angle_index(i: int, j: int, K: int) -> int:
     """Map (i, j) with j < i to flat index in theta vector."""
     # Angles are stored row by row: row 1 has 1 angle, row 2 has 2, etc.

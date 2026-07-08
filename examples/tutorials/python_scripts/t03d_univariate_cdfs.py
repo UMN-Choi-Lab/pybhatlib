@@ -37,17 +37,34 @@ from scipy.stats import norm as scipy_norm
 
 x_vals = np.array([-2.0, -1.0, 0.0, 1.0, 2.0])
 
+# normal_pdf / normal_cdf are vectorized and return a 1-D array; index [0] to
+# pull out the scalar for each element so float() never sees a length-1 array.
 print(f"\n  {'x':>6s} {'pdf(x)':>10s} {'scipy':>10s} {'cdf(x)':>10s} {'scipy':>10s}")
 print(f"  {'-'*48}")
 for x in x_vals:
-    pdf_val = float(normal_pdf(np.array([x])))
-    cdf_val = float(normal_cdf(np.array([x])))
+    pdf_val = float(normal_pdf(np.array([x]))[0])
+    cdf_val = float(normal_cdf(np.array([x]))[0])
     sp_pdf = scipy_norm.pdf(x)
     sp_cdf = scipy_norm.cdf(x)
     print(f"  {x:>6.1f} {pdf_val:>10.6f} {sp_pdf:>10.6f} {cdf_val:>10.6f} {sp_cdf:>10.6f}")
 
-print(f"\n  Max PDF difference: {max(abs(float(normal_pdf(np.array([x]))) - scipy_norm.pdf(x)) for x in x_vals):.2e}")
-print(f"  Max CDF difference: {max(abs(float(normal_cdf(np.array([x]))) - scipy_norm.cdf(x)) for x in x_vals):.2e}")
+max_pdf_diff = max(abs(float(normal_pdf(np.array([x]))[0]) - scipy_norm.pdf(x))
+                   for x in x_vals)
+max_cdf_diff = max(abs(float(normal_cdf(np.array([x]))[0]) - scipy_norm.cdf(x))
+                   for x in x_vals)
+print(f"\n  Max PDF difference: {max_pdf_diff:.2e}")
+print(f"  Max CDF difference: {max_cdf_diff:.2e}")
+
+# GAUSS cross-check: the BHATLIB CDF building blocks reproduce the GAUSS
+# built-in cdfn() (= standard normal lower-tail Phi) to machine precision.
+# Reference values printed below are GAUSS cdfn(x) outputs.
+print("\n  GAUSS cross-check (cdfn = standard normal CDF, lower tail):")
+print(f"    {'x':>6s} {'GAUSS cdfn(x)':>14s} {'PyBhatLib cdf':>14s}")
+gauss_cdfn = {-2.0: 0.022750, -1.0: 0.158655, 0.0: 0.500000,
+              1.0: 0.841345, 2.0: 0.977250}
+for x in x_vals:
+    pb = float(normal_cdf(np.array([x]))[0])
+    print(f"    {x:>6.1f} {gauss_cdfn[x]:>14.6f} {pb:>14.6f}")
 
 # ============================================================
 #  Step 2: Bivariate normal CDF
@@ -79,11 +96,21 @@ for rho, x1, x2 in test_cases:
 
 # Special case: rho=0 means P(X1<=x1, X2<=x2) = P(X1<=x1) * P(X2<=x2)
 bvn_indep = bivariate_normal_cdf(1.0, 1.0, 0.0)
-product = float(normal_cdf(np.array([1.0]))) * float(normal_cdf(np.array([1.0])))
+product = float(normal_cdf(np.array([1.0]))[0]) * float(normal_cdf(np.array([1.0]))[0])
 print(f"\n  When rho=0: bivariate CDF = product of marginals")
 print(f"    bivariate_normal_cdf(1, 1, 0) = {bvn_indep:.6f}")
 print(f"    Phi(1) * Phi(1)               = {product:.6f}")
 print(f"    Match: {abs(bvn_indep - product) < 1e-6}")
+
+# GAUSS cross-check: at the origin the bivariate CDF has the closed form
+#   P(X1<=0, X2<=0) = 1/4 + arcsin(rho) / (2*pi),
+# which the GAUSS built-in cdfbvn reproduces exactly. Confirm pybhat matches.
+print("\n  GAUSS cross-check (bivariate CDF at origin = 1/4 + asin(rho)/2pi):")
+print(f"    {'rho':>6s} {'GAUSS cdfbvn':>14s} {'PyBhatLib':>14s}")
+for rho in (0.0, 0.8, -0.8):
+    gauss_ref = 0.25 + np.arcsin(rho) / (2.0 * np.pi)
+    pb = bivariate_normal_cdf(0.0, 0.0, rho)
+    print(f"    {rho:>6.1f} {gauss_ref:>14.6f} {pb:>14.6f}")
 
 # ============================================================
 #  Step 3: Trivariate normal CDF

@@ -74,6 +74,19 @@ print(f"    Cols = K*(K+1)/2 = {n_cov} (vecdup of Omega)")
 print(f"\n  glitomega =\n{result.glitomega}")
 print(f"\n  gomegastar =\n{result.gomegastar}")
 
+print("""
+  GAUSS cross-reference (matgradient.src, proc gradcovcor):
+  The GAUSS routine returns { glitomega, gomegastar } in exactly this
+  row-based arrangement: each ROW of glitomega is one std-dev omega_k and
+  each COLUMN is one vecdup(Omega) element, and each row of gomegastar is
+  one off-diagonal correlation. The GAUSS header documents the intended use
+  as the LEFT-multiplied chain rule  dF/dw = glitomega * dF/da  (and
+  dF/drho = gomegastar * dF/da), which is what we demonstrate in Step 5.
+  Because gradcovcor is a deterministic Jacobian (no estimation), the
+  finite-difference checks below ARE the numerical cross-check against the
+  GAUSS algorithm.
+""")
+
 # ============================================================
 #  Step 3: Verify glitomega via finite differences
 # ============================================================
@@ -130,10 +143,71 @@ print(f"\n  Max error |analytic - numerical|: {max_err2:.2e}")
 print(f"  Verification passed: {max_err2 < 1e-4}")
 
 # ============================================================
-#  Step 5: Interpretation
+#  Step 5: Apply the chain rule to a scalar function
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 5: Why Decompose Covariance This Way?")
+print("  Step 5: Chain Rule in Action (dF/domega, dF/dOmega*)")
+print("=" * 60)
+
+print("""
+  The whole point of gradcovcor is the chain rule. Suppose an estimator
+  produces dF/d(vecdup Omega) -- the gradient of a scalar loss F with
+  respect to the covariance elements. To optimize over the std devs omega
+  and correlations Omega* directly we left-multiply by the Jacobians:
+
+      dF/domega = glitomega   @ dF/d(vecdup Omega)
+      dF/dOmega* = gomegastar @ dF/d(vecdup Omega)
+
+  Here we pick a concrete scalar F(Omega) = sum(vecdup(Omega) ** 2), so
+  dF/d(vecdup Omega) = 2 * vecdup(Omega), then verify the propagated
+  gradients against finite differences of F taken in (omega, Omega*) space.
+""")
+
+vec_Omega = vecdup(Omega)
+dF_dvecOmega = 2.0 * vec_Omega          # analytic dF/d(vecdup Omega)
+
+# Propagate via gradcovcor Jacobians (LEFT multiply, GAUSS convention)
+dF_domega = result.glitomega @ dF_dvecOmega
+dF_dOmegastar = result.gomegastar @ dF_dvecOmega
+
+# Finite-difference dF directly w.r.t. omega
+dF_domega_fd = np.zeros(K)
+for k in range(K):
+    op = omega.copy(); op[k] += eps
+    om = omega.copy(); om[k] -= eps
+    Fp = np.sum(vecdup(np.diag(op) @ Omega_star @ np.diag(op)) ** 2)
+    Fm = np.sum(vecdup(np.diag(om) @ Omega_star @ np.diag(om)) ** 2)
+    dF_domega_fd[k] = (Fp - Fm) / (2 * eps)
+
+# Finite-difference dF directly w.r.t. off-diagonal correlations
+dF_dOmegastar_fd = np.zeros(n_corr)
+idx = 0
+for i in range(K):
+    for j in range(i + 1, K):
+        Sp = Omega_star.copy(); Sp[i, j] += eps; Sp[j, i] += eps
+        Sm = Omega_star.copy(); Sm[i, j] -= eps; Sm[j, i] -= eps
+        Fp = np.sum(vecdup(np.diag(omega) @ Sp @ np.diag(omega)) ** 2)
+        Fm = np.sum(vecdup(np.diag(omega) @ Sm @ np.diag(omega)) ** 2)
+        dF_dOmegastar_fd[idx] = (Fp - Fm) / (2 * eps)
+        idx += 1
+
+err_omega = np.max(np.abs(dF_domega - dF_domega_fd))
+err_star = np.max(np.abs(dF_dOmegastar - dF_dOmegastar_fd))
+
+print(f"  dF/domega   (chain rule) = {dF_domega}")
+print(f"  dF/domega   (finite diff)= {dF_domega_fd}")
+print(f"  max error                = {err_omega:.2e}")
+print(f"\n  dF/dOmega*  (chain rule) = {dF_dOmegastar}")
+print(f"  dF/dOmega*  (finite diff)= {dF_dOmegastar_fd}")
+print(f"  max error                = {err_star:.2e}")
+print(f"\n  Chain-rule verification passed: "
+      f"{err_omega < 1e-4 and err_star < 1e-4}")
+
+# ============================================================
+#  Step 6: Interpretation
+# ============================================================
+print("\n" + "=" * 60)
+print("  Step 6: Why Decompose Covariance This Way?")
 print("=" * 60)
 
 print("""

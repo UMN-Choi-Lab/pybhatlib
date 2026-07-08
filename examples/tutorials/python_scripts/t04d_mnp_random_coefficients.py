@@ -126,8 +126,8 @@ model = MNPModel(
 results = model.fit()
 t_elapsed = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {results.ll_total:.3f}")
-print(f"  Parameters: {len(results.b)}")
+print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
+print(f"  Parameters: {len(results.b_original)}")
 print(f"  Estimation time: {t_elapsed:.1f}s")
 
 # ============================================================
@@ -137,20 +137,24 @@ print("\n" + "=" * 60)
 print("  Step 3: Interpreting Results")
 print("=" * 60)
 
-print("\n  Estimated coefficients:")
-if hasattr(results, "param_names") and results.param_names is not None:
-    for name, val in zip(results.param_names, results.b):
-        print(f"    {name:<25s}  {val:>10.4f}")
-else:
-    param_labels = list(spec.keys())
-    for i, val in enumerate(results.b):
-        label = param_labels[i] if i < len(param_labels) else f"param_{i}"
-        print(f"    {label:<25s}  {val:>10.4f}")
+# Report BHATLIB-normalized values (results.b_original) so output matches the
+# GAUSS BHATLIB reference and the published paper tables. results.params holds
+# the raw theta-space values used internally by the optimizer/predictor (under
+# IID they differ from b_original by a factor of 1/sqrt(2)).
+print("\n  Estimated coefficients (BHATLIB-normalized — match GAUSS output):")
+print(f"    {'Parameter':<25s} {'Estimate':>10s} {'StdErr':>10s} "
+      f"{'t-stat':>9s} {'p-val':>8s}")
+print("    " + "-" * 64)
+for name, val, se, t, p in zip(
+    results.param_names, results.b_original,
+    results.se, results.t_stat, results.p_value,
+):
+    print(f"    {name:<25s} {val:>10.4f} {se:>10.4f} {t:>9.3f} {p:>8.4f}")
 
 print(f"\n  Target log-likelihood : -635.871  (BHATLIB paper Table 1, Model c)")
-print(f"  Achieved log-likelihood: {results.ll_total:.3f}")
+print(f"  Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")
 
-diff = abs(results.ll_total - (-635.871))
+diff = abs(results.loglik * results.n_obs - (-635.871))
 print(f"  Absolute difference   : {diff:.4f}")
 if diff < 0.005:
     print("  Result matches the paper target to within 0.005 LL units.")
@@ -180,10 +184,82 @@ print("""
 """)
 
 # ============================================================
-#  Step 4: Comparison and Guidance
+#  Step 4: Average Treatment Effect (ATE) Scenarios
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 4: Comparison and Guidance")
+print("  Step 4: Average Treatment Effect (ATE) Scenarios")
+print("=" * 60)
+
+print("""
+  Even with a random coefficient on OVTT, we can still ask a policy
+  question with the fitted model: how would mode shares change if a
+  variable were set to a counterfactual value for everyone in the
+  sample?  This is the Average Treatment Effect (ATE).
+
+  The AGE45 variable in our spec flags travellers over 45.  Setting
+  AGE45 = 0 for everyone gives the predicted shares for a fully
+  "under-45" population; AGE45 = 1 gives a fully "over-45" population.
+  The difference is the ATE of being over 45 on mode choice.
+
+  The current API computes this with the scenarios= argument, which
+  evaluates each named counterfactual in a single call and returns
+  per-scenario mean shares.  This is the GAUSS MNP_TRAVELMODE_ATE.gss
+  workflow (changevar = AGE45) expressed through the scenarios API:
+
+      ate = mnp_ate(results, data=df, spec=spec, alternatives=alts,
+                    scenarios={"under45": {"AGE45": 0},
+                               "over45":  {"AGE45": 1}})
+      ate.shares_per_scenario["under45"]
+      ate.comparison("under45", "over45")
+
+  Note: do NOT compare two legacy changevar= calls — that path's
+  .predicted_shares is the unconditional unmodified prediction and
+  silently yields a 0% ATE.
+""")
+
+import pandas as pd  # noqa: E402
+from pybhatlib.models.mnp import mnp_ate  # noqa: E402
+
+df = pd.read_csv(data_path)
+ate = mnp_ate(
+    results,
+    data=df,
+    spec=spec,
+    alternatives=alternatives,
+    scenarios={"under45": {"AGE45": 0}, "over45": {"AGE45": 1}},
+)
+
+shares_u = ate.shares_per_scenario["under45"]
+shares_o = ate.shares_per_scenario["over45"]
+pct = ate.comparison("under45", "over45")
+
+alt_labels = ["DA (drive alone)", "SR (shared ride)", "TR (transit)"]
+print("  Predicted mode shares by scenario:")
+print(f"    {'Alternative':<20s} {'under45':>10s} {'over45':>10s} "
+      f"{'% change':>10s}")
+print("    " + "-" * 52)
+for lab, su, so, pc in zip(alt_labels, shares_u, shares_o, pct):
+    print(f"    {lab:<20s} {su:>10.4f} {so:>10.4f} {pc:>9.2f}%")
+
+print(f"""
+  Interpretation:
+    - Each scenario's shares sum to 1 (a full population prediction).
+    - Being over 45 shifts share toward drive-alone (+{pct[0]:.1f}%) and
+      away from shared-ride ({pct[1]:.1f}%) and transit ({pct[2]:.1f}%).
+    - The sign is consistent with the positive AGE45_DA coefficient
+      ({float(results.b_original[2]):+.3f}) estimated in Step 3.
+
+  GAUSS cross-check: MNP_TRAVELMODE_ATE.gss uses changevar = {{AGE45}},
+  changeval = {{1}} to compute the over-45 treatment shares; the
+  scenarios API reproduces that treatment column plus the base column
+  in one call.
+""")
+
+# ============================================================
+#  Step 5: Comparison and Guidance
+# ============================================================
+print("\n" + "=" * 60)
+print("  Step 5: Comparison and Guidance")
 print("=" * 60)
 
 print("""

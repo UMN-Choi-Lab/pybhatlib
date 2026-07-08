@@ -7,8 +7,11 @@ This tutorial walks through estimation, interpretation, and model comparison.
 What you will learn:
   - Flexible covariance parameterization: Omega = omega * Omega_star * omega
   - Spherical coordinates for positive-definite correlation matrices
+  - Reading the BHATLIB-normalized coefficient table (b_original, se, t, p)
+  - The UNPARAMETERIZED kernel correlation (no 2*atanh transform)
   - How to read the differenced covariance Lambda (lambda_hat)
   - Likelihood ratio test: IID vs flexible covariance
+  - Counterfactual / ATE share analysis via the scenarios= API
   - When flexible covariance is worth the extra parameters
 
 Prerequisites: t04a (IID model).
@@ -20,7 +23,7 @@ import numpy as np
 np.set_printoptions(precision=4, suppress=True)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "src"))
 
-from pybhatlib.models.mnp import MNPModel, MNPControl
+from pybhatlib.models.mnp import MNPModel, MNPControl, mnp_ate
 
 data_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "TRAVELMODE.csv")
 alternatives = ["Alt1_ch", "Alt2_ch", "Alt3_ch"]
@@ -52,8 +55,8 @@ model_iid = MNPModel(
 res_iid = model_iid.fit()
 t_iid = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_iid.ll_total:.3f}")
-print(f"  Parameters:     {len(res_iid.b)}")
+print(f"\n  Log-likelihood: {res_iid.loglik * res_iid.n_obs:.3f}")
+print(f"  Parameters:     {len(res_iid.params)}")
 print(f"  Time:           {t_iid:.1f}s")
 
 # ============================================================
@@ -94,15 +97,67 @@ model_flex = MNPModel(
 res_flex = model_flex.fit()
 t_flex = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_flex.ll_total:.3f}  (target: -661.111)")
-print(f"  Parameters:     {len(res_flex.b)}")
-print(f"  Time:           {t_flex:.1f}s")
+print(f"\n  PyBhatLib LL                : {res_flex.loglik * res_flex.n_obs:.3f}")
+print(f"  GAUSS / paper reference LL   : -661.111")
+print(f"  Reporting parameters         : {len(res_flex.b_original)}")
+print(f"  Time                         : {t_flex:.1f}s")
 
 # ============================================================
-#  Step 3: Interpreting Lambda
+#  Step 3: Coefficient Table & Kernel Correlation
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 3: Interpreting Lambda")
+print("  Step 3: Coefficient Table & Kernel Correlation")
+print("=" * 60)
+
+print("""
+  Report the fitted model using the BHATLIB/GAUSS-normalized
+  estimates (results.b_original), NOT the raw theta-space
+  results.params.  Under the flexible covariance identification
+  the kernel error covariance is normalized so that the first
+  differenced variance equals 1; b_original is aligned with
+  param_names and carries the standard errors, t-stats, and
+  p-values from the delta method.
+
+  The covariance block of b_original contains:
+    parker01  = the UNPARAMETERIZED kernel correlation.  This is
+                reported directly (no 2*atanh re-parameterization),
+                so it reads as an ordinary correlation in [-1, 1].
+    scale01,  = error standard-deviation scales (one alternative's
+    scale02     scale is absorbed by the variance normalization).
+""")
+
+print(f"  {'Parameter':<12s} {'Estimate':>10s} {'Std.err':>10s} "
+      f"{'t-stat':>9s} {'p-value':>9s}")
+print("  " + "-" * 52)
+for name, est, se, t, p in zip(
+    res_flex.param_names, res_flex.b_original,
+    res_flex.se, res_flex.t_stat, res_flex.p_value,
+):
+    print(f"  {name:<12s} {est:>10.4f} {se:>10.4f} {t:>9.3f} {p:>9.4f}")
+
+# The unparameterized kernel correlation is recoverable two ways:
+#   (1) directly from b_original ('parker01'), and
+#   (2) from the differenced kernel covariance lambda_hat via cov->corr.
+# They must agree (this is the "no 2*atanh transform" check).
+if "parker01" in res_flex.param_names:
+    parker = res_flex.b_original[res_flex.param_names.index("parker01")]
+else:
+    parker = float("nan")
+
+if res_flex.lambda_hat is not None:
+    L = res_flex.lambda_hat
+    d = np.sqrt(np.diag(L))
+    kernel_corr = L / np.outer(d, d)
+    print("\n  Kernel correlation cross-check (unparameterized):")
+    print(f"    parker01 (from b_original)        : {parker:.4f}")
+    print(f"    corr from lambda_hat (cov->corr)  : {kernel_corr[0, 1]:.4f}")
+    print(f"    GAUSS / paper reference           :  0.4731")
+
+# ============================================================
+#  Step 4: Interpreting Lambda
+# ============================================================
+print("\n" + "=" * 60)
+print("  Step 4: Interpreting Lambda")
 print("=" * 60)
 
 print("\n  lambda_hat = estimated differenced covariance matrix:")
@@ -134,21 +189,21 @@ print("""  How to read Lambda:
 """)
 
 # ============================================================
-#  Step 4: Model Comparison
+#  Step 5: Model Comparison
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 4: Model Comparison")
+print("  Step 5: Model Comparison")
 print("=" * 60)
 
-n_iid  = len(res_iid.b)
-n_flex = len(res_flex.b)
+n_iid  = len(res_iid.params)
+n_flex = len(res_flex.params)
 extra_params = n_flex - n_iid
-lr_stat = -2.0 * (res_iid.ll_total - res_flex.ll_total)
+lr_stat = -2.0 * (res_iid.loglik * res_iid.n_obs - res_flex.loglik * res_flex.n_obs)
 
 print(f"\n  {'Model':<15s} {'n_params':>10s} {'LL':>12s} {'Time(s)':>10s}")
 print(f"  {'-'*49}")
-print(f"  {'IID':<15s} {n_iid:>10d} {res_iid.ll_total:>12.3f} {t_iid:>10.1f}")
-print(f"  {'Flexible':<15s} {n_flex:>10d} {res_flex.ll_total:>12.3f} {t_flex:>10.1f}")
+print(f"  {'IID':<15s} {n_iid:>10d} {res_iid.loglik * res_iid.n_obs:>12.3f} {t_iid:>10.1f}")
+print(f"  {'Flexible':<15s} {n_flex:>10d} {res_flex.loglik * res_flex.n_obs:>12.3f} {t_flex:>10.1f}")
 
 print(f"""
   Likelihood Ratio Test:
@@ -164,10 +219,65 @@ print(f"""
 """)
 
 # ============================================================
-#  Step 5: When to Use Flexible Covariance
+#  Step 6: Counterfactual Share Analysis (ATE scenarios)
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 5: When to Use Flexible Covariance")
+print("  Step 6: Counterfactual Share Analysis (ATE scenarios)")
+print("=" * 60)
+
+print("""
+  With the fitted flexible-covariance model we can run a policy
+  counterfactual using the scenarios= API.  Each scenario is a
+  dict of {column: override_value}; mnp_ate re-predicts choice
+  probabilities under each scenario and aggregates to market
+  shares.  Comparing scenarios gives the average treatment
+  effect (ATE) on predicted shares.
+
+  Here we raise the COST of every alternative by 1 unit (a uniform
+  price increase) and contrast it with the base case.  Because the
+  flexible covariance lets the motorized alternatives share
+  unobserved factors, the substitution pattern differs from what
+  an IID model would predict.
+
+  Note: use scenarios= (NOT the legacy changevar=/changeval= path,
+  whose .predicted_shares returns the unmodified prediction and can
+  silently report a 0% ATE).
+""")
+
+ate = mnp_ate(
+    res_flex,
+    data=model_flex.data,
+    spec=spec,
+    alternatives=alternatives,
+    scenarios={
+        "base":       {},
+        "cost_plus1": {"COST_DA": 1.0, "COST_SR": 1.0, "COST_TR": 1.0},
+    },
+)
+
+base_sh = ate.shares_per_scenario["base"]
+trt_sh = ate.shares_per_scenario["cost_plus1"]
+pct = ate.comparison("base", "cost_plus1")
+
+alt_labels = ["Drive-alone", "Shared-ride", "Transit"]
+print(f"  {'Alternative':<14s} {'Base share':>11s} "
+      f"{'+1 cost':>11s} {'ATE (%)':>10s}")
+print("  " + "-" * 48)
+for lbl, b, t, p in zip(alt_labels, base_sh, trt_sh, pct):
+    print(f"  {lbl:<14s} {b:>11.4f} {t:>11.4f} {p:>10.2f}")
+
+print("""
+  Reading the result:
+    A uniform cost increase shifts probability mass toward the
+    cheapest / least cost-sensitive alternative.  The percentage
+    ATE column quantifies the relative share change per alternative.
+""")
+
+# ============================================================
+#  Step 7: When to Use Flexible Covariance
+# ============================================================
+print("\n" + "=" * 60)
+print("  Step 7: When to Use Flexible Covariance")
 print("=" * 60)
 
 print("""

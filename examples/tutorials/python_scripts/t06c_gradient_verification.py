@@ -199,22 +199,45 @@ print("\n" + "=" * 60)
 print("  Step 5: Gradmvn — Verify mvncd_grad")
 print("=" * 60)
 
+print("""
+  CRITICAL RULE: finite-difference the SAME function whose analytic
+  gradient you are checking. mvncd_grad() returns the gradient of the
+  Mendell-Elston ('me') MVNCD approximation, so the numerical check must
+  also perturb mvncd(..., method='me'). Differencing a *different*
+  approximation (e.g. method='scipy', a randomized quasi-Monte-Carlo
+  integrator) compares apples to oranges AND injects MC noise, producing
+  a spurious "failure" even when the analytic gradient is exact.
+""")
+
 sigma = np.array([[1.0, 0.3, 0.1], [0.3, 1.0, 0.4], [0.1, 0.4, 1.0]])
 a = np.array([1.0, 0.5, 0.0])
 
-result = mvncd_grad(a, sigma)
+result = mvncd_grad(a, sigma)  # uses method='me' with analytic gradients
 
-# Verify grad_a
-def mvncd_scalar(a_vec):
-    return mvncd(a_vec, sigma, method="scipy")
+# Verify grad_a against finite differences of the SAME ('me') function.
+def mvncd_me_scalar(a_vec):
+    return mvncd(a_vec, sigma, method="me")
 
-passed_a, max_err_a, grad_a_fd = verify_gradient(mvncd_scalar, result.grad_a, a, eps=1e-5)
+passed_a, max_err_a, grad_a_fd = verify_gradient(
+    mvncd_me_scalar, result.grad_a, a, eps=1e-6)
 
-print(f"\n  mvncd_grad.grad_a verification:")
-print(f"  Analytic: {result.grad_a}")
+print(f"\n  mvncd_grad.grad_a verification (vs FD of method='me'):")
+print(f"  MVNCD probability (me): {result.prob:.6f}")
+print(f"  Analytic:  {result.grad_a}")
 print(f"  Numerical: {grad_a_fd}")
 print(f"  Max error: {max_err_a:.2e}")
 print(f"  Passed: {passed_a}")
+
+# Anti-pattern demonstration: FD the WRONG (scipy MC) approximation.
+def mvncd_scipy_scalar(a_vec):
+    return mvncd(a_vec, sigma, method="scipy")
+
+_, max_err_wrong, grad_a_wrong = verify_gradient(
+    mvncd_scipy_scalar, result.grad_a, a, eps=1e-5)
+print(f"\n  Anti-pattern (FD of method='scipy', a DIFFERENT integrator):")
+print(f"  Numerical: {grad_a_wrong}")
+print(f"  Max error: {max_err_wrong:.2e}  <- spurious 'failure' from")
+print(f"             mismatched function + MC noise, NOT a gradient bug")
 
 # ============================================================
 #  Step 6: Best practices
@@ -247,6 +270,10 @@ print("""
      - Sign errors (maximizing vs minimizing)
      - Missing chain rule terms
      - Numerical noise in MVNCD approximations (use larger eps)
+     - Finite-differencing a DIFFERENT function than the one whose
+       analytic gradient you are checking (e.g. comparing the analytic
+       gradient of the 'me' MVNCD approximation against FD of the 'scipy'
+       Monte-Carlo integrator) -> spurious failure (see Step 5).
 
   Template usage:
     passed, err, grad_fd = verify_gradient(f, grad_analytic, x0)

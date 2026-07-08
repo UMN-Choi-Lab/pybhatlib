@@ -58,6 +58,16 @@ git add <files>
 git commit -m "Short imperative summary of the change"
 ```
 
+If you touch a tutorial, edit the `.py` script under
+`examples/tutorials/python_scripts/` (the single source of truth) and
+regenerate the notebooks — the `notebooks` CI job fails if they are stale or
+missing:
+
+```bash
+python examples/tutorials/_convert_to_ipynb.py
+git add examples/tutorials/*.ipynb
+```
+
 Commit message style:
 
 - First line: imperative mood, under 72 characters

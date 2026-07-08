@@ -9,7 +9,11 @@ What you will learn:
   - What the IID assumption means in the MNP context
   - How the differenced covariance matrix Sigma_diff is constructed
   - How to set up and estimate an IID MNP model with MNPControl(iid=True)
-  - How to read the estimated coefficients from results.b
+  - How to read the estimated coefficients from results.b_original
+    (BHATLIB-normalized; matches GAUSS output) vs results.params
+    (raw theta-space, used internally for prediction)
+  - How to compute an Average Treatment Effect (ATE) on predicted mode
+    shares with the scenarios= API of mnp_ate
   - When to use (and not use) the IID specification
 
 Prerequisites: t00 (quickstart).
@@ -21,7 +25,7 @@ import numpy as np
 np.set_printoptions(precision=4, suppress=True)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "src"))
 
-from pybhatlib.models.mnp import MNPModel, MNPControl
+from pybhatlib.models.mnp import MNPModel, MNPControl, mnp_ate
 
 data_path = os.path.join(os.path.dirname(__file__), "..", "..", "data", "TRAVELMODE.csv")
 alternatives = ["Alt1_ch", "Alt2_ch", "Alt3_ch"]
@@ -113,8 +117,8 @@ model = MNPModel(
 results = model.fit()
 t_elapsed = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {results.ll_total:.3f}")
-print(f"  Parameters: {len(results.b)}")
+print(f"\n  Log-likelihood: {results.loglik * results.n_obs:.3f}")
+print(f"  Parameters: {len(results.b_original)}")
 print(f"  Estimation time: {t_elapsed:.1f}s")
 
 # ============================================================
@@ -124,20 +128,20 @@ print("\n" + "=" * 60)
 print("  Step 3: Interpreting Results")
 print("=" * 60)
 
-print("\n  Estimated coefficients:")
-if hasattr(results, "param_names") and results.param_names is not None:
-    for name, val in zip(results.param_names, results.b):
-        print(f"    {name:<20s}  {val:>10.4f}")
-else:
-    param_labels = list(spec.keys())
-    for i, val in enumerate(results.b):
-        label = param_labels[i] if i < len(param_labels) else f"param_{i}"
-        print(f"    {label:<20s}  {val:>10.4f}")
+# Report BHATLIB-normalized coefficients (Sigma_diff[0,0]=1) so output
+# matches the GAUSS BHATLIB reference and the published paper tables.
+# `results.params` holds the raw theta-space values used internally by
+# the optimizer/predictor (differs by sqrt(Sigma_diff[0,0]) under IID).
+print("\n  Estimated coefficients (BHATLIB-normalized — match GAUSS output):")
+for name, val, se, t, p in zip(
+    results.param_names, results.b_original, results.se, results.t_stat, results.p_value
+):
+    print(f"    {name:<10s}  {val:>10.4f}   s.e.={se:>8.4f}   t={t:>8.3f}   p={p:>6.4f}")
 
 print(f"\n  Target log-likelihood : -670.956  (BHATLIB paper Table 1)")
-print(f"  Achieved log-likelihood: {results.ll_total:.3f}")
+print(f"  Achieved log-likelihood: {results.loglik * results.n_obs:.3f}")
 
-diff = abs(results.ll_total - (-670.956))
+diff = abs(results.loglik * results.n_obs - (-670.956))
 print(f"  Absolute difference   : {diff:.4f}")
 if diff < 0.005:
     print("  Result matches the paper target to within 0.005 LL units.")
@@ -149,10 +153,94 @@ print("""
 """)
 
 # ============================================================
-#  Step 4: IID Limitations
+#  Step 4: Average Treatment Effect (ATE) via scenarios=
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 4: IID Limitations and When to Use")
+print("  Step 4: Average Treatment Effect (ATE) via scenarios=")
+print("=" * 60)
+
+print("""
+  A common policy question is: how would predicted mode shares
+  change if a covariate were set to a counterfactual value?  The
+  scenarios= API of mnp_ate answers this WITHOUT re-estimation:
+
+    1. rebuild the design matrix for each scenario's overrides
+    2. recompute every observation's choice probabilities
+    3. average to obtain predicted shares per scenario
+
+  To demonstrate, we add the binary AGE45 indicator (1 if the
+  traveler is 45+) to the utilities of the DA and SR alternatives,
+  with transit (TR) as the base — the same AGE45 arrangement used
+  in BHATLIB Table 1 Model (b).  We keep the IID kernel here (the
+  published Model (b) LL of -659.285 uses the FLEXIBLE covariance;
+  the IID+AGE45 variant below is its IID counterpart).  We then
+  compare the AGE45=0 ("younger") and AGE45=1 ("older") scenarios.
+
+  NOTE: we use scenarios=, not the legacy changevar=/changeval=
+  path.  The scenario API returns shares_per_scenario for each
+  named scenario, so the ATE is the difference of two well-defined
+  counterfactual predictions (the legacy .predicted_shares is the
+  UNCONDITIONAL prediction and would yield a spurious 0% ATE).
+""")
+
+# Table 1 Model (b): IID + AGE45 on DA and SR (TR base), matching the
+# GAUSS reference spec (AGE45_DA, AGE45_SR; TR omitted as base).
+spec_age = dict(spec)
+spec_age["AGE45_DA"] = {"Alt1_ch": "AGE45", "Alt2_ch": "sero",  "Alt3_ch": "sero"}
+spec_age["AGE45_SR"] = {"Alt1_ch": "sero",  "Alt2_ch": "AGE45", "Alt3_ch": "sero"}
+
+model_age = MNPModel(
+    data=data_path,
+    alternatives=alternatives,
+    spec=spec_age,
+    control=MNPControl(iid=True, maxiter=100, verbose=0, seed=42),
+)
+results_age = model_age.fit()
+ll_age = results_age.loglik * results_age.n_obs
+ll_base = results.loglik * results.n_obs
+print(f"  IID baseline LL (no AGE45, Table 1 a-i) : {ll_base:.3f}")
+print(f"  IID + AGE45 LL                          : {ll_age:.3f}")
+print(f"  LR gain from 2 AGE45 betas              : {ll_age - ll_base:+.3f}")
+print(f"  (Reference: FLEXIBLE-cov + AGE45 is Table 1 Model b, LL = -659.285)")
+for name, val in zip(results_age.param_names, results_age.b_original):
+    if name.startswith("AGE45"):
+        print(f"    estimated {name:<10s} = {val:>8.4f}")
+
+# Counterfactual shares: everyone "younger" (AGE45=0) vs "older" (AGE45=1).
+import pandas as pd  # noqa: E402 — local import keeps Step 1-3 dependency-free
+
+ate = mnp_ate(
+    results_age,
+    data=pd.read_csv(data_path),
+    spec=spec_age,
+    alternatives=alternatives,
+    scenarios={"younger": {"AGE45": 0}, "older": {"AGE45": 1}},
+)
+
+# shares_per_scenario / comparison are already averaged over observations
+# (shape = (n_alternatives,)).
+alt_labels = ["DA", "SR", "TR"]
+shares_young = np.asarray(ate.shares_per_scenario["younger"])
+shares_old = np.asarray(ate.shares_per_scenario["older"])
+pct_change = np.asarray(ate.comparison("younger", "older"))
+
+print("\n  Predicted aggregate mode shares under each AGE45 scenario:")
+print(f"    {'Alt':<6s} {'AGE45=0':>10s} {'AGE45=1':>10s} {'%change':>10s}")
+for lab, s0, s1, pc in zip(alt_labels, shares_young, shares_old, pct_change):
+    print(f"    {lab:<6s} {s0:>10.4f} {s1:>10.4f} {pc:>9.2f}%")
+
+print("""
+  Interpretation: a positive AGE45 coefficient on an alternative
+  raises that alternative's predicted share when AGE45 flips 0->1.
+  The %change column is the share-weighted ATE on each mode.  Shares
+  in each column sum to 1 by construction.
+""")
+
+# ============================================================
+#  Step 5: IID Limitations
+# ============================================================
+print("\n" + "=" * 60)
+print("  Step 5: IID Limitations and When to Use")
 print("=" * 60)
 
 print("""

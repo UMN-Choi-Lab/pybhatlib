@@ -58,12 +58,16 @@ SCIPY_THRESHOLD = 10
 SSJ_REF_DRAWS = 50000
 
 
-# ============================================================
-#  Step 1: Random correlation matrix generation (Section 3.1)
-# ============================================================
 print("=" * 72)
 print("  Tutorial T03e: Reproducing Bhat (2018) Table 1")
 print("=" * 72)
+
+# ============================================================
+#  Step 1: Random correlation matrix generation (Section 3.1)
+# ============================================================
+print("=" * 60)
+print("  Step 1: Random correlation matrix generation")
+print("=" * 60)
 
 print("""
   The paper generates 1000 random correlation matrices per dimension H,
@@ -144,6 +148,24 @@ def generate_test_cases(H, n_tests, rng):
 # ============================================================
 #  Step 2: Compute reference CDF values
 # ============================================================
+print("=" * 60)
+print("  Step 2: Compute reference CDF values")
+print("=" * 60)
+
+print("""
+  Reference (ground-truth) CDF values are needed to score each
+  approximation method. The choice of reference depends on dimension:
+
+    H <= 10 : scipy.stats.multivariate_normal.cdf (Genz 1992 algorithm),
+              treated as near-exact at these dimensions.
+    H >  10 : SSJ simulation with many draws, because scipy's CDF becomes
+              slow and less reliable as H grows.
+
+  Errors below are MEASURED AGAINST these references, so for H > 10 the
+  reference itself carries simulation noise (noted in the interpretation).
+""")
+
+
 def compute_reference(a, sigma, H, rng_ref):
     """Compute reference CDF value.
 
@@ -168,6 +190,9 @@ def compute_reference(a, sigma, H, rng_ref):
 # ============================================================
 #  Step 3: Run benchmarks for each H value
 # ============================================================
+print("=" * 60)
+print("  Step 3: Run benchmarks for each H value")
+print("=" * 60)
 
 # Paper Table 1 values for comparison (Bhat 2018, p.250, Table 1).
 # Format: {H: {method: (MAE, MAPE, pct_mae_005, pct_mape_2)}}
@@ -271,6 +296,8 @@ for H in H_VALUES:
     # --- Compare with paper Table 1 ---
     if H in PAPER_TABLE1:
         print(f"\n  Comparison with Bhat (2018) Table 1 (H={H}):")
+        print(f"  (Paper values are the published Bhat 2018 TR-B Table 1,"
+              f" p.250.)")
         print(f"  {'Method':>10s} {'Ours':>8s} {'Paper':>8s} {'Ours':>10s}"
               f" {'Paper':>8s}")
         print(f"  {'':>10s} {'MAPE%':>8s} {'MAPE%':>8s} {'MAE':>10s}"
@@ -291,6 +318,10 @@ for H in H_VALUES:
 # ============================================================
 #  Step 4: Summary across all H values
 # ============================================================
+print("=" * 60)
+print("  Step 4: Summary across all H values")
+print("=" * 60)
+
 print(f"\n\n{'=' * 72}")
 print(f"  Summary: MAPE(%) across dimensions")
 print(f"{'=' * 72}")
@@ -323,6 +354,10 @@ if any(H in PAPER_TABLE1 for H in H_VALUES):
 # ============================================================
 #  Step 5: Interpretation
 # ============================================================
+print("=" * 60)
+print("  Step 5: Interpretation")
+print("=" * 60)
+
 print(f"""
 {'=' * 72}
   Interpretation

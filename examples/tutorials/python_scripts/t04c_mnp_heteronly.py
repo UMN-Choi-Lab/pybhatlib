@@ -8,7 +8,15 @@ What you will learn:
   - heteronly=True: different error variances, zero correlations
   - How to compare IID vs heteronly vs full covariance models
   - Model selection: when each specification is appropriate
-  - Interpreting the covariance structure
+  - Reporting GAUSS/BHATLIB-normalized coefficients (results.b_original)
+    with std errors / t / p
+  - The sum-of-squared-scales identification (sum(scale^2) = 1)
+
+GAUSS / paper cross-check (BHATLIB Table 1):
+  - Model (a)(i)  IID      : LL = -670.956
+  - Model (a)(ii) Flexible : LL = -661.111
+The heteroscedastic-only kernel has no separately published Table-1 row;
+its LL must lie between the IID and full-covariance bounds.
 
 Prerequisites: t00 (quickstart).
 
@@ -32,6 +40,25 @@ spec = {
     "COST":   {"Alt1_ch": "COST_DA", "Alt2_ch": "COST_SR", "Alt3_ch": "COST_TR"},
 }
 
+
+def print_coefs(res):
+    """Print GAUSS/BHATLIB-normalized coefficients with std errors / t / p.
+
+    For MNP, results.b_original holds the BHATLIB-normalized estimates that
+    match GAUSS and the published paper tables (results.params is the raw
+    theta-space vector used internally for prediction; under IID the two
+    differ by a factor of 1/sqrt(2)). Always REPORT b_original.
+    """
+    print(f"\n  {'Parameter':<12s} {'Estimate':>10s} {'Std.Err':>10s}"
+          f" {'t-stat':>9s} {'p-value':>9s}")
+    print(f"  {'-' * 52}")
+    for name, b, se, t, p in zip(
+        res.param_names, res.b_original, res.se, res.t_stat, res.p_value
+    ):
+        print(f"  {name:<12s} {b:>10.4f} {se:>10.4f} {t:>9.3f} {p:>9.3f}")
+    print(f"  Parameters reported: {len(res.b_original)}")
+
+
 # ============================================================
 #  Step 1: IID Model (homoscedastic, no correlations)
 # ============================================================
@@ -50,9 +77,10 @@ model_iid = MNPModel(
 res_iid = model_iid.fit()
 t_iid = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_iid.ll_total:.3f}")
-print(f"  Parameters: {len(res_iid.b)}")
+print(f"\n  GAUSS / paper reference LL : -670.956")
+print(f"  PyBhatLib LL               : {res_iid.loglik * res_iid.n_obs:.3f}")
 print(f"  Time: {t_iid:.1f}s")
+print_coefs(res_iid)
 
 # ============================================================
 #  Step 2: Heteronly Model (different variances, no correlations)
@@ -78,9 +106,13 @@ model_het = MNPModel(
 res_het = model_het.fit()
 t_het = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_het.ll_total:.3f}")
-print(f"  Parameters: {len(res_het.b)}")
+ll_het = res_het.loglik * res_het.n_obs
+print(f"\n  IID lower bound  LL : -670.956")
+print(f"  Heteronly        LL : {ll_het:.3f}")
+print(f"  Full-cov upper   LL : -661.111")
+print(f"  In-bounds check     : {-670.956 <= ll_het <= -661.111}")
 print(f"  Time: {t_het:.1f}s")
+print_coefs(res_het)
 
 # ============================================================
 #  Step 3: Full Covariance Model
@@ -106,9 +138,10 @@ model_full = MNPModel(
 res_full = model_full.fit()
 t_full = time.perf_counter() - t0
 
-print(f"\n  Log-likelihood: {res_full.ll_total:.3f}")
-print(f"  Parameters: {len(res_full.b)}")
+print(f"\n  GAUSS / paper reference LL : -661.111")
+print(f"  PyBhatLib LL               : {res_full.loglik * res_full.n_obs:.3f}")
 print(f"  Time: {t_full:.1f}s")
+print_coefs(res_full)
 
 # ============================================================
 #  Step 4: Comparison Table
@@ -119,15 +152,73 @@ print("=" * 60)
 
 print(f"\n  {'Model':<15s} {'n_params':>10s} {'LL':>12s} {'Time(s)':>10s}")
 print(f"  {'-'*49}")
-print(f"  {'IID':<15s} {len(res_iid.b):>10d} {res_iid.ll_total:>12.3f} {t_iid:>10.1f}")
-print(f"  {'Heteronly':<15s} {len(res_het.b):>10d} {res_het.ll_total:>12.3f} {t_het:>10.1f}")
-print(f"  {'Full Cov':<15s} {len(res_full.b):>10d} {res_full.ll_total:>12.3f} {t_full:>10.1f}")
+print(f"  {'IID':<15s} {len(res_iid.b_original):>10d} {res_iid.loglik * res_iid.n_obs:>12.3f} {t_iid:>10.1f}")
+print(f"  {'Heteronly':<15s} {len(res_het.b_original):>10d} {res_het.loglik * res_het.n_obs:>12.3f} {t_het:>10.1f}")
+print(f"  {'Full Cov':<15s} {len(res_full.b_original):>10d} {res_full.loglik * res_full.n_obs:>12.3f} {t_full:>10.1f}")
+
+# Likelihood-ratio tests (nested models): heteronly vs IID, full vs heteronly.
+from scipy.stats import chi2  # noqa: E402
+
+ll_iid = res_iid.loglik * res_iid.n_obs
+ll_het2 = res_het.loglik * res_het.n_obs
+ll_full = res_full.loglik * res_full.n_obs
+
+lr_het = 2.0 * (ll_het2 - ll_iid)
+df_het = len(res_het.b_original) - len(res_iid.b_original)
+lr_full = 2.0 * (ll_full - ll_het2)
+df_full = len(res_full.b_original) - len(res_het.b_original)
+
+print(f"\n  LR test heteronly vs IID : LR={lr_het:.3f}, df={df_het},"
+      f" p={chi2.sf(lr_het, df_het):.4f}")
+print(f"  LR test full vs heteronly: LR={lr_full:.3f}, df={df_full},"
+      f" p={chi2.sf(lr_full, df_full):.4f}")
 
 # ============================================================
-#  Step 5: When to use each
+#  Step 5: Scale identification (sum-of-squared-scales = 1)
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 5: When to Use Each Model")
+print("  Step 5: Heteroscedastic Scale Identification")
+print("=" * 60)
+
+print("""
+The MNP likelihood depends only on UTILITY DIFFERENCES, so the overall
+scale and one variance of the error vector are not identified. PyBhatLib
+fixes this with the sum-of-squared-scales normalization:
+
+      sum_i scale_i^2 = 1
+
+For the heteroscedastic-only kernel the scale parameters (scale01,
+scale02, ...) are exactly the per-alternative standard deviations of the
+DIFFERENCED error vector, with this unit-sum-of-squares constraint
+applied. This is the modern default (see the IID tutorial's note that
+under IID b_original and params differ by 1/sqrt(2)); it keeps the
+reported scales directly comparable across specifications.
+""")
+
+scale_names = [n for n in res_het.param_names if n.startswith("scale")]
+scale_idx = [res_het.param_names.index(n) for n in scale_names]
+scales = res_het.b_original[scale_idx]
+
+print(f"  Reported scale parameters : {scale_names}")
+print(f"  Scale estimates           : {scales}")
+print(f"  sum(scale^2)              : {np.sum(scales ** 2):.6f}")
+print(f"  Normalization holds (==1) : {np.isclose(np.sum(scales ** 2), 1.0)}")
+
+print("\n  Differenced kernel covariance (lambda_hat):")
+print(res_het.lambda_hat)
+print("""
+  Note: lambda_hat is the (I-1)x(I-1) DIFFERENCED covariance. Its
+  off-diagonal terms are non-zero even though the ORIGINAL utility errors
+  are uncorrelated -- differencing against the base alternative induces
+  correlation. This is the 'heteroscedasticity in the differenced
+  utilities' that the GAUSS BHATLIB driver (_heteronly=1) documents.
+""")
+
+# ============================================================
+#  Step 6: When to use each
+# ============================================================
+print("\n" + "=" * 60)
+print("  Step 6: When to Use Each Model")
 print("=" * 60)
 
 print("""

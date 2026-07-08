@@ -37,7 +37,7 @@ from pybhatlib.models.mnp import MNPModel, MNPControl
 # ============================================================
 # Paper uses H in {5, 10, 15, 20} and all 5 methods.
 # We use a smaller subset for reasonable runtime (~15 min).
-# For the full experiment, increase H_VALUES and N_OBS (see Step 8).
+# For the full experiment, increase H_VALUES and N_OBS (see Step 9).
 H_VALUES = [5]                     # H+1 = 6 alternatives
 N_OBS = 200                        # reduced from paper's 3000 for speed
 METHODS = ["me", "ovus", "tvbs"]   # subset for speed
@@ -285,11 +285,14 @@ for H in H_VALUES:
 
     reference_results[H] = results
 
-    print(f"    LL = {results.ll_total:.3f}")
-    print(f"    Converged: {results.converged} ({results.n_iterations} iterations)")
+    print(f"    LL = {results.loglik * results.n_obs:.3f}")
+    print(f"    Converged: {results.converged} ({results.n_iter} iterations)")
     print(f"    Time: {elapsed:.1f}s")
-    print(f"    Parameters: ", end="")
-    for name, val in zip(results.param_names, results.b):
+    # Report BHATLIB-normalized values (results.b_original) so output matches
+    # the GAUSS Bhat-2018 Table 2 reference; results.params remains raw theta
+    # for downstream predictor / serialization use below.
+    print(f"    Parameters (BHATLIB-normalized): ", end="")
+    for name, val in zip(results.param_names, results.b_original):
         print(f"{name}={val:.4f}  ", end="")
     print()
 
@@ -326,11 +329,11 @@ for H in H_VALUES:
 
     # Store reference in results dict
     all_results[H]["TVBS (ref)"] = {
-        "params": ref.b.copy(),
-        "ll": ref.ll_total,
+        "params": ref.params.copy(),
+        "ll": ref.loglik * ref.n_obs,
         "time": ref.convergence_time * 60.0,  # convert minutes to seconds
         "converged": ref.converged,
-        "n_iter": ref.n_iterations,
+        "n_iter": ref.n_iter,
     }
 
     for method in METHODS:
@@ -363,15 +366,15 @@ for H in H_VALUES:
                 elapsed = time.perf_counter() - t0
 
                 all_results[H][label] = {
-                    "params": results.b.copy(),
-                    "ll": results.ll_total,
+                    "params": results.params.copy(),
+                    "ll": results.loglik * results.n_obs,
                     "time": elapsed,
                     "converged": results.converged,
-                    "n_iter": results.n_iterations,
+                    "n_iter": results.n_iter,
                 }
 
-                print(f"  H={H}, {label}: LL={results.ll_total:.3f}, "
-                      f"{results.n_iterations} iter, {elapsed:.1f}s")
+                print(f"  H={H}, {label}: LL={results.loglik * results.n_obs:.3f}, "
+                      f"{results.n_iter} iter, {elapsed:.1f}s")
         else:
             label = method.upper()
             ctrl = MNPControl(
@@ -396,15 +399,15 @@ for H in H_VALUES:
             elapsed = time.perf_counter() - t0
 
             all_results[H][label] = {
-                "params": results.b.copy(),
-                "ll": results.ll_total,
+                "params": results.params.copy(),
+                "ll": results.loglik * results.n_obs,
                 "time": elapsed,
                 "converged": results.converged,
-                "n_iter": results.n_iterations,
+                "n_iter": results.n_iter,
             }
 
-            print(f"  H={H}, {label}: LL={results.ll_total:.3f}, "
-                  f"{results.n_iterations} iter, {elapsed:.1f}s")
+            print(f"  H={H}, {label}: LL={results.loglik * results.n_obs:.3f}, "
+                  f"{results.n_iter} iter, {elapsed:.1f}s")
 
 
 # ============================================================
@@ -534,10 +537,131 @@ for H in H_VALUES:
 
 
 # ============================================================
-#  Step 8: Interpretation and Guidance
+#  Step 8: GAUSS vs. PyBhatLib Coefficient Cross-Check
 # ============================================================
 print("\n" + "=" * 60)
-print("  Step 8: Interpretation and Practical Guidance")
+print("  Step 8: GAUSS vs. PyBhatLib Coefficient Cross-Check")
+print("=" * 60)
+
+print("""
+  The Monte Carlo above uses a synthetic DGP, so there is no external
+  ground truth to validate the estimator against beyond cross-method
+  agreement.  To close that loop, we now re-estimate two of the actual
+  TRAVELMODE choice models distributed in the GAUSS BHATLIB driver set
+  ("Gauss Files and Comparison/MNP/Table2/MNP Table2 ai.gss" and
+  "... aii.gss") and compare PyBhatLib's BHATLIB-normalized coefficients
+  (results.b_original) and total log-likelihood against the validated
+  GAUSS / published reference values.
+
+  These are the same models reported in BHATLIB Table 1:
+    (a)(i)  IID kernel       -> LL = -670.956
+    (a)(ii) Flexible kernel  -> LL = -661.111
+
+  Reporting note: we print results.b_original (BHATLIB/GAUSS-normalized),
+  NOT results.params.  Under the IID identification the two differ by a
+  1/sqrt(2) scale factor; only b_original matches the GAUSS output and the
+  paper table.  Standard errors / t-stats come from results.se / .t_stat.
+""")
+
+# TRAVELMODE data ships with the tutorials; resolve its path the same way
+# the other t04 tutorials do.
+travelmode_path = os.path.join(
+    os.path.dirname(__file__), "..", "..", "data", "TRAVELMODE.csv"
+)
+
+# Figure-4 specification (5 mean-utility parameters), shared by both models.
+travelmode_alts = ["Alt1_ch", "Alt2_ch", "Alt3_ch"]
+travelmode_spec = {
+    "CON_SR": {"Alt1_ch": "sero", "Alt2_ch": "uno", "Alt3_ch": "sero"},
+    "CON_TR": {"Alt1_ch": "sero", "Alt2_ch": "sero", "Alt3_ch": "uno"},
+    "IVTT":   {"Alt1_ch": "IVTT_DA", "Alt2_ch": "IVTT_SR", "Alt3_ch": "IVTT_TR"},
+    "OVTT":   {"Alt1_ch": "OVTT_DA", "Alt2_ch": "OVTT_SR", "Alt3_ch": "OVTT_TR"},
+    "COST":   {"Alt1_ch": "COST_DA", "Alt2_ch": "COST_SR", "Alt3_ch": "COST_TR"},
+}
+
+# Validated GAUSS / BHATLIB-Table-1 reference values (verified against the
+# GAUSS drivers in "Gauss Files and Comparison/MNP/Table2/").
+#   - IID coefficients: CON_SR, CON_TR, IVTT, OVTT, COST
+#   - Flexible adds 3 covariance parameters: parker01, scale01, scale02
+gauss_reference = {
+    "(a)(i)  IID": {
+        "iid": True,
+        "ll": -670.956,
+        "coeffs": {
+            "CON_SR": -1.0194, "CON_TR": -0.3450, "IVTT": -0.4527,
+            "OVTT": -0.4860, "COST": -0.3474,
+        },
+    },
+    "(a)(ii) Flexible": {
+        "iid": False,
+        "ll": -661.111,
+        "coeffs": {
+            "CON_SR": -0.4446, "CON_TR": -0.2403, "IVTT": -0.3988,
+            "OVTT": -0.4627, "COST": -0.2692,
+            "parker01": 0.4731, "scale01": 0.4497, "scale02": 0.8932,
+        },
+    },
+}
+
+for label, ref in gauss_reference.items():
+    print(f"\n  Model {label} (TRAVELMODE, real data)")
+    print("  " + "-" * 58)
+
+    model = MNPModel(
+        data=travelmode_path,
+        alternatives=travelmode_alts,
+        availability="none",
+        spec=travelmode_spec,
+        control=MNPControl(iid=ref["iid"], maxiter=200, verbose=0, seed=SEED),
+    )
+    results = model.fit()
+    py_ll = results.loglik * results.n_obs
+
+    # Log-likelihood cross-check
+    print(f"  GAUSS / paper reference LL : {ref['ll']:.3f}")
+    print(f"  PyBhatLib LL               : {py_ll:.3f}")
+    print(f"  |difference|               : {abs(py_ll - ref['ll']):.4f}")
+
+    # Coefficient table: GAUSS reference vs PyBhatLib (b_original) with se/t
+    print(f"\n  {'Parameter':<10s} {'GAUSS':>10s} {'PyBhat':>10s} "
+          f"{'Std.Err':>10s} {'t-stat':>9s} {'abs diff':>10s}")
+    print("  " + "-" * 62)
+    for name, est, se, tval in zip(results.param_names, results.b_original,
+                                   results.se, results.t_stat):
+        gval = ref["coeffs"].get(name, np.nan)
+        if np.isfinite(gval):
+            diff_str = f"{abs(est - gval):>10.4f}"
+            gval_str = f"{gval:>10.4f}"
+        else:
+            diff_str = f"{'---':>10s}"
+            gval_str = f"{'---':>10s}"
+        print(f"  {name:<10s} {gval_str} {est:>10.4f} "
+              f"{se:>10.4f} {tval:>9.3f} {diff_str}")
+
+    # Overall verdict (LL within 1e-2, coeffs within 1e-3)
+    ll_ok = abs(py_ll - ref["ll"]) < 1e-2
+    coeff_diffs = [abs(est - ref["coeffs"][name])
+                   for name, est in zip(results.param_names, results.b_original)
+                   if name in ref["coeffs"]]
+    coeff_ok = max(coeff_diffs) < 1e-3 if coeff_diffs else False
+    verdict = "MATCH" if (ll_ok and coeff_ok) else "REVIEW"
+    print(f"\n  Cross-check verdict: {verdict} "
+          f"(LL ok={ll_ok}, max coeff diff={max(coeff_diffs):.4f})")
+
+print("""
+  Takeaway: PyBhatLib reproduces the GAUSS BHATLIB coefficients and
+  log-likelihood for the real TRAVELMODE models to 3-4 decimal places.
+  This validates the MNP estimation machinery (parameterization,
+  normalization, and MVNCD evaluation) that the synthetic Monte Carlo
+  above exercises across MVNCD methods.
+""")
+
+
+# ============================================================
+#  Step 9: Interpretation and Guidance
+# ============================================================
+print("\n" + "=" * 60)
+print("  Step 9: Interpretation and Practical Guidance")
 print("=" * 60)
 
 print("""

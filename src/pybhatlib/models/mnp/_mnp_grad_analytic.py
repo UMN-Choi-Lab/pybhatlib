@@ -190,6 +190,197 @@ def mnp_analytic_gradient(
         )
 
 
+def mnp_per_obs_scores(
+    theta: NDArray,
+    X: NDArray,
+    y: NDArray,
+    avail: NDArray | None,
+    n_alts: int,
+    n_beta: int,
+    control: MNPControl,
+    ranvar_indices: list[int] | None = None,
+) -> NDArray:
+    """Per-observation score matrix ``S[q, k] = d log P_q / d theta_k``.
+
+    This is the single-analytic-pass replacement for the central-finite-
+    difference BHHH/sandwich score loop (which costs ``2 * n_params`` full-data
+    per-observation log-likelihood evaluations). It reuses the same adjoint
+    machinery as :func:`mnp_analytic_gradient`, but stores each observation's
+    score row instead of summing them. By construction
+    ``S.sum(axis=0) == -N * grad`` where ``grad`` is the gradient returned by
+    :func:`mnp_analytic_gradient` (negative mean log-likelihood).
+
+    The returned scores are in the **parameterized** ``theta`` space (the
+    optimiser's space). Callers that need unparameterized-space scores apply the
+    par->unpar Jacobian (BHHH covariance transforms exactly under
+    reparameterisation, so ``cov_unpar = J_pu @ inv(S^T S) @ J_pu.T``).
+
+    Parameters mirror :func:`mnp_analytic_gradient`. Requires ``method in
+    {"me", "ovus"}`` and single-segment models (``nseg == 1``); mixture models
+    raise :class:`NotImplementedError` so the caller can fall back to finite
+    differences.
+
+    Returns
+    -------
+    scores : ndarray, shape (N, n_params)
+        Per-observation scores ``d log P_q / d theta``.
+    """
+    if control.nseg > 1:
+        raise NotImplementedError(
+            "mnp_per_obs_scores does not support mixture models (nseg > 1); "
+            "fall back to finite-difference scoring."
+        )
+    if control.method not in ("me", "ovus"):
+        raise NotImplementedError(
+            f"mnp_per_obs_scores requires method in {{me, ovus}}, "
+            f"got {control.method!r}."
+        )
+
+    theta = np.asarray(theta, dtype=np.float64)
+    X = np.asarray(X, dtype=np.float64)
+    y = np.asarray(y, dtype=np.int64)
+    N = X.shape[0]
+    I = n_alts
+    dim_lambda = I - 1
+    n_params = len(theta)
+
+    # ---- Unpack parameters (same layout as mnp_analytic_gradient) ----
+    idx = 0
+    beta = theta[idx:idx + n_beta]
+    idx += n_beta
+
+    lambda_params = None
+    n_scale = 0
+    n_corr = 0
+    n_lambda = 0
+    if not control.iid:
+        if control.heteronly:
+            n_scale = dim_lambda
+            n_lambda = n_scale
+        else:
+            n_scale = dim_lambda
+            n_corr = dim_lambda * (dim_lambda - 1) // 2
+            n_lambda = n_scale + n_corr
+        lambda_params = theta[idx:idx + n_lambda]
+        idx += n_lambda
+
+    omega_params = None
+    n_rand = 0
+    n_omega = 0
+    if control.mix and ranvar_indices is not None:
+        n_rand = len(ranvar_indices)
+        if control.randdiag:
+            n_omega = n_rand
+        else:
+            n_omega = n_rand * (n_rand + 1) // 2
+        omega_params = theta[idx:idx + n_omega]
+        idx += n_omega
+
+    Lambda, scales, corr = _build_lambda_components(
+        lambda_params, dim_lambda, control
+    )
+
+    Omega_L = None
+    Omega = None
+    if control.mix and omega_params is not None:
+        Omega_L, Omega = _build_omega_components(omega_params, n_rand, control)
+
+    corr_jac = None
+    if not control.iid and not control.heteronly and n_corr > 0:
+        corr_theta = lambda_params[n_scale:n_scale + n_corr]
+        corr_jac = grad_corr_theta(corr_theta, dim_lambda)
+
+    has_random_coeff = control.mix and Omega is not None
+    need_sigma_chain = (not control.iid) or has_random_coeff
+
+    Lambda_full = None
+    if need_sigma_chain or (not control.iid):
+        Lambda_full = np.eye(I, dtype=np.float64)
+        if not control.iid:
+            Lambda_full[1:, 1:] = Lambda + np.eye(dim_lambda)
+
+    V_all = np.einsum('nij,j->ni', X, beta)
+    lam_lo = n_beta
+    lam_hi = n_beta + n_lambda
+    om_lo = lam_hi
+    om_hi = lam_hi + n_omega
+
+    scores = np.zeros((N, n_params), dtype=np.float64)
+
+    for q in range(N):
+        chosen = int(y[q])
+        if avail is None:
+            avail_alts = [j for j in range(I) if j != chosen]
+        else:
+            avail_q = avail[q]
+            avail_alts = [
+                j for j in range(I) if j != chosen and avail_q[j] > 0.5
+            ]
+        dim_q = len(avail_alts)
+        if dim_q == 0:
+            continue
+
+        M = np.zeros((dim_q, I), dtype=np.float64)
+        for k, j in enumerate(avail_alts):
+            M[k, j] = 1.0
+            M[k, chosen] = -1.0
+
+        diff_V = np.array([V_all[q, chosen] - V_all[q, j] for j in avail_alts])
+        X_diff = np.array([X[q, chosen] - X[q, j] for j in avail_alts])
+
+        if control.iid and not has_random_coeff:
+            Lambda_diff = (
+                np.ones((dim_q, dim_q), dtype=np.float64)
+                + np.eye(dim_q, dtype=np.float64)
+            )
+        else:
+            Xi_base = Lambda_full if Lambda_full is not None else np.eye(I)
+            if has_random_coeff:
+                X_rand = X[q][:, ranvar_indices]
+                Xi_full = X_rand @ Omega @ X_rand.T + Xi_base
+            else:
+                Xi_full = Xi_base
+            Lambda_diff = M @ Xi_full @ M.T
+            Lambda_diff = 0.5 * (Lambda_diff + Lambda_diff.T)
+
+        if control.method == "ovus":
+            prob, grad_a, grad_sigma_vech = mvncd_grad_ovus_analytic(
+                diff_V, Lambda_diff
+            )
+        else:
+            prob, grad_a, grad_sigma_vech = mvncd_grad_me_analytic(
+                diff_V, Lambda_diff
+            )
+        prob = max(prob, 1e-300)
+        inv_p = 1.0 / prob
+
+        # Beta score
+        scores[q, :n_beta] = inv_p * (X_diff.T @ grad_a)
+
+        # Covariance parameter scores
+        if need_sigma_chain:
+            adj_Lambda_diff = _vech_to_symmetric(grad_sigma_vech, dim_q)
+            adj_Xi_full = M.T @ adj_Lambda_diff @ M
+
+            if not control.iid and n_lambda > 0:
+                adj_Lambda = adj_Xi_full[1:, 1:]
+                adj_lp = _adj_lambda_to_params(
+                    adj_Lambda, scales, corr, corr_jac,
+                    dim_lambda, n_scale, n_corr, control,
+                )
+                scores[q, lam_lo:lam_hi] = inv_p * adj_lp
+
+            if has_random_coeff and n_omega > 0:
+                X_rand = X[q][:, ranvar_indices]
+                adj_Omega = X_rand.T @ adj_Xi_full @ X_rand
+                adj_op = _adj_omega_to_params(
+                    adj_Omega, Omega_L, omega_params, n_rand, control,
+                )
+                scores[q, om_lo:om_hi] = inv_p * adj_op
+
+    return scores
+
+
 # ---------------------------------------------------------------------------
 # Mixture-of-normals analytic gradient (Phase 3.2)
 # ---------------------------------------------------------------------------

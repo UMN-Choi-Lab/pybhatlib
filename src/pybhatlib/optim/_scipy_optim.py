@@ -32,6 +32,11 @@ class OptimResult:
         Return code (0 = converged).
     message : str
         Status message.
+    status : int
+        Raw scipy ``OptimizeResult.status`` code (0 = gradient below tol,
+        1 = max iterations, 2 = line-search/precision-loss stop). Exposed so
+        callers can distinguish a precision-loss stop at the gradient floor
+        (estimates valid) from a genuine failure such as hitting maxiter.
     """
 
     x: NDArray
@@ -42,6 +47,7 @@ class OptimResult:
     converged: bool
     return_code: int
     message: str
+    status: int = 0
 
 
 def minimize_scipy(
@@ -54,6 +60,7 @@ def minimize_scipy(
     verbose: int = 1,
     jac: bool = True,
     bounds=None,
+    param_names: list[str] | None = None,
 ) -> OptimResult:
     """Minimize a scalar function using scipy.optimize.minimize.
 
@@ -71,55 +78,143 @@ def minimize_scipy(
     tol : float
         Gradient tolerance.
     verbose : int
-        0=silent, 1=summary, 2=per-iteration.
+        0=silent, 1=summary, 2=per-iteration NLL,
+        3=per-iteration NLL + parameter/gradient/rel-gradient table.
     jac : bool
         Whether func returns (f, grad) tuple.
     bounds : list of tuples or None
         Parameter bounds for L-BFGS-B.
+    param_names : list of str or None
+        Parameter names for verbose=3 display.  When None, labels fall back
+        to ``θ[k]`` placeholders.  These are the *theta-space* names, so
+        they may differ from the reporting-space names in MNPResults.
 
     Returns
     -------
     result : OptimResult
     """
     x0 = np.asarray(x0, dtype=np.float64)
+    n_params = len(x0)
 
     iteration_count = [0]
     start_time = time.time()
 
+    # Cache the last (x, f, g) evaluated by the objective wrapper so the
+    # callback can read it without re-calling func (which would double the
+    # per-iteration cost at verbose >= 2).
+    last_eval: dict = {"x": None, "f": None, "g": None}
+
+    def _get_fval_grad(xk):
+        """Return (fval, grad) regardless of jac mode."""
+        if jac:
+            fval, g = func(xk)
+            return float(fval), np.asarray(g, dtype=np.float64)
+        else:
+            return float(func(xk)), np.zeros_like(xk)
+
+    def _print_param_table(xk, fval, grad):
+        """Print per-iteration parameter/gradient/rel-gradient table (verbose=3)."""
+        # Build labels: use param_names if available, else theta[k]
+        if param_names is not None and len(param_names) == len(xk):
+            labels = param_names
+        else:
+            labels = [f"theta[{k}]" for k in range(len(xk))]
+
+        # Relative gradient: |g_k| / max(|x_k|, 1)
+        rel_grad = np.abs(grad) / np.maximum(np.abs(xk), 1.0)
+
+        col_w_name = max(14, max(len(lb) for lb in labels) + 2)
+        header = (
+            f"  {'param':<{col_w_name}s}  {'val':>14s}  {'grad':>14s}  "
+            f"{'rel_grad':>14s}"
+        )
+        print(f"  iter={iteration_count[0]}  f={fval:+.6f}")
+        print(header)
+        print("  " + "-" * (col_w_name + 3 * 16 + 4))
+        for k, (lb, v, g, rg) in enumerate(zip(labels, xk, grad, rel_grad)):
+            print(
+                f"  {lb:<{col_w_name}s}  {v:>+14.6f}  {g:>+14.6f}  {rg:>14.6f}"
+            )
+
     def callback(xk):
         iteration_count[0] += 1
-        if verbose >= 2:
+        if verbose >= 3:
             elapsed = time.time() - start_time
-            if jac:
-                fval, _ = func(xk)
+            # Use cached (f, g) when xk matches the last objective evaluation.
+            # This avoids re-calling the (expensive) objective just for printing.
+            if (
+                last_eval["x"] is not None
+                and np.allclose(xk, last_eval["x"])
+                and last_eval["f"] is not None
+            ):
+                fval = last_eval["f"]
+                grad = last_eval["g"] if last_eval["g"] is not None else np.zeros_like(xk)
             else:
-                fval = func(xk)
+                # Fallback: rare case (e.g. first callback before any cached eval)
+                fval, grad = _get_fval_grad(xk)
+            # _print_param_table emits its own ``iter=N f=...`` header
+            # (line ~125), so don't double-print it here under verbose=3.
+            _print_param_table(xk, fval, grad)
+        elif verbose >= 2:
+            elapsed = time.time() - start_time
+            # Use cached f when available, avoiding a redundant func call
+            if (
+                last_eval["x"] is not None
+                and np.allclose(xk, last_eval["x"])
+                and last_eval["f"] is not None
+            ):
+                fval = last_eval["f"]
+            else:
+                fval, _ = _get_fval_grad(xk)
             print(f"  Iter {iteration_count[0]:4d}: f = {fval:.6f}  ({elapsed:.1f}s)")
 
     if jac:
-        # func returns (f, grad) — need to wrap for scipy
+        # func returns (f, grad) — wrap for scipy and populate last_eval cache
         def scipy_func(x):
             f, g = func(x)
-            return float(f), np.asarray(g, dtype=np.float64)
+            f_val = float(f)
+            g_arr = np.asarray(g, dtype=np.float64)
+            last_eval["x"] = x.copy()
+            last_eval["f"] = f_val
+            last_eval["g"] = g_arr.copy()
+            return f_val, g_arr
 
-        result = minimize(
-            scipy_func,
-            x0,
-            method=method,
-            jac=True,
-            options={"maxiter": maxiter, "gtol": tol, "disp": False},
-            bounds=bounds,
-            callback=callback,
-        )
+        chosen_func = scipy_func
     else:
-        result = minimize(
-            func,
-            x0,
+        # jac=False: wrap func to populate last_eval cache (f only, no grad)
+        def scipy_func_nojac(x):
+            f = func(x)
+            f_val = float(f)
+            last_eval["x"] = x.copy()
+            last_eval["f"] = f_val
+            last_eval["g"] = None
+            return f_val
+
+        chosen_func = scipy_func_nojac
+
+    _options = {"maxiter": maxiter, "gtol": tol, "disp": False}
+
+    def _minimize_from(x_init):
+        return minimize(
+            chosen_func,
+            x_init,
             method=method,
-            options={"maxiter": maxiter, "gtol": tol, "disp": False},
+            jac=jac,
+            options=_options,
             bounds=bounds,
             callback=callback,
         )
+
+    result = _minimize_from(x0)
+
+    # NOTE: an automatic BFGS restart-on-status-2 was trialled here to clean up
+    # the MORP full-covariance "precision loss" stops (UTA report, 2026-06).
+    # It was removed: it barely moved the MORP optimum yet shifted converged
+    # MNP fits off GAUSS's stopping point, breaking the tight BHHH SE parity
+    # tests. The substantive MORP iid=False fix is the unit-variance
+    # identification default (MORPControl.fix_scales=True), not optimiser
+    # tweaks. A status-2 stop with correct estimates is surfaced via the
+    # "Optimizer message" line below instead.
 
     # Extract gradient
     if hasattr(result, "jac") and result.jac is not None:
@@ -135,14 +230,49 @@ def minimize_scipy(
         else:
             hess_inv = np.asarray(result.hess_inv)
 
+    status = int(getattr(result, "status", 0))
     converged = result.success
+
+    # Precision-loss stop at the gradient floor == convergence.
+    # SciPy's BFGS reports status 2 ("Desired error not necessarily achieved
+    # due to precision loss") when the line search can no longer descend. At a
+    # point whose relative gradient is already at the numerical floor that *is*
+    # an optimum, not a failure: SciPy's gtol (default 1e-5) is far tighter
+    # than GAUSS MaxLik's effective criterion, so approximate-MVNCD gradients
+    # (OVUS) that floor around 1e-3..1e-2 trip status 2 even though the
+    # estimates match GAUSS's reported "normal convergence" (UTA report,
+    # 2026-06: MORP full-covariance iid=False). Treat such a stop as
+    # converged so the summary banner and verbose line don't read as a
+    # spurious failure. A genuine failure surfaces as status 1 (max iterations)
+    # or status 2 with a large gradient, both of which fall through below.
+    # The 0.1 bound is a conservative sanity guard (observed floors are
+    # <=9e-3); the raw scipy ``status`` is preserved on the result for callers
+    # that need the distinction.
+    _SOFT_RELGRAD_TOL = 0.1
+    rel_grad = (
+        float(np.max(np.abs(grad) / np.maximum(np.abs(result.x), 1.0)))
+        if grad.size
+        else 0.0
+    )
+    precision_limited = (
+        not converged and status == 2 and rel_grad < _SOFT_RELGRAD_TOL
+    )
+    if precision_limited:
+        converged = True
     return_code = 0 if converged else 2
 
     if verbose >= 1:
         elapsed = time.time() - start_time
-        status = "converged" if converged else "did not converge"
-        print(f"  Optimization {status} in {result.nit} iterations ({elapsed:.2f}s)")
+        status_str = "converged" if converged else "did not converge"
+        print(f"  Optimization {status_str} in {result.nit} iterations ({elapsed:.2f}s)")
         print(f"  Final objective: {result.fun:.6f}")
+        if precision_limited:
+            print(
+                f"  (relative gradient {rel_grad:.2e} at numerical floor; "
+                "line search precision-limited — treated as converged)"
+            )
+        if not converged:
+            print(f"  Optimizer message: {result.message}")
 
     return OptimResult(
         x=result.x,
@@ -153,4 +283,5 @@ def minimize_scipy(
         converged=converged,
         return_code=return_code,
         message=result.message,
+        status=int(getattr(result, "status", 0)),
     )
