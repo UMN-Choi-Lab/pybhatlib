@@ -457,11 +457,32 @@ class MDCEVModel(BaseModel):
             self._require_results(), X_new, X_gam_new, price_new, **kwargs
         )
 
-    def ate(self, X, X_gam, price, **kwargs):
-        """Predicted shares / ATE (see :func:`mdcev_ate`)."""
+    def ate(
+        self, X=None, X_gam=None, price=None, *,
+        scenarios=None, alternative_names=None, **kwargs,
+    ):
+        """Predicted shares / ATE (see :func:`mdcev_ate`).
+
+        Pass ``scenarios=`` for counterfactuals; ``model`` / ``data`` are
+        supplied automatically from the model, mirroring :meth:`MNPModel.ate`.
+        The legacy path takes pre-built ``X`` / ``X_gam`` / ``price``.
+        """
         from pybhatlib.models.mdcev._mdcev_ate import mdcev_ate
 
-        return mdcev_ate(self._require_results(), X, X_gam, price, **kwargs)
+        res = self._require_results()
+        names = alternative_names or self.alternatives
+        if scenarios is not None:
+            return mdcev_ate(
+                res,
+                model=self,
+                data=self.data,
+                scenarios=scenarios,
+                alternative_names=names,
+                **kwargs,
+            )
+        return mdcev_ate(
+            res, X, X_gam, price, alternative_names=names, **kwargs
+        )
 
 
 # ---------------------------------------------------------------------------

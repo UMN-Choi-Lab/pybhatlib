@@ -391,18 +391,36 @@ class MORPModel(BaseModel):
         X_new = self.X if X_new is None else X_new
         return morp_predict_category(self._require_results(), X_new)
 
-    def ate(self, X=None, *, joint=False):
+    def ate(self, X=None, *, joint=False, scenarios=None, **kwargs):
         """Predicted ordinal probabilities / joint distribution.
 
         Delegates to :func:`morp_ate` (marginals, default) or
         :func:`morp_joint_probs` (``joint=True``).  ``X`` defaults to the
-        training design matrix.
+        training design matrix.  Pass ``scenarios=`` for counterfactuals;
+        ``data`` / ``spec`` / ``dep_vars`` are supplied automatically from the
+        model, mirroring :meth:`MNPModel.ate`.
         """
         from pybhatlib.models.morp._morp_ate import morp_ate, morp_joint_probs
 
-        X = self.X if X is None else X
         res = self._require_results()
-        return morp_joint_probs(res, X) if joint else morp_ate(res, X)
+        if scenarios is not None:
+            if joint:
+                raise ValueError(
+                    "joint=True is not supported with scenarios=; call "
+                    "morp_joint_probs per scenario instead."
+                )
+            return morp_ate(
+                res,
+                data=self.data,
+                spec=self.spec,
+                dep_vars=self.dep_vars,
+                scenarios=scenarios,
+                **kwargs,
+            )
+        X = self.X if X is None else X
+        return (
+            morp_joint_probs(res, X) if joint else morp_ate(res, X, **kwargs)
+        )
 
     # ------------------------------------------------------------------
     # SE computation helpers — mirror MNP-002c structure
