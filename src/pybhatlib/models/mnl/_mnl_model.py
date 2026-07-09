@@ -120,7 +120,7 @@ class MNLModel(BaseModel):
     # Public interface
     # ------------------------------------------------------------------
 
-    def fit(self) -> MNLResults:
+    def _fit(self) -> MNLResults:
         """Fit the MNL model.
 
         Returns
@@ -254,24 +254,64 @@ class MNLModel(BaseModel):
             )
 
         return MNLResults(
-            b=x_opt,
+            params=x_opt,
             se=se,
             t_stat=t_stat,
             p_value=p_value,
             gradient=g_final,
-            ll=ll_mean,
-            ll_total=ll_total,
+            loglik=ll_mean,
             n_obs=n_obs,
             param_names=self.var_names,
             corr_matrix=corr,
             cov_matrix=cov,
-            n_iterations=res.nit,
+            n_iter=res.nit,
             convergence_time=t_elapsed,
             converged=converged,
             return_code=0 if converged else 1,
             control=ctrl,
             data_path=self.data_path,
             message=getattr(res, "message", None),
+        )
+
+    # ------------------------------------------------------------------
+    # Post-estimation convenience API (delegates to the free functions;
+    # shared method surface across MNP / MORP / MDCEV / MNL)
+    # ------------------------------------------------------------------
+    def predict(self, X_new=None, avail_new=None):
+        """Predicted choice probabilities (see :func:`mnl_predict`).
+
+        ``X_new`` defaults to the training design matrix.
+        """
+        from pybhatlib.models.mnl._mnl_forecast import mnl_predict
+
+        X_new = self.X if X_new is None else X_new
+        return mnl_predict(self._require_results(), X_new, avail_new)
+
+    def predict_choice(self, X_new=None, avail_new=None):
+        """Most-likely predicted alternative (see :func:`mnl_predict_choice`)."""
+        from pybhatlib.models.mnl._mnl_forecast import mnl_predict_choice
+
+        X_new = self.X if X_new is None else X_new
+        return mnl_predict_choice(self._require_results(), X_new, avail_new)
+
+    def ate(self, *, scenarios=None, avail=None, alternative_names=None, **kwargs):
+        """Predicted shares / ATE (see :func:`mnl_ate`).
+
+        ``data`` / ``spec`` / ``alternatives`` are supplied automatically from
+        the model; pass ``scenarios=`` (or the legacy ``changevar_idx`` path)
+        for counterfactuals.
+        """
+        from pybhatlib.models.mnl._mnl_ate import mnl_ate
+
+        return mnl_ate(
+            self._require_results(),
+            data=self.data,
+            spec=self.spec_dict,
+            alternatives=self.alternatives,
+            avail=self.avail if avail is None else avail,
+            scenarios=scenarios,
+            alternative_names=alternative_names or self.alternatives,
+            **kwargs,
         )
 
     # ------------------------------------------------------------------

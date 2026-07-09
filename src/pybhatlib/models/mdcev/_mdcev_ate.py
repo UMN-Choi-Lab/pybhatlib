@@ -14,33 +14,27 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from pybhatlib.models._ate_common import (
+    ATEResultMixin,
+    scenarios_to_dict as _scenarios_to_dict,
+)
 from pybhatlib.models.mdcev._mdcev_results import MDCEVResults
 from pybhatlib.models.mdcev._mdcev_forecast import (
     mdcev_predict,
     prepare_mdcev_forecast_data,
 )
 
-# Type alias mirroring MNP's ScenarioSpec.  MDCEV scenario overrides are
-# scalar-valued (broadcast to a column), matching prepare_mdcev_forecast_data.
+# Narrower than the shared ``_ate_common.ScenarioSpec``: MDCEV overrides are
+# scalar-valued (broadcast to a column via prepare_mdcev_forecast_data), with
+# no source-column string mode as MNP and MORP have.
 ScenarioSpec = Union[
     "dict[str, dict[str, float]]",
     "pd.DataFrame",
 ]
 
 
-def _scenarios_to_dict(scenarios: ScenarioSpec) -> "dict[str, dict[str, float]]":
-    """Normalise *scenarios* to canonical ``{name: {col: val}}`` dict form."""
-    if isinstance(scenarios, pd.DataFrame):
-        out: dict[str, dict[str, float]] = {}
-        for name in scenarios.index:
-            row = scenarios.loc[name]
-            out[str(name)] = {col: row[col] for col in scenarios.columns}
-        return out
-    return dict(scenarios)
-
-
 @dataclass
-class MDCEVATEResult:
+class MDCEVATEResult(ATEResultMixin):
     """Average Treatment Effect analysis results for MDCEV.
 
     Attributes
@@ -60,6 +54,9 @@ class MDCEVATEResult:
         Names of the alternatives, in order.
     """
 
+    _model_label = "MDCEV"
+    _ate_func_name = "mdcev_ate"
+
     n_obs: int
     predicted_shares: NDArray
     base_shares: NDArray | None = None
@@ -67,74 +64,6 @@ class MDCEVATEResult:
     pct_ate: NDArray | None = None
     alternative_names: list[str] | None = None
     shares_per_scenario: "dict[str, NDArray] | None" = None
-
-    def comparison(self, base: str, treatment: str) -> NDArray:
-        """Percentage change in consumption shares between two scenarios.
-
-        Mirrors :meth:`MNPATEResult.comparison`:
-        ``100 * (treatment_shares - base_shares) / base_shares`` over the
-        ``nc`` alternatives.  Requires the ``scenarios=`` path.
-
-        Raises
-        ------
-        ValueError
-            If ``shares_per_scenario`` is None or a scenario name is missing.
-        """
-        if self.shares_per_scenario is None:
-            raise ValueError(
-                "comparison() requires shares_per_scenario; run mdcev_ate with "
-                "scenarios=..."
-            )
-        if base not in self.shares_per_scenario:
-            raise ValueError(f"Scenario '{base}' not found in shares_per_scenario")
-        if treatment not in self.shares_per_scenario:
-            raise ValueError(
-                f"Scenario '{treatment}' not found in shares_per_scenario"
-            )
-        b = self.shares_per_scenario[base]
-        t = self.shares_per_scenario[treatment]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return np.where(b > 0, 100.0 * (t - b) / b, np.nan)
-
-    def summary(self) -> str:
-        """Print a formatted ATE summary table.
-
-        Returns
-        -------
-        text : str
-        """
-        lines = []
-        sep = "=" * 65
-        lines.append(sep)
-        lines.append("  MDCEV Average Treatment Effect (ATE) Summary")
-        lines.append(sep)
-        lines.append(f"  N observations: {self.n_obs}")
-        lines.append("")
-
-        nc    = len(self.predicted_shares)
-        names = self.alternative_names or [f"Alt {k}" for k in range(nc)]
-        header = f"  {'Alternative':<16s} {'Pred. Share':>12s}"
-
-        if self.base_shares is not None:
-            header += f" {'Base':>10s} {'Treatment':>10s} {'%ATE':>10s}"
-        lines.append(header)
-        lines.append("  " + "-" * 60)
-
-        for k in range(nc):
-            row = f"  {names[k]:<16s} {self.predicted_shares[k]:>12.4f}"
-            if self.base_shares is not None:
-                ate = self.pct_ate[k] if self.pct_ate is not None else float("nan")
-                row += (
-                    f" {self.base_shares[k]:>10.4f}"
-                    f" {self.treatment_shares[k]:>10.4f}"
-                    f" {ate:>10.2f}"
-                )
-            lines.append(row)
-
-        lines.append(sep)
-        text = "\n".join(lines)
-        print(text)
-        return text
 
 
 def mdcev_ate(

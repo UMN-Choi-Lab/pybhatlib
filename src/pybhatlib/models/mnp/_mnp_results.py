@@ -14,6 +14,11 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from pybhatlib.models._results_common import (
+    attach_deprecated_aliases,
+    attach_ll_total_alias,
+    legacy_init,
+)
 from pybhatlib.models.mnp._mnp_control import MNPControl
 
 
@@ -152,49 +157,7 @@ class MNPResults:
         translated to their canonical counterparts and emit a
         ``DeprecationWarning``.  Unknown kwargs raise ``TypeError``.
         """
-        # 1. Translate rename aliases with DeprecationWarning.
-        for old, new in _MNPRESULTS_LEGACY_KWARGS.items():
-            if old in kwargs:
-                warnings.warn(
-                    f"MNPResults({old}=...) is deprecated; use {new}=... instead. "
-                    f"This shim will be removed in pybhatlib v1.0.",
-                    DeprecationWarning,
-                    stacklevel=2,
-                )
-                if new in kwargs:
-                    raise TypeError(
-                        f"MNPResults received both legacy {old}= and canonical {new}=; "
-                        f"pass only one"
-                    )
-                kwargs[new] = kwargs.pop(old)  # type: ignore[assignment]
-
-        # 2. Handle ll_total: deprecated computed quantity, discard silently.
-        if "ll_total" in kwargs:
-            warnings.warn(
-                "MNPResults(ll_total=...) is deprecated; ll_total is now computed "
-                "as loglik * n_obs and should not be passed explicitly. "
-                "This shim will be removed in pybhatlib v1.0.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            kwargs.pop("ll_total")
-
-        # 3. Assign canonical fields, applying defaults for missing optional ones.
-        for f in dataclasses.fields(self):
-            if f.name in kwargs:
-                object.__setattr__(self, f.name, kwargs.pop(f.name))
-            elif f.default is not dataclasses.MISSING:
-                object.__setattr__(self, f.name, f.default)
-            elif f.default_factory is not dataclasses.MISSING:  # type: ignore[misc]
-                object.__setattr__(self, f.name, f.default_factory())  # type: ignore[misc]
-            else:
-                raise TypeError(f"MNPResults missing required argument: {f.name!r}")
-
-        # 4. Reject any remaining unknown kwargs.
-        if kwargs:
-            raise TypeError(
-                f"MNPResults got unexpected keyword arguments: {sorted(kwargs)}"
-            )
+        legacy_init(self, kwargs, _MNPRESULTS_LEGACY_KWARGS, "MNPResults")
 
     @classmethod
     def from_estimates(
@@ -455,66 +418,8 @@ class MNPResults:
 # ----------------------------------------------------------------------
 # Deprecated property aliases
 # ----------------------------------------------------------------------
-#
-# Adding deprecated aliases to a ``@dataclass`` requires attaching
-# ``property`` descriptors after class construction (descriptors set on
-# the class body would otherwise be picked up by ``@dataclass`` as
-# fields).  Each alias forwards reads/writes to the canonical field and
-# emits a ``DeprecationWarning``.
-
-
-def _make_alias(old_name: str, new_name: str) -> property:
-    """Return a ``property`` that aliases ``old_name`` → ``new_name``."""
-
-    def _getter(self):
-        warnings.warn(
-            f"MNPResults.{old_name} is deprecated; use "
-            f"MNPResults.{new_name} instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return getattr(self, new_name)
-
-    def _setter(self, value):
-        warnings.warn(
-            f"MNPResults.{old_name} is deprecated; use "
-            f"MNPResults.{new_name} instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        setattr(self, new_name, value)
-
-    return property(_getter, _setter)
-
-
-MNPResults.b = _make_alias("b", "params")
-MNPResults.ll = _make_alias("ll", "loglik")
-MNPResults.n_iterations = _make_alias("n_iterations", "n_iter")
-
-
-def _ll_total_getter(self):
-    warnings.warn(
-        "MNPResults.ll_total is deprecated; use "
-        "MNPResults.loglik (mean log-likelihood) or "
-        "``loglik * n_obs`` for the total.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return self.loglik * self.n_obs
-
-
-def _ll_total_setter(self, value):
-    warnings.warn(
-        "MNPResults.ll_total is deprecated; use "
-        "MNPResults.loglik (mean log-likelihood) or "
-        "``loglik * n_obs`` for the total.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    if self.n_obs:
-        self.loglik = value / self.n_obs
-    else:
-        self.loglik = float(value)
-
-
-MNPResults.ll_total = property(_ll_total_getter, _ll_total_setter)
+# Attached after class construction so ``@dataclass`` does not treat the
+# descriptors as fields.  The shared mechanism lives in
+# ``pybhatlib.models._results_common``.
+attach_deprecated_aliases(MNPResults, _MNPRESULTS_LEGACY_KWARGS)
+attach_ll_total_alias(MNPResults)

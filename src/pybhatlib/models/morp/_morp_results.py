@@ -104,6 +104,49 @@ class MORPResults:
     se_hessian: NDArray | None = None
     se_sandwich: NDArray | None = None
     report: MORPReportTable | None = None
+    # Structural metadata (stored at fit time so post-estimation helpers —
+    # morp_ate / morp_predict / morp_joint_probs — no longer require the
+    # caller to re-supply n_dims / n_categories / n_beta).
+    n_dims: int | None = None
+    n_categories: list[int] | None = None
+    n_beta: int | None = None
+
+    def _structure(
+        self,
+        n_dims: int | None = None,
+        n_categories: list[int] | None = None,
+        n_beta: int | None = None,
+    ) -> tuple[int, list[int], int]:
+        """Resolve ``(n_dims, n_categories, n_beta)``, preferring explicit args.
+
+        Falls back to the values stored at fit time.  ``n_dims`` /
+        ``n_categories`` can also be recovered from ``thresholds`` when not
+        stored (a threshold vector of length ``m`` implies ``m + 1``
+        categories), but ``n_beta`` must have been stored or supplied.
+
+        Raises
+        ------
+        ValueError
+            If any value is neither supplied nor recoverable.
+        """
+        nd = n_dims if n_dims is not None else self.n_dims
+        nc = n_categories if n_categories is not None else self.n_categories
+        nb = n_beta if n_beta is not None else self.n_beta
+
+        # Recover dims / categories from the stored threshold cut-points.
+        if nd is None and self.thresholds is not None:
+            nd = len(self.thresholds)
+        if nc is None and self.thresholds is not None:
+            nc = [len(t) + 1 for t in self.thresholds]
+
+        if nd is None or nc is None or nb is None:
+            raise ValueError(
+                "MORP structural metadata (n_dims, n_categories, n_beta) is "
+                "unavailable on this results object; pass them explicitly. "
+                "Results from MORPModel.fit or MORPResults.from_estimates carry "
+                "them automatically."
+            )
+        return nd, list(nc), nb
 
     def summary(self) -> str:
         """Print formatted estimation results.
@@ -390,6 +433,9 @@ class MORPResults:
             cov_matrix=None,
             control=control,
             report=report,
+            n_dims=n_dims,
+            n_categories=list(n_categories),
+            n_beta=n_beta,
         )
 
     def to_dataframe(self) -> pd.DataFrame:

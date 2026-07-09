@@ -32,7 +32,7 @@ def mnl_predict(
     probs : NDArray, shape (N, nc)
         Predicted choice probabilities.
     """
-    x_opt    = results.b
+    x_opt    = results.params
     N        = X_new.shape[0]
     nc       = X_new.shape[1]
     numunord = X_new.shape[2]

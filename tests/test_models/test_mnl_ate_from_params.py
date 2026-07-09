@@ -53,8 +53,8 @@ def test_predict_exports_importable():
 
 def test_from_estimates_sets_nan_se_and_preserves_b(mnl_fit):
     res, _ = mnl_fit
-    r = MNLResults.from_estimates(res.b, param_names=res.param_names)
-    assert np.allclose(r.b, res.b)
+    r = MNLResults.from_estimates(res.params, param_names=res.param_names)
+    assert np.allclose(r.params, res.params)
     assert np.all(np.isnan(r.se))
     assert r.param_names == res.param_names
     # Cross-model convention: reported estimates are treated as converged.
@@ -64,7 +64,7 @@ def test_from_estimates_sets_nan_se_and_preserves_b(mnl_fit):
 def test_ate_from_params_roundtrip_base(mnl_fit):
     res, X = mnl_fit
     a_fit = mnl_ate(res, X=X)
-    a_par = mnl_ate_from_params(res.b, X=X, param_names=res.param_names)
+    a_par = mnl_ate_from_params(res.params, X=X, param_names=res.param_names)
     np.testing.assert_allclose(a_par.predicted_shares, a_fit.predicted_shares, atol=1e-12)
 
 
@@ -72,5 +72,5 @@ def test_ate_from_params_roundtrip_counterfactual(mnl_fit):
     res, X = mnl_fit
     kw = dict(changevar_idx=(0, 2), base_val=0.0, treatment_val=1.0)
     a_fit = mnl_ate(res, X=X, **kw)
-    a_par = mnl_ate_from_params(res.b, X=X, **kw)
+    a_par = mnl_ate_from_params(res.params, X=X, **kw)
     np.testing.assert_allclose(a_par.pct_ate, a_fit.pct_ate, atol=1e-9, equal_nan=True)

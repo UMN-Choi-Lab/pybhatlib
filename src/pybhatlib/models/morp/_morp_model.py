@@ -164,7 +164,7 @@ class MORPModel(BaseModel):
             self.n_beta, self.n_dims, self.n_categories, self.control
         )
 
-    def fit(self) -> MORPResults:
+    def _fit(self) -> MORPResults:
         """Estimate the MORP model.
 
         Returns
@@ -363,7 +363,46 @@ class MORPModel(BaseModel):
             se_hessian=se_by_method.get("hessian"),
             se_sandwich=se_by_method.get("sandwich"),
             report=report,
+            n_dims=self.n_dims,
+            n_categories=list(self.n_categories),
+            n_beta=self.n_beta,
         )
+
+    # ------------------------------------------------------------------
+    # Post-estimation convenience API (delegates to the free functions;
+    # shared method surface across MNP / MORP / MDCEV / MNL).  Structural
+    # sizes are read from the results object, so no extra args are needed.
+    # ------------------------------------------------------------------
+    def predict(self, X_new=None):
+        """Predicted per-dimension ordinal probabilities (see :func:`morp_predict`).
+
+        ``X_new`` defaults to the training design matrix.
+        """
+        from pybhatlib.models.morp._morp_forecast import morp_predict
+
+        X_new = self.X if X_new is None else X_new
+        return morp_predict(self._require_results(), X_new)
+
+    def predict_category(self, X_new=None):
+        """Most-likely predicted category per dimension (see
+        :func:`morp_predict_category`)."""
+        from pybhatlib.models.morp._morp_forecast import morp_predict_category
+
+        X_new = self.X if X_new is None else X_new
+        return morp_predict_category(self._require_results(), X_new)
+
+    def ate(self, X=None, *, joint=False):
+        """Predicted ordinal probabilities / joint distribution.
+
+        Delegates to :func:`morp_ate` (marginals, default) or
+        :func:`morp_joint_probs` (``joint=True``).  ``X`` defaults to the
+        training design matrix.
+        """
+        from pybhatlib.models.morp._morp_ate import morp_ate, morp_joint_probs
+
+        X = self.X if X is None else X
+        res = self._require_results()
+        return morp_joint_probs(res, X) if joint else morp_ate(res, X)
 
     # ------------------------------------------------------------------
     # SE computation helpers — mirror MNP-002c structure

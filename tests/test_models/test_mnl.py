@@ -79,8 +79,8 @@ class TestMNLModel:
     def test_model_fit_smoke(self, synthetic_mnl_data: pd.DataFrame):
         results = _fit_mnl(synthetic_mnl_data)
 
-        assert np.isfinite(results.ll)
-        assert np.isfinite(results.ll_total)
+        assert np.isfinite(results.loglik)
+        assert np.isfinite(results.loglik * results.n_obs)
         assert results.n_obs == len(synthetic_mnl_data)
         assert results.se.shape == (len(_SPEC),)
         assert np.all(np.isfinite(results.se))
@@ -103,7 +103,7 @@ class TestMNLSeMethod:
             assert results.se.shape == (len(_SPEC),)
             assert np.all(np.isfinite(results.se))
             assert np.all(results.se >= 0.0)
-            assert np.isfinite(results.ll)
+            assert np.isfinite(results.loglik)
 
 
 class TestMNLRegression:
@@ -177,4 +177,4 @@ class TestMNLRegression:
         ).fit()
 
         assert results.converged is True
-        assert results.ll_total == pytest.approx(-2392.9286, abs=1e-4)
+        assert results.loglik * results.n_obs == pytest.approx(-2392.9286, abs=1e-4)
