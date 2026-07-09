@@ -8,12 +8,35 @@ for MNP and MNL in pybhatlib.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Union
 
 import numpy as np
+import pandas as pd
 from numpy.typing import NDArray
 
 from pybhatlib.models.mdcev._mdcev_results import MDCEVResults
-from pybhatlib.models.mdcev._mdcev_forecast import mdcev_predict
+from pybhatlib.models.mdcev._mdcev_forecast import (
+    mdcev_predict,
+    prepare_mdcev_forecast_data,
+)
+
+# Type alias mirroring MNP's ScenarioSpec.  MDCEV scenario overrides are
+# scalar-valued (broadcast to a column), matching prepare_mdcev_forecast_data.
+ScenarioSpec = Union[
+    "dict[str, dict[str, float]]",
+    "pd.DataFrame",
+]
+
+
+def _scenarios_to_dict(scenarios: ScenarioSpec) -> "dict[str, dict[str, float]]":
+    """Normalise *scenarios* to canonical ``{name: {col: val}}`` dict form."""
+    if isinstance(scenarios, pd.DataFrame):
+        out: dict[str, dict[str, float]] = {}
+        for name in scenarios.index:
+            row = scenarios.loc[name]
+            out[str(name)] = {col: row[col] for col in scenarios.columns}
+        return out
+    return dict(scenarios)
 
 
 @dataclass
@@ -43,6 +66,35 @@ class MDCEVATEResult:
     treatment_shares: NDArray | None = None
     pct_ate: NDArray | None = None
     alternative_names: list[str] | None = None
+    shares_per_scenario: "dict[str, NDArray] | None" = None
+
+    def comparison(self, base: str, treatment: str) -> NDArray:
+        """Percentage change in consumption shares between two scenarios.
+
+        Mirrors :meth:`MNPATEResult.comparison`:
+        ``100 * (treatment_shares - base_shares) / base_shares`` over the
+        ``nc`` alternatives.  Requires the ``scenarios=`` path.
+
+        Raises
+        ------
+        ValueError
+            If ``shares_per_scenario`` is None or a scenario name is missing.
+        """
+        if self.shares_per_scenario is None:
+            raise ValueError(
+                "comparison() requires shares_per_scenario; run mdcev_ate with "
+                "scenarios=..."
+            )
+        if base not in self.shares_per_scenario:
+            raise ValueError(f"Scenario '{base}' not found in shares_per_scenario")
+        if treatment not in self.shares_per_scenario:
+            raise ValueError(
+                f"Scenario '{treatment}' not found in shares_per_scenario"
+            )
+        b = self.shares_per_scenario[base]
+        t = self.shares_per_scenario[treatment]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(b > 0, 100.0 * (t - b) / b, np.nan)
 
     def summary(self) -> str:
         """Print a formatted ATE summary table.
@@ -87,34 +139,47 @@ class MDCEVATEResult:
 
 def mdcev_ate(
     results: MDCEVResults,
-    X: NDArray,
-    X_gam: NDArray,
-    price: NDArray,
+    X: NDArray | None = None,
+    X_gam: NDArray | None = None,
+    price: NDArray | None = None,
     changevar_idx: tuple[int, int] | None = None,
     base_val: float | None = None,
     treatment_val: float | None = None,
     alternative_names: list[str] | None = None,
     n_draws: int = 1000,
     seed: int = 1234,
+    *,
+    model=None,
+    data: "pd.DataFrame | None" = None,
+    scenarios: "ScenarioSpec | None" = None,
+    budget_col: str = "tot",
 ) -> MDCEVATEResult:
     """Compute predicted consumption shares and ATE for the MDCEV model.
 
-    When ``changevar_idx`` and both value arguments are provided, the
-    specified element of X is set to ``base_val`` and ``treatment_val``
-    for all observations and predicted shares are compared.  When
-    ``changevar_idx`` is None, only overall predicted shares at the
-    observed data values are returned.
+    Supports two modes:
+
+    **Legacy / single-override mode** (default): pass pre-built ``X`` /
+    ``X_gam`` / ``price``.  With ``changevar_idx`` + ``base_val`` +
+    ``treatment_val`` the indexed element of ``X`` is set to each value and the
+    shares compared.
+
+    **Scenario mode** (``scenarios=``): pass the fitted ``model`` and its
+    ``data`` (DataFrame) plus a dict/DataFrame of ``{column: scalar}`` overrides
+    per scenario.  Each scenario's design matrices are rebuilt via
+    :func:`prepare_mdcev_forecast_data` (both the utility and satiation
+    matrices) and mean shares are returned in ``shares_per_scenario`` (with a
+    ``.comparison(base, treatment)`` helper), mirroring :func:`mnp_ate`.
 
     Parameters
     ----------
     results : MDCEVResults
         Fitted MDCEV model results.
-    X : NDArray, shape (N, nc, nvarm)
-        Baseline utility design matrix.
-    X_gam : NDArray, shape (N, nc, nvargam)
-        Satiation utility design matrix.
-    price : NDArray, shape (N, nc)
-        Price matrix.
+    X : NDArray, shape (N, nc, nvarm), optional
+        Baseline utility design matrix (legacy mode).
+    X_gam : NDArray, shape (N, nc, nvargam), optional
+        Satiation utility design matrix (legacy mode).
+    price : NDArray, shape (N, nc), optional
+        Price matrix (legacy mode).
     changevar_idx : tuple (alt_idx, var_idx) or None
         Which element of X to modify: ``X[:, alt_idx, var_idx]``.
         Pass None to skip ATE computation.
@@ -128,11 +193,55 @@ def mdcev_ate(
         Monte Carlo draws for share computation.
     seed : int
         Random seed.
+    model : MDCEVModel, optional
+        Fitted model — required for ``scenarios=`` (carries utility_spec /
+        gamma_spec / availability used to rebuild the matrices).
+    data : pd.DataFrame, optional
+        Dataset to rebuild scenario matrices from (required for ``scenarios=``).
+    scenarios : dict or pd.DataFrame, optional
+        Per-column scalar overrides keyed by scenario name.
+    budget_col : str, default "tot"
+        Budget column name passed to :func:`prepare_mdcev_forecast_data`.
 
     Returns
     -------
     MDCEVATEResult
     """
+    # --- Scenario mode ---
+    if scenarios is not None:
+        if model is None or data is None:
+            raise ValueError(
+                "model and data are required when using scenarios="
+            )
+        Xb, Xgb, pb, _, _ = prepare_mdcev_forecast_data(
+            model, data, None, None, budget_col
+        )
+        baseline = mdcev_predict(
+            results, Xb, Xgb, pb, n_draws=n_draws, seed=seed,
+        ).mean(axis=0)
+        shares_per_scenario: dict[str, NDArray] = {}
+        for name, overrides in _scenarios_to_dict(scenarios).items():
+            cv = list(overrides.keys())
+            cval = [float(v) for v in overrides.values()]
+            Xs, Xgs, ps, _, _ = prepare_mdcev_forecast_data(
+                model, data, cv, cval, budget_col
+            )
+            shares_per_scenario[name] = mdcev_predict(
+                results, Xs, Xgs, ps, n_draws=n_draws, seed=seed,
+            ).mean(axis=0)
+        return MDCEVATEResult(
+            n_obs=Xb.shape[0],
+            predicted_shares=baseline,
+            alternative_names=alternative_names,
+            shares_per_scenario=shares_per_scenario,
+        )
+
+    # --- Legacy / single-override mode ---
+    if X is None or X_gam is None or price is None:
+        raise ValueError(
+            "X, X_gam and price are required unless scenarios=/model=/data= "
+            "are provided"
+        )
     N = X.shape[0]
 
     predicted_shares = mdcev_predict(
@@ -178,9 +287,9 @@ def mdcev_ate(
 def mdcev_ate_from_params(
     b_reported: NDArray,
     sigma: float,
-    X: NDArray,
-    X_gam: NDArray,
-    price: NDArray,
+    X: NDArray | None = None,
+    X_gam: NDArray | None = None,
+    price: NDArray | None = None,
     *,
     control=None,
     param_names: list[str] | None = None,
@@ -190,6 +299,10 @@ def mdcev_ate_from_params(
     alternative_names: list[str] | None = None,
     n_draws: int = 1000,
     seed: int = 1234,
+    model=None,
+    data: "pd.DataFrame | None" = None,
+    scenarios: "ScenarioSpec | None" = None,
+    budget_col: str = "tot",
 ) -> MDCEVATEResult:
     """Compute MDCEV ATE predictions directly from natural-space coefficients.
 
@@ -233,4 +346,8 @@ def mdcev_ate_from_params(
         alternative_names=alternative_names,
         n_draws=n_draws,
         seed=seed,
+        model=model,
+        data=data,
+        scenarios=scenarios,
+        budget_col=budget_col,
     )
