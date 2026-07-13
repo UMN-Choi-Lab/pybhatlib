@@ -11,26 +11,24 @@ can be evaluated in a single call.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Union
 
 import numpy as np
-import pandas as pd
+import pandas as pd  # noqa: F401  (referenced by string type annotations)
 from numpy.typing import NDArray
 
 from pybhatlib.io._spec_parser import parse_spec
+from pybhatlib.models._ate_common import (
+    ATEResultMixin,
+    ScenarioSpec,
+    apply_scenario_overrides as _apply_scenario_overrides,
+    scenarios_to_dict as _scenarios_to_dict,
+)
 from pybhatlib.models.mnl._mnl_results import MNLResults
 from pybhatlib.models.mnl._mnl_forecast import mnl_predict
 
-# Type alias: dict or DataFrame keyed/indexed by scenario name,
-# values are variable overrides (column → scalar | column-name-string).
-ScenarioSpec = Union[
-    "dict[str, dict[str, float | str]]",
-    "pd.DataFrame",
-]
-
 
 @dataclass
-class MNLATEResult:
+class MNLATEResult(ATEResultMixin):
     """Average Treatment Effect analysis results for MNL.
 
     Attributes
@@ -56,6 +54,9 @@ class MNLATEResult:
         Keys are scenario names; values have shape ``(nc,)``.
     """
 
+    _model_label = "MNL"
+    _ate_func_name = "mnl_ate"
+
     n_obs: int
     predicted_shares: NDArray
     base_shares: NDArray | None = None
@@ -63,154 +64,6 @@ class MNLATEResult:
     pct_ate: NDArray | None = None
     alternative_names: list[str] | None = None
     shares_per_scenario: dict[str, NDArray] | None = None
-
-    def comparison(self, base: str, treatment: str) -> NDArray:
-        """Compute percentage change between two scenarios.
-
-        Parameters
-        ----------
-        base : str
-            Scenario name to use as the denominator (base case).
-        treatment : str
-            Scenario name to use as the numerator (treatment case).
-
-        Returns
-        -------
-        pct_change : NDArray, shape (nc,)
-            ``100 * (treatment_shares − base_shares) / base_shares``
-
-        Raises
-        ------
-        ValueError
-            If ``shares_per_scenario`` is None or a scenario name is missing.
-        """
-        if self.shares_per_scenario is None:
-            raise ValueError(
-                "comparison() requires shares_per_scenario; run mnl_ate with scenarios=..."
-            )
-        if base not in self.shares_per_scenario:
-            raise ValueError(f"Scenario '{base}' not found in shares_per_scenario")
-        if treatment not in self.shares_per_scenario:
-            raise ValueError(f"Scenario '{treatment}' not found in shares_per_scenario")
-
-        b = self.shares_per_scenario[base]
-        t = self.shares_per_scenario[treatment]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return np.where(b > 0, 100.0 * (t - b) / b, np.nan)
-
-    def summary(self) -> str:
-        """Print a formatted ATE summary table.
-
-        Returns
-        -------
-        text : str
-        """
-        lines = []
-        sep = "=" * 65
-        lines.append(sep)
-        lines.append("  MNL Average Treatment Effect (ATE) Summary")
-        lines.append(sep)
-        lines.append(f"  N observations: {self.n_obs}")
-        lines.append("")
-
-        nc    = len(self.predicted_shares)
-        names = self.alternative_names or [f"Alt {k}" for k in range(nc)]
-        header = f"  {'Alternative':<16s} {'Pred. Share':>12s}"
-
-        if self.base_shares is not None:
-            header += f" {'Base':>10s} {'Treatment':>10s} {'%ATE':>10s}"
-        lines.append(header)
-        lines.append("  " + "-" * 60)
-
-        for k in range(nc):
-            row = f"  {names[k]:<16s} {self.predicted_shares[k]:>12.4f}"
-            if self.base_shares is not None:
-                ate = self.pct_ate[k] if self.pct_ate is not None else float("nan")
-                row += (
-                    f" {self.base_shares[k]:>10.4f}"
-                    f" {self.treatment_shares[k]:>10.4f}"
-                    f" {ate:>10.2f}"
-                )
-            lines.append(row)
-
-        lines.append(sep)
-        text = "\n".join(lines)
-        print(text)
-        return text
-
-
-def _apply_scenario_overrides(
-    data: pd.DataFrame,
-    overrides: dict[str, float | str],
-) -> pd.DataFrame:
-    """Apply a single scenario's overrides to a copy of *data*.
-
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Original (unmodified) dataset.
-    overrides : dict
-        Mapping of ``{column_name: scalar_value | source_column_name}``.
-        - scalar: broadcast the value to all rows of that column.
-        - string: resolve as ``data[that_string]`` (identity or remap).
-          Raises ``ValueError`` if the string is not a real column.
-
-    Returns
-    -------
-    data_mod : pd.DataFrame
-        Deep copy with overrides applied.
-
-    Raises
-    ------
-    ValueError
-        If a string override value is not a column in *data*.
-    """
-    data_mod = data.copy()
-    for col, val in overrides.items():
-        if col not in data.columns:
-            raise ValueError(
-                f"Scenario override target '{col}' is not a column in data. "
-                f"Available columns: {sorted(data.columns)[:20]}..."
-                if len(data.columns) > 20
-                else f"Available columns: {list(data.columns)}"
-            )
-        if isinstance(val, str):
-            # String value is interpreted as a source column name — no label mode.
-            if val not in data.columns:
-                raise ValueError(
-                    f"Scenario override for '{col}' references column '{val}', "
-                    f"which is not present in data. Only real column names are "
-                    f"accepted as string values (no label-mode)."
-                )
-            data_mod[col] = data[val].values
-        else:
-            data_mod[col] = float(val)
-    return data_mod
-
-
-def _scenarios_to_dict(
-    scenarios: ScenarioSpec,
-) -> dict[str, dict[str, float | str]]:
-    """Normalise *scenarios* to canonical dict form.
-
-    Parameters
-    ----------
-    scenarios : dict or pd.DataFrame
-        - dict: ``{scenario_name: {col: val, ...}, ...}``
-        - DataFrame: rows = scenarios (index = name), columns = variables,
-          values = scalar or column-name string.
-
-    Returns
-    -------
-    out : dict[str, dict[str, float | str]]
-    """
-    if isinstance(scenarios, pd.DataFrame):
-        out: dict[str, dict[str, float | str]] = {}
-        for name in scenarios.index:
-            row = scenarios.loc[name]
-            out[str(name)] = {col: row[col] for col in scenarios.columns}
-        return out
-    return dict(scenarios)
 
 
 def mnl_ate(

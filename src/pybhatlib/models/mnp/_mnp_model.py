@@ -118,6 +118,7 @@ class MNPModel(BaseModel):
 
         # Parse spec
         if spec is not None:
+            self.spec_dict = spec
             self.X, self.var_names = parse_spec(
                 spec, self.data, self.alternatives, nseg=1
             )
@@ -376,7 +377,7 @@ class MNPModel(BaseModel):
 
         return None
 
-    def fit(self, bounds=None) -> MNPResults:
+    def _fit(self, bounds=None) -> MNPResults:
         """Estimate the MNP model.
 
         Parameters
@@ -727,6 +728,46 @@ class MNPModel(BaseModel):
             se_bhhh=se_by_method.get("bhhh"),
             se_hessian=se_by_method.get("hessian"),
             se_sandwich=se_by_method.get("sandwich"),
+        )
+
+    # ------------------------------------------------------------------
+    # Post-estimation convenience API (delegates to the free functions;
+    # shared method surface across MNP / MORP / MDCEV / MNL)
+    # ------------------------------------------------------------------
+    def predict(self, X_new=None, avail_new=None):
+        """Predicted choice probabilities (see :func:`mnp_predict`).
+
+        ``X_new`` defaults to the training design matrix.
+        """
+        from pybhatlib.models.mnp._mnp_forecast import mnp_predict
+
+        X_new = self.X if X_new is None else X_new
+        return mnp_predict(self._require_results(), X_new, avail_new)
+
+    def predict_choice(self, X_new=None, avail_new=None):
+        """Most-likely predicted alternative (see :func:`mnp_predict_choice`)."""
+        from pybhatlib.models.mnp._mnp_forecast import mnp_predict_choice
+
+        X_new = self.X if X_new is None else X_new
+        return mnp_predict_choice(self._require_results(), X_new, avail_new)
+
+    def ate(self, *, scenarios=None, avail=None, **kwargs):
+        """Predicted shares / ATE (see :func:`mnp_ate`).
+
+        ``data`` / ``spec`` / ``alternatives`` are supplied automatically from
+        the model; pass ``scenarios=`` (or the legacy ``changevar``/
+        ``changeval``) for counterfactuals.
+        """
+        from pybhatlib.models.mnp._mnp_ate import mnp_ate
+
+        return mnp_ate(
+            self._require_results(),
+            data=self.data,
+            spec=self.spec_dict,
+            alternatives=self.alternatives,
+            avail=self.avail if avail is None else avail,
+            scenarios=scenarios,
+            **kwargs,
         )
 
     def _default_start_values(self) -> np.ndarray:

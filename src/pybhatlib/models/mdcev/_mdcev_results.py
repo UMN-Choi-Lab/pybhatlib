@@ -12,18 +12,28 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from pybhatlib.models._results_common import (
+    attach_deprecated_aliases,
+    legacy_init,
+)
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 
 
-@dataclass
+# Legacy construction kwargs → canonical field names.  MDCEV already exposes
+# canonical ``loglik`` / ``n_iter``; only the estimate vector was named ``b``.
+_MDCEVRESULTS_LEGACY_KWARGS: dict[str, str] = {"b": "params"}
+
+
+@dataclass(init=False)
 class MDCEVResults:
     """Results from MDCEV model estimation.
 
     Attributes
     ----------
-    b : NDArray
+    params : NDArray
         Raw optimised parameter vector (theta-space), shape (n_params,).
         The final element is log(sigma) as used during optimisation.
+        (Formerly ``b``; reading ``.b`` still works but warns.)
     b_reported : NDArray
         Reported parameter vector with sigma in natural units (i.e., the
         last element has been exponentiated from the log-scale used
@@ -80,7 +90,7 @@ class MDCEVResults:
         Path to the data file used.
     """
 
-    b: NDArray
+    params: NDArray
     b_reported: NDArray
     se: NDArray
     t_stat: NDArray
@@ -102,6 +112,14 @@ class MDCEVResults:
     se_sandwich: NDArray | None = None
     control: MDCEVControl | None = None
     data_path: str = ""
+
+    def __init__(self, **kwargs: object) -> None:
+        """Construct MDCEVResults, accepting canonical or legacy (``b=``) kwargs.
+
+        ``b=`` is translated to ``params=`` with a ``DeprecationWarning``;
+        unknown kwargs raise ``TypeError``.
+        """
+        legacy_init(self, kwargs, _MDCEVRESULTS_LEGACY_KWARGS, "MDCEVResults")
 
     @classmethod
     def from_estimates(
@@ -164,7 +182,7 @@ class MDCEVResults:
         nan = np.full(n, np.nan, dtype=np.float64)
         nan_mat = np.full((n, n), np.nan, dtype=np.float64)
         return cls(
-            b=b_raw,
+            params=b_raw,
             b_reported=b_reported,
             se=nan.copy(),
             t_stat=nan.copy(),
@@ -343,3 +361,11 @@ class MDCEVResults:
             },
             index=self.param_names,
         )
+
+
+# ----------------------------------------------------------------------
+# Deprecated property alias (b → params).  Attached after class construction
+# so ``@dataclass`` does not treat it as a field.  ``loglik`` / ``n_iter`` are
+# already canonical; ``ll_total`` remains a stored field on MDCEV.
+# ----------------------------------------------------------------------
+attach_deprecated_aliases(MDCEVResults, _MDCEVRESULTS_LEGACY_KWARGS)

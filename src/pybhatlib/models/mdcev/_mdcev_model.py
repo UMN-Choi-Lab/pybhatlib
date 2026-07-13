@@ -27,6 +27,7 @@ from numpy.typing import NDArray
 from scipy.special import ndtr as _ndtr
 
 from pybhatlib.io._data_loader import load_data
+from pybhatlib.models._base import BaseModel
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 from pybhatlib.models.mdcev._mdcev_loglik import (
     mdcev_loglik, mdcev_gradient, mdcev_loglik_unpar, mdcev_gradient_unpar, numerical_hessian
@@ -35,7 +36,7 @@ from pybhatlib.models.mdcev._mdcev_results import MDCEVResults
 from pybhatlib.optim._scipy_optim import minimize_scipy
 
 
-class MDCEVModel:
+class MDCEVModel(BaseModel):
     """Multiple Discrete-Continuous Extreme Value (MDCEV) Model.
 
     Supports both the traditional (Bhat 2008) and linear outside-good
@@ -178,7 +179,7 @@ class MDCEVModel:
     # Public interface
     # ------------------------------------------------------------------
 
-    def fit(self) -> MDCEVResults:
+    def _fit(self) -> MDCEVResults:
         """Fit the MDCEV model.
 
         Returns
@@ -410,7 +411,7 @@ class MDCEVModel:
             )
 
         return MDCEVResults(
-            b=x_opt,
+            params=x_opt,
             b_reported=x_reported,
             se=se_full,
             se_bhhh=se_bhhh,
@@ -432,6 +433,55 @@ class MDCEVModel:
             sigma=sigma_hat,
             control=ctrl,
             data_path=self.data_path,
+        )
+
+    # ------------------------------------------------------------------
+    # Post-estimation convenience API (delegates to the free functions;
+    # shared method surface across MNP / MORP / MDCEV / MNL).  MDCEV does not
+    # persist its design matrices, so the utility / satiation / price arrays
+    # are passed explicitly.
+    # ------------------------------------------------------------------
+    def predict(self, X_new, X_gam_new, price_new, **kwargs):
+        """Predicted consumption shares (see :func:`mdcev_predict`)."""
+        from pybhatlib.models.mdcev._mdcev_forecast import mdcev_predict
+
+        return mdcev_predict(
+            self._require_results(), X_new, X_gam_new, price_new, **kwargs
+        )
+
+    def predict_choice(self, X_new, X_gam_new, price_new, **kwargs):
+        """Most-likely predicted discrete choice (see :func:`mdcev_predict_choice`)."""
+        from pybhatlib.models.mdcev._mdcev_forecast import mdcev_predict_choice
+
+        return mdcev_predict_choice(
+            self._require_results(), X_new, X_gam_new, price_new, **kwargs
+        )
+
+    def ate(
+        self, X=None, X_gam=None, price=None, *,
+        scenarios=None, alternative_names=None, **kwargs,
+    ):
+        """Predicted shares / ATE (see :func:`mdcev_ate`).
+
+        Pass ``scenarios=`` for counterfactuals; ``model`` / ``data`` are
+        supplied automatically from the model, mirroring :meth:`MNPModel.ate`.
+        The legacy path takes pre-built ``X`` / ``X_gam`` / ``price``.
+        """
+        from pybhatlib.models.mdcev._mdcev_ate import mdcev_ate
+
+        res = self._require_results()
+        names = alternative_names or self.alternatives
+        if scenarios is not None:
+            return mdcev_ate(
+                res,
+                model=self,
+                data=self.data,
+                scenarios=scenarios,
+                alternative_names=names,
+                **kwargs,
+            )
+        return mdcev_ate(
+            res, X, X_gam, price, alternative_names=names, **kwargs
         )
 
 

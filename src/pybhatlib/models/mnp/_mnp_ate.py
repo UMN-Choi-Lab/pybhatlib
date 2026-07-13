@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -20,6 +19,12 @@ from numpy.typing import NDArray
 
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.io._spec_parser import parse_spec
+from pybhatlib.models._ate_common import (
+    ATEResultMixin,
+    ScenarioSpec,
+    apply_scenario_overrides as _apply_scenario_overrides,
+    scenarios_to_dict as _scenarios_to_dict,
+)
 from pybhatlib.models.mnp._mnp_loglik import (
     _build_lambda,
     _build_omega_cholesky,
@@ -29,16 +34,9 @@ from pybhatlib.models.mnp._mnp_loglik import (
 )
 from pybhatlib.models.mnp._mnp_results import MNPResults
 
-# Type alias: dict or DataFrame keyed/indexed by scenario name,
-# values are variable overrides (column → scalar | column-name-string).
-ScenarioSpec = Union[
-    "dict[str, dict[str, float | str]]",
-    "pd.DataFrame",
-]
-
 
 @dataclass
-class MNPATEResult:
+class MNPATEResult(ATEResultMixin):
     """Average Treatment Effect analysis results.
 
     Attributes
@@ -60,6 +58,9 @@ class MNPATEResult:
         Keys are scenario names; values have shape ``(n_alts,)``.
     """
 
+    _model_label = "MNP"
+    _ate_func_name = "mnp_ate"
+
     n_obs: int
     predicted_shares: NDArray
     base_shares: NDArray | None = None
@@ -67,123 +68,11 @@ class MNPATEResult:
     pct_ate: NDArray | None = None
     shares_per_scenario: dict[str, NDArray] | None = None
 
-    def comparison(self, base: str, treatment: str) -> NDArray:
-        """Compute percentage change between two scenarios.
-
-        Parameters
-        ----------
-        base : str
-            Scenario name to use as the denominator (base case).
-        treatment : str
-            Scenario name to use as the numerator (treatment case).
-
-        Returns
-        -------
-        pct_change : NDArray, shape (n_alts,)
-            ``100 * (treatment_shares − base_shares) / base_shares``
-
-        Raises
-        ------
-        ValueError
-            If ``shares_per_scenario`` is None or a scenario name is missing.
-        """
-        if self.shares_per_scenario is None:
-            raise ValueError(
-                "comparison() requires shares_per_scenario; run mnp_ate with scenarios=..."
-            )
-        if base not in self.shares_per_scenario:
-            raise ValueError(f"Scenario '{base}' not found in shares_per_scenario")
-        if treatment not in self.shares_per_scenario:
-            raise ValueError(f"Scenario '{treatment}' not found in shares_per_scenario")
-
-        b = self.shares_per_scenario[base]
-        t = self.shares_per_scenario[treatment]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            return np.where(b > 0, 100.0 * (t - b) / b, np.nan)
-
 
 # Backwards-compatible alias.  The class was historically named ``ATEResult``
 # (unprefixed, unlike MNLATEResult / MDCEVATEResult / MORPATEResult); it is now
 # ``MNPATEResult`` for naming parity.  ``ATEResult`` remains importable.
 ATEResult = MNPATEResult
-
-
-def _apply_scenario_overrides(
-    data: pd.DataFrame,
-    overrides: dict[str, float | str],
-) -> pd.DataFrame:
-    """Apply a single scenario's overrides to a copy of *data*.
-
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Original (unmodified) dataset.
-    overrides : dict
-        Mapping of ``{column_name: scalar_value | source_column_name}``.
-        - scalar: broadcast the value to all rows of that column.
-        - string: resolve as ``data[that_string]`` (identity or remap).
-          Raises ``ValueError`` if the string is not a real column.
-
-    Returns
-    -------
-    data_mod : pd.DataFrame
-        Deep copy with overrides applied.
-
-    Raises
-    ------
-    ValueError
-        If a string override value is not a column in *data*.
-    """
-    data_mod = data.copy()
-    for col, val in overrides.items():
-        # Validate the override target column exists (PR-review P1).  Without
-        # this guard a typo (e.g. ``{"AGEE45": 0}``) silently adds a new
-        # column to ``data_mod`` and ``parse_spec`` keeps the original column
-        # — producing baseline shares with no warning.
-        if col not in data.columns:
-            raise ValueError(
-                f"Scenario override target '{col}' is not a column in data. "
-                f"Available columns: {sorted(data.columns)[:20]}..."
-                if len(data.columns) > 20
-                else f"Available columns: {list(data.columns)}"
-            )
-        if isinstance(val, str):
-            # String value is interpreted as a source column name — no label mode.
-            if val not in data.columns:
-                raise ValueError(
-                    f"Scenario override for '{col}' references column '{val}', "
-                    f"which is not present in data. Only real column names are "
-                    f"accepted as string values (no label-mode)."
-                )
-            data_mod[col] = data[val].values
-        else:
-            data_mod[col] = float(val)
-    return data_mod
-
-
-def _scenarios_to_dict(
-    scenarios: ScenarioSpec,
-) -> dict[str, dict[str, float | str]]:
-    """Normalise *scenarios* to canonical dict form.
-
-    Parameters
-    ----------
-    scenarios : dict or pd.DataFrame
-        - dict: ``{scenario_name: {col: val, ...}, ...}``
-        - DataFrame: rows = scenarios (index = name), columns = variables,
-          values = scalar or column-name string.
-
-    Returns
-    -------
-    out : dict[str, dict[str, float | str]]
-    """
-    if isinstance(scenarios, pd.DataFrame):
-        out: dict[str, dict[str, float | str]] = {}
-        for name in scenarios.index:
-            row = scenarios.loc[name]
-            out[str(name)] = {col: row[col] for col in scenarios.columns}
-        return out
-    return dict(scenarios)
 
 
 def _compute_predicted_shares(

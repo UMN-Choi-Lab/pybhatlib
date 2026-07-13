@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
-from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -19,18 +18,16 @@ from scipy.special import ndtr as _ndtr
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd_rect
 from pybhatlib.io._spec_parser import parse_spec
+from pybhatlib.models._ate_common import (
+    ScenarioSpec,
+    apply_scenario_overrides as _apply_scenario_overrides,
+    scenarios_to_dict as _scenarios_to_dict,
+)
 from pybhatlib.models.morp._morp_loglik import (
     _rect_prob_finite_only,
     _unpack_morp_params,
 )
 from pybhatlib.models.morp._morp_results import MORPResults
-
-# Type alias mirroring MNP's ScenarioSpec: dict or DataFrame keyed/indexed by
-# scenario name, values are per-variable overrides (column -> scalar | column).
-ScenarioSpec = Union[
-    "dict[str, dict[str, float | str]]",
-    "pd.DataFrame",
-]
 
 
 @dataclass
@@ -88,53 +85,6 @@ class MORPATEResult:
             with np.errstate(divide="ignore", invalid="ignore"):
                 out.append(np.where(b > 0, 100.0 * (t - b) / b, np.nan))
         return out
-
-
-def _apply_scenario_overrides(
-    data: pd.DataFrame,
-    overrides: "dict[str, float | str]",
-) -> pd.DataFrame:
-    """Apply a single scenario's overrides to a copy of *data*.
-
-    Identical semantics to the MNP helper: ``{column: scalar | source_column}``.
-    Scalars broadcast; string values resolve to another real column.  Raises
-    ``ValueError`` if a target or source column is absent.
-    """
-    data_mod = data.copy()
-    for col, val in overrides.items():
-        if col not in data.columns:
-            raise ValueError(
-                f"Scenario override target '{col}' is not a column in data. "
-                + (
-                    f"Available columns: {sorted(data.columns)[:20]}..."
-                    if len(data.columns) > 20
-                    else f"Available columns: {list(data.columns)}"
-                )
-            )
-        if isinstance(val, str):
-            if val not in data.columns:
-                raise ValueError(
-                    f"Scenario override for '{col}' references column '{val}', "
-                    f"which is not present in data. Only real column names are "
-                    f"accepted as string values (no label-mode)."
-                )
-            data_mod[col] = data[val].values
-        else:
-            data_mod[col] = float(val)
-    return data_mod
-
-
-def _scenarios_to_dict(
-    scenarios: ScenarioSpec,
-) -> "dict[str, dict[str, float | str]]":
-    """Normalise *scenarios* to canonical ``{name: {col: val}}`` dict form."""
-    if isinstance(scenarios, pd.DataFrame):
-        out: dict[str, dict[str, float | str]] = {}
-        for name in scenarios.index:
-            row = scenarios.loc[name]
-            out[str(name)] = {col: row[col] for col in scenarios.columns}
-        return out
-    return dict(scenarios)
 
 
 def _compute_morp_predicted_probs(
@@ -216,12 +166,14 @@ def morp_ate(
         Pre-built design matrix.  Optional when ``data``+``spec``+``dep_vars``
         are given (or in scenario mode).
     n_dims : int, optional
-        Number of dimensions.  Inferred from ``dep_vars`` when omitted.
-    n_categories : list of int
-        Number of categories per dimension (not stored in ``results``, so it
-        must be supplied even in scenario mode).
+        Number of dimensions.  Inferred from ``dep_vars``, else derived from
+        ``results``, when omitted.
+    n_categories : list of int, optional
+        Number of categories per dimension.  Derived from ``results`` when
+        omitted.
     n_beta : int, optional
-        Number of beta coefficients.  Inferred from ``spec`` when omitted.
+        Number of beta coefficients.  Derived from ``results`` when omitted
+        (falling back to ``len(spec)`` for legacy results objects).
     data : pd.DataFrame, optional
         Dataset — required to rebuild ``X`` (and for scenario mode).
     spec : dict, optional
@@ -235,14 +187,13 @@ def morp_ate(
     -------
     result : MORPATEResult
     """
-    if n_categories is None:
-        raise ValueError(
-            "n_categories is required (MORP does not store it on results)"
-        )
     if n_dims is None and dep_vars is not None:
         n_dims = len(dep_vars)
-    if n_beta is None and spec is not None:
+    if n_beta is None and results.n_beta is None and spec is not None:
+        # Only reached for results objects predating stored structural
+        # metadata; one spec entry contributes one beta coefficient.
         n_beta = len(spec)
+    n_dims, n_categories, n_beta = results._structure(n_dims, n_categories, n_beta)
 
     # --- Scenario mode ---
     if scenarios is not None:
@@ -318,9 +269,9 @@ class MORPJointATEResult:
 def morp_joint_probs(
     results: MORPResults,
     X: NDArray,
-    n_dims: int,
-    n_categories: list[int],
-    n_beta: int,
+    n_dims: int | None = None,
+    n_categories: list[int] | None = None,
+    n_beta: int | None = None,
 ) -> MORPJointATEResult:
     """Mean joint probability of every ordinal outcome combination.
 
@@ -350,6 +301,7 @@ def morp_joint_probs(
     -------
     MORPJointATEResult
     """
+    n_dims, n_categories, n_beta = results._structure(n_dims, n_categories, n_beta)
     xp = get_backend("numpy")
     control = results.control
     beta, thresholds, sigma = _unpack_morp_params(

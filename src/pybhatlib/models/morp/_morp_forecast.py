@@ -14,9 +14,9 @@ from pybhatlib.models.morp._morp_results import MORPResults
 def morp_predict(
     results: MORPResults,
     X_new: NDArray,
-    n_dims: int,
-    n_categories: list[int],
-    n_beta: int,
+    n_dims: int | None = None,
+    n_categories: list[int] | None = None,
+    n_beta: int | None = None,
 ) -> list[NDArray]:
     """Predict ordinal probabilities for new observations.
 
@@ -26,12 +26,13 @@ def morp_predict(
         Fitted model results.
     X_new : ndarray, shape (N, D, n_vars)
         Design matrix for new observations.
-    n_dims : int
-        Number of dimensions.
-    n_categories : list of int
-        Number of categories per dimension.
-    n_beta : int
-        Number of beta coefficients.
+    n_dims : int, optional
+        Number of dimensions.  Derived from ``results`` when omitted.
+    n_categories : list of int, optional
+        Number of categories per dimension.  Derived from ``results`` when
+        omitted.
+    n_beta : int, optional
+        Number of beta coefficients.  Derived from ``results`` when omitted.
 
     Returns
     -------
@@ -39,6 +40,7 @@ def morp_predict(
         probs[d] has shape (N, n_categories[d]) with predicted probabilities
         for each category in dimension d.
     """
+    n_dims, n_categories, n_beta = results._structure(n_dims, n_categories, n_beta)
     theta_hat = results.params
     control = results.control
 
@@ -87,9 +89,9 @@ def morp_predict(
 def morp_predict_category(
     results: MORPResults,
     X_new: NDArray,
-    n_dims: int,
-    n_categories: list[int],
-    n_beta: int,
+    n_dims: int | None = None,
+    n_categories: list[int] | None = None,
+    n_beta: int | None = None,
 ) -> NDArray:
     """Predict most likely category for new observations.
 
@@ -99,18 +101,20 @@ def morp_predict_category(
         Fitted model results.
     X_new : ndarray, shape (N, D, n_vars)
         Design matrix.
-    n_dims : int
-        Number of dimensions.
-    n_categories : list of int
-        Number of categories per dimension.
-    n_beta : int
-        Number of beta coefficients.
+    n_dims : int, optional
+        Number of dimensions.  Derived from ``results`` when omitted.
+    n_categories : list of int, optional
+        Number of categories per dimension.  Derived from ``results`` when
+        omitted.
+    n_beta : int, optional
+        Number of beta coefficients.  Derived from ``results`` when omitted.
 
     Returns
     -------
     categories : ndarray, shape (N, D)
         Predicted category (0-based) for each observation and dimension.
     """
+    n_dims, n_categories, n_beta = results._structure(n_dims, n_categories, n_beta)
     probs = morp_predict(results, X_new, n_dims, n_categories, n_beta)
     N = probs[0].shape[0]
 
