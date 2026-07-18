@@ -191,6 +191,7 @@ class MNPKerCPModel(BaseModel):
             varneg=tuple(ctrl.varneg),
             varpos=tuple(ctrl.varpos),
             kernel_dim=self.n_alts - 1,
+            randdiag=ctrl.randdiag,
         )
         layout = ParamLayout(
             n_beta=spec.n_beta,

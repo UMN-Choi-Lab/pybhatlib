@@ -113,6 +113,7 @@ class MNPKerCPControl:
     scaling: Literal["sumsq"] = "sumsq"
 
     # --- MSL / reparameterization -------------------------------------------
+    randdiag: bool = False
     n_rep: int = 5
     intordn1: int = 20
     spher: bool = False
