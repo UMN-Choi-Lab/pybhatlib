@@ -78,7 +78,7 @@ from pybhatlib.matgradient._radial import newcholparmscaled
 from pybhatlib.mixed._copula import condition, gcondnewcov, gcondnewmean
 from pybhatlib.mixed._kernel import KernelObsResult
 from pybhatlib.models.mnpkercp._mnpkercp_diff import dm_matrix
-from pybhatlib.utils._logistic import gradlogitmod, logitmod
+from pybhatlib.utils._logistic import gradlogitmod
 
 
 @dataclass(frozen=True)
@@ -160,7 +160,8 @@ class MvncdKernel:
     """
 
     def __init__(
-        self, nc: int, nrndcoef: int, *, copula: bool = False, scal: float = 1.0
+        self, nc: int, nrndcoef: int, *, copula: bool = False, scal: float = 1.0,
+        iid: bool = False,
     ) -> None:
         if nc < 2:
             raise ValueError(f"nc must be >= 2, got {nc}")
@@ -172,9 +173,10 @@ class MvncdKernel:
         self.nc: int = int(nc)
         self.nrndcoef: int = int(nrndcoef)
         self.kernel_dim: int = int(nc) - 1
-        self.n_kern: int = int(nc) - 2
+        self.n_kern: int = 0 if iid else int(nc) - 2
         self.copula: bool = bool(copula)
         self.scal: float = float(scal)
+        self.iid: bool = bool(iid)
 
     # ------------------------------------------------------------------
     def kernel_param_names(self) -> list[str]:
@@ -257,11 +259,16 @@ class MvncdKernel:
         kd = self.kernel_dim
 
         # --- kernel scale: wker_full = sqrt(logitmod([0, xscalker])) --------
-        xscalker_full = np.concatenate(
-            [np.zeros(1, dtype=np.float64), np.asarray(xscalker_free, dtype=np.float64)]
-        )                                                     # (nc-1,)
-        F, ga = gradlogitmod(xscalker_full)                   # F,(nc-1); ga[a,b]=dF_b/dfull_a
-        wker_full = np.sqrt(F)                                # (nc-1,)
+        if self.iid:
+            wker_full = np.full(kd, 1.0 / np.sqrt(kd), dtype=np.float64)
+            ga = np.zeros((kd, kd), dtype=np.float64)
+        else:
+            xscalker_full = np.concatenate([
+                np.zeros(1, dtype=np.float64),
+                np.asarray(xscalker_free, dtype=np.float64),
+            ])
+            F, ga = gradlogitmod(xscalker_full)
+            wker_full = np.sqrt(F)
         wdiagker = np.diag(wker_full)                         # (nc-1, nc-1)
         # d wker_full[k] / d xscalker_free[j] = ga[j+1, k] / (2 wker_full[k]).
         # Rows are the free params (drop the fixed reference param, full idx 0).

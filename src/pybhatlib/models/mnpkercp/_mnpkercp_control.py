@@ -110,6 +110,7 @@ class MNPKerCPControl:
     weight_var: str | None = None
 
     # --- kernel / copula -----------------------------------------------------
+    iid: bool = False
     copula: bool = False
     scaling: Literal["sumsq"] = "sumsq"
 

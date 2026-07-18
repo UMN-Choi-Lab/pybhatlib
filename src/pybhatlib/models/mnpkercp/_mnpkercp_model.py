@@ -204,7 +204,7 @@ class MNPKerCPModel(BaseModel):
             n_rcor=spec.nrndtcor,     # joint rc + differenced-kernel correlation
             n_scal=spec.nscale,
             n_lam=spec.numlam,
-            n_kern=spec.n_kern,       # nc - 2 free kernel-scale params
+            n_kern=0 if ctrl.iid else spec.n_kern,
             kern_before_lam=True,     # GAUSS b: [beta|rcor|scal|kern|lam]
         )
         return spec, layout
@@ -247,7 +247,8 @@ class MNPKerCPModel(BaseModel):
             spec, layout, spher=ctrl.spher, scal=ctrl.scal, intordn1=ctrl.intordn1
         )
         kernel = MvncdKernel(
-            self.n_alts, spec.nrndcoef, copula=ctrl.copula, scal=ctrl.scal
+            self.n_alts, spec.nrndcoef, copula=ctrl.copula, scal=ctrl.scal,
+            iid=ctrl.iid,
         )
         cfg = MSLConfig(
             n_rep=ctrl.n_rep,
