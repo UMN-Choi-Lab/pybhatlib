@@ -217,6 +217,7 @@ class MixingSpec:
     poslog: NDArray = field(repr=False)
     posnolog: NDArray = field(repr=False)
     actlam: NDArray = field(repr=False)
+    fix_location_zero_mask: NDArray = field(repr=False)
     kernel_dim: int = 0
     n_kern: int = 0
     nord: int = 0
@@ -226,6 +227,7 @@ class MixingSpec:
     nkernlam: int = 0
     normker: bool = True
     nvargam: int = 0
+    fix_location_zero: tuple[str, ...] = ()
 
     @classmethod
     def from_var_names(
@@ -242,6 +244,7 @@ class MixingSpec:
         normker: bool = True,
         nvargam: int = 0,
         randdiag: bool = False,
+        fix_location_zero: Sequence[str] = (),
     ) -> "MixingSpec":
         """Build a :class:`MixingSpec` from the GAUSS variable-name lists.
 
@@ -303,6 +306,9 @@ class MixingSpec:
         randdiag : bool, optional
             If ``True``, fix the random-coefficient correlation matrix to the
             identity and omit its free parameters (GAUSS ``_randdiag``).
+        fix_location_zero : sequence of str, optional
+            Additive random-coefficient variables whose fixed/location means
+            are pinned to zero while their random scales remain estimable.
 
         Returns
         -------
@@ -430,6 +436,24 @@ class MixingSpec:
         mixposyj = _indcv(yjvar, var_names)
         mixpos = np.concatenate([mixposn, mixposlg, mixposyj]).astype(np.intp)
 
+        fixed_names = tuple(str(name) for name in fix_location_zero)
+        random_names = set(normvar) | set(logvar) | set(yjvar)
+        missing_random = sorted(set(fixed_names) - random_names)
+        if missing_random:
+            raise ValueError(
+                "fix_location_zero entries must carry a random coefficient; "
+                f"invalid entries: {missing_random}"
+            )
+        nonadditive = sorted(set(fixed_names) & set(logvar))
+        if nonadditive:
+            raise ValueError(
+                "fix_location_zero supports additive normal/YJ random "
+                f"coefficients, not multiplicative logvar entries: {nonadditive}"
+            )
+        fixed_positions = _indcv(fixed_names, var_names)
+        fix_location_zero_mask = np.zeros(nvarm, dtype=np.float64)
+        fix_location_zero_mask[fixed_positions] = 1.0
+
         # actlam: max_active flag per coefficient (0 normal/log, 1 yj) (218-232)
         actlam = np.concatenate([
             np.zeros(nrndnor, dtype=np.float64),
@@ -486,6 +510,7 @@ class MixingSpec:
             poslog=poslog,
             posnolog=posnolog,
             actlam=actlam,
+            fix_location_zero_mask=fix_location_zero_mask,
             kernel_dim=kernel_dim,
             n_kern=n_kern,
             nord=nord,
@@ -495,6 +520,7 @@ class MixingSpec:
             nkernlam=nkernlam,
             normker=normker,
             nvargam=int(nvargam),
+            fix_location_zero=fixed_names,
         )
 
 

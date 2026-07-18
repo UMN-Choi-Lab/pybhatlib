@@ -599,6 +599,10 @@ def _reparam_xmu(
     if spec.nvarneg + spec.nvarpos == 0:
         xmu = bmu.copy()
         dxmudxmu1 = np.ones(spec.n_beta, dtype=np.float64) if want_grad else None
+        fixed = spec.fix_location_zero_mask > 0
+        xmu[fixed] = 0.0
+        if want_grad:
+            dxmudxmu1[fixed] = 0.0
         return xmu, dxmudxmu1
 
     # Indexed assignment (GAUSS MIXMNL.gss:397-401): only the sign-constrained
@@ -614,6 +618,10 @@ def _reparam_xmu(
         dxmudxmu1 = spec.indxvarnonegpos.astype(float).copy()
         dxmudxmu1[neg] = -safe_exp(bmu[neg])
         dxmudxmu1[pos] = safe_exp(bmu[pos])
+    fixed = spec.fix_location_zero_mask > 0
+    xmu[fixed] = 0.0
+    if want_grad:
+        dxmudxmu1[fixed] = 0.0
     return xmu, dxmudxmu1
 
 
@@ -801,6 +809,7 @@ class ReportingSpace(ParamSpace):
 
         # xmu is the reported coefficient directly (no exp reparam)
         xmu = theta[sl["beta"]].copy()
+        xmu[spec.fix_location_zero_mask > 0] = 0.0
 
         xrand = theta[sl["rcor"]]
         # --- correlation from direct entries (MIXMNL 657-663) ---------------

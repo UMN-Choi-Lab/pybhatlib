@@ -114,6 +114,16 @@ def test_actlam(spec: MixingSpec) -> None:
     np.testing.assert_array_equal(spec.actlam, [0.0, 0.0, 1.0])
 
 
+def test_fix_location_zero_requires_additive_random_coefficient() -> None:
+    with pytest.raises(ValueError, match="random coefficient"):
+        MixingSpec.from_var_names(["A", "B"], fix_location_zero=["B"])
+
+    with pytest.raises(ValueError, match="additive"):
+        MixingSpec.from_var_names(
+            ["A"], logvar=["A"], varneg=["A"], fix_location_zero=["A"]
+        )
+
+
 # ---------------------------------------------------------------------------
 # Sign / log masks on a richer spec (exercise the neg/pos/log branches)
 # ---------------------------------------------------------------------------
@@ -267,6 +277,34 @@ def test_estimation_space_no_grad(spec: MixingSpec) -> None:
     # lam=1 -> identity YJ -> meanyj = (0, 1)
     np.testing.assert_allclose(rc.mulamrnd, np.zeros(spec.nrndcoef), atol=1e-9)
     np.testing.assert_allclose(rc.siglamrnd, np.ones(spec.nrndcoef), atol=1e-9)
+
+
+def test_fix_location_zero_pins_mean_but_keeps_random_scale() -> None:
+    fixed_spec = MixingSpec.from_var_names(
+        ["A", "B"], normvar=["A"], fix_location_zero=["A"]
+    )
+    lay = layout_for(fixed_spec)
+    theta = np.zeros(lay.n_theta)
+    theta[lay.slices()["beta"]] = [3.0, 2.0]
+    theta[lay.slices()["scal"]] = np.log(1.7)
+
+    rc = EstimationSpace(lay).unpack(theta, fixed_spec, want_grad=True)
+
+    np.testing.assert_array_equal(rc.xmu, [0.0, 2.0])
+    np.testing.assert_array_equal(rc.dxmudxmu1, [0.0, 1.0])
+    assert rc.wscalrand[0] == pytest.approx(1.7)
+
+
+def test_fix_location_zero_empty_default_is_noop() -> None:
+    default_spec = MixingSpec.from_var_names(["A", "B"], normvar=["A"])
+    lay = layout_for(default_spec)
+    theta = np.zeros(lay.n_theta)
+    theta[lay.slices()["beta"]] = [3.0, 2.0]
+
+    rc = EstimationSpace(lay).unpack(theta, default_spec, want_grad=True)
+
+    np.testing.assert_array_equal(rc.xmu, [3.0, 2.0])
+    np.testing.assert_array_equal(rc.dxmudxmu1, [1.0, 1.0])
 
 
 def test_actlam_pins_non_yj_lambdas_in_estimation_space(spec: MixingSpec) -> None:

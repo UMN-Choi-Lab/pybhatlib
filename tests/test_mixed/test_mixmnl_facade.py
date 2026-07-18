@@ -85,6 +85,7 @@ class TestMixMNLControlRoundTrip:
         assert ctrl.scal == 1.0
         assert ctrl.person_id is None
         assert ctrl.weight_var is None
+        assert tuple(ctrl.fix_location_zero) == ()
         assert tuple(ctrl.normvar) == ()
 
     def test_asdict_roundtrip(self):

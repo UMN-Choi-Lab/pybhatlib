@@ -34,6 +34,9 @@ class MixMNLControl:
     varneg, varpos : sequence of str
         Fixed components constrained to a strictly negative / positive sign
         (GAUSS ``varneg`` / ``varpos``).
+    fix_location_zero : sequence of str
+        Additive random-coefficient variables whose fixed/location means are
+        pinned to zero while their random components remain estimable.
     person_id : str or None
         Column holding the panel person identifier.  ``None`` (default) treats
         every observation as its own person (cross-sectional; ``Dmask = I``).
@@ -94,6 +97,7 @@ class MixMNLControl:
     yjvar: Sequence[str] = field(default_factory=tuple)
     varneg: Sequence[str] = field(default_factory=tuple)
     varpos: Sequence[str] = field(default_factory=tuple)
+    fix_location_zero: Sequence[str] = field(default_factory=tuple)
 
     # --- panel / weights -----------------------------------------------------
     person_id: str | None = None
