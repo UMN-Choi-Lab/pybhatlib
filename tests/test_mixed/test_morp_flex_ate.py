@@ -119,6 +119,24 @@ def test_randdiag_removes_joint_correlation_block():
     np.testing.assert_array_equal(state.omegastar, np.eye(spec.nrndtot))
 
 
+def test_observation_weights_are_averaged_by_person():
+    data = _make_data(n=5)
+    data["pid"] = [0, 0, 1, 1, 1]
+    data["weight"] = [1.0, 3.0, 2.0, 4.0, 6.0]
+    model = MORPFlexModel(
+        data=data, dep_vars=DEP, spec=SPEC, n_categories=NCAT,
+        control=MORPFlexControl(
+            person_id="pid", weight_var="weight", n_rep=1, verbose=0
+        ),
+    )
+    spec, layout = model._build_spec_layout()
+    estimator = model._build_estimator(
+        spec, layout, PanelIndex.from_ids(model.person_ids)
+    )
+
+    np.testing.assert_allclose(estimator.weightind, [2.0, 4.0])
+
+
 def test_collapse_ate_equals_fixed(collapse_fit):
     model, _ = collapse_fit
     fixed = _fixed_results_from_mixed(model)
