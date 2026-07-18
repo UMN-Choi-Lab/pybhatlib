@@ -79,6 +79,21 @@ def binary_probit_data() -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 class TestCollapseToFixedCoefMNP:
+    def test_randdiag_removes_joint_correlation_block(self, binary_probit_data):
+        model = MNPKerCPModel(
+            data=binary_probit_data,
+            alternatives=_ALTS,
+            spec=_SPEC,
+            control=MNPKerCPControl(
+                normvar=("X", "Z"), randdiag=True, verbose=0
+            ),
+        )
+        spec, layout = model._build_spec_layout()
+
+        assert spec.nrndcoef == 2
+        assert spec.nrndtcor == 0
+        assert layout.n_rcor == 0
+
     def _fit_no_mixing(self, data: pd.DataFrame) -> MNPKerCPModel:
         model = MNPKerCPModel(
             data=data,
