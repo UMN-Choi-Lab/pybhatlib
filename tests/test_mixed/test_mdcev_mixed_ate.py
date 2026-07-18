@@ -194,6 +194,19 @@ def test_randdiag_removes_random_correlation_block():
     np.testing.assert_array_equal(state.omegastar, np.eye(2))
 
 
+def test_fix_location_zero_is_wired_to_shared_spec():
+    fx = _make_frame()
+    model = _make_mixed(
+        fx,
+        MDCEVMixedControl(
+            normvar=("b0",), fix_location_zero=("b0",)
+        ),
+    )
+    spec, _ = model._build_spec_layout()
+
+    assert spec.fix_location_zero_mask[0] == 1.0
+
+
 def test_collapse_ate_equals_shipped_mdcev_ate():
     """nrndcoef=0 mixed ate == shipped mdcev_ate (base + per scenario), 1e-6."""
     fx = _make_frame()
