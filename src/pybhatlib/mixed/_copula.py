@@ -42,6 +42,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from pybhatlib.backend._array_api import array_namespace
+from pybhatlib.utils._safe_reparam import safe_cholesky
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +80,7 @@ def _upper_pairs(K: int) -> list[tuple[int, int]]:
 
 def _upper_chol(A: NDArray) -> NDArray:
     """Upper-triangular Cholesky ``U`` with ``U.T @ U == A`` (GAUSS ``chol``)."""
-    return np.linalg.cholesky(np.asarray(A, dtype=np.float64)).T
+    return safe_cholesky(np.asarray(A, dtype=np.float64))[0].T
 
 
 def _chol_lower_deriv(A: NDArray, dA: NDArray) -> tuple[NDArray, NDArray]:
@@ -90,7 +91,7 @@ def _chol_lower_deriv(A: NDArray, dA: NDArray) -> tuple[NDArray, NDArray]:
     differentiation via ``dL = L * Phi_lower`` where
     ``Phi = L^{-1} dA L^{-T}`` and the diagonal of ``Phi`` is halved.
     """
-    L = np.linalg.cholesky(np.asarray(A, dtype=np.float64))
+    L = safe_cholesky(np.asarray(A, dtype=np.float64))[0]
     Linv = np.linalg.inv(L)
     Phi = Linv @ dA @ Linv.T
     n = A.shape[0]

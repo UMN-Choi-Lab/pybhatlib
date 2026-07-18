@@ -269,6 +269,23 @@ def test_estimation_space_no_grad(spec: MixingSpec) -> None:
     np.testing.assert_allclose(rc.siglamrnd, np.ones(spec.nrndcoef), atol=1e-9)
 
 
+def test_estimation_space_extreme_sign_and_scale_blocks_remain_finite() -> None:
+    rich_spec = MixingSpec.from_var_names(
+        ["A", "B", "C"], normvar=["A", "B", "C"], varneg=["A"], varpos=["B"]
+    )
+    lay = layout_for(rich_spec)
+    theta = np.zeros(lay.n_theta)
+    slices = lay.slices()
+    theta[slices["beta"]] = [1e6, 1e6, 1e6]
+    theta[slices["scal"]] = 1e6
+
+    rc = EstimationSpace(lay).unpack(theta, rich_spec, want_grad=True)
+
+    assert np.all(np.isfinite(rc.xmu))
+    assert np.all(np.isfinite(rc.wscalrand))
+    assert np.all(np.isfinite(rc.dxmudxmu1))
+
+
 def test_reporting_space_direct(spec: MixingSpec) -> None:
     lay = layout_for(spec)
     space = ReportingSpace(lay, scal=1.0, intordn1=20)
@@ -297,6 +314,20 @@ def test_reporting_space_direct(spec: MixingSpec) -> None:
     # reporting space carries no reparam gradients
     assert rc.dxmudxmu1 is None
     assert rc.gtempstar is None
+
+
+def test_reporting_space_repairs_indefinite_direct_correlation(spec: MixingSpec) -> None:
+    lay = layout_for(spec)
+    theta = np.zeros(lay.n_theta)
+    slices = lay.slices()
+    theta[slices["rcor"]] = [0.99, 0.99, -0.99]
+    theta[slices["scal"]] = 1.0
+    theta[slices["lam"]] = 1.0
+
+    rc = ReportingSpace(lay).unpack(theta, spec)
+
+    assert np.linalg.eigvalsh(rc.omegastar).min() > 0.0
+    np.testing.assert_allclose(rc.x11chol.T @ rc.x11chol, rc.omegastar, atol=1e-12)
 
 
 def test_spher_not_implemented(spec: MixingSpec) -> None:

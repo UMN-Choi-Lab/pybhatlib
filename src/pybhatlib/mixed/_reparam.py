@@ -42,6 +42,11 @@ from pybhatlib.matgradient._radial import (
     newcholparmscaled,
 )
 from pybhatlib.utils._logistic import cdlogit, gradlogitmod, logitmod, pdlogit
+from pybhatlib.utils._safe_reparam import (
+    nearest_pd_correlation,
+    safe_cholesky,
+    safe_exp,
+)
 from pybhatlib.vecup._yj import gradmeanyj, meanyj
 
 if TYPE_CHECKING:  # avoid a runtime import cycle with _spec
@@ -602,13 +607,13 @@ def _reparam_xmu(
     neg = spec.indxvarneg > 0
     pos = spec.indxvarpos > 0
     xmu = bmu.copy()
-    xmu[neg] = -np.exp(bmu[neg])
-    xmu[pos] = np.exp(bmu[pos])
+    xmu[neg] = -safe_exp(bmu[neg])
+    xmu[pos] = safe_exp(bmu[pos])
     dxmudxmu1 = None
     if want_grad:
         dxmudxmu1 = spec.indxvarnonegpos.astype(float).copy()
-        dxmudxmu1[neg] = -np.exp(bmu[neg])
-        dxmudxmu1[pos] = np.exp(bmu[pos])
+        dxmudxmu1[neg] = -safe_exp(bmu[neg])
+        dxmudxmu1[pos] = safe_exp(bmu[pos])
     return xmu, dxmudxmu1
 
 
@@ -714,7 +719,7 @@ class EstimationSpace(ParamSpace):
             omegastar_joint = np.asarray(cholall).T @ np.asarray(cholall)
             omegastar = omegastar_joint[:k, :k].copy()
             if k > 1:
-                x11chol = np.linalg.cholesky(omegastar).T
+                x11chol = safe_cholesky(omegastar)[0].T
                 if want_grad:
                     gker, gscal = gnewcholparmcorscaled(omegastar, self.scal)
                     gtempstar = gker
@@ -737,7 +742,7 @@ class EstimationSpace(ParamSpace):
                 gtempstar = gker
 
         # --- scale (MIXMNL 421-425, 535-541) --------------------------------
-        wscalrand = np.exp(xscalrand)
+        wscalrand = safe_exp(xscalrand)
         wdiagrand = np.diag(wscalrand)
         dwscalranddxscalrand = np.diag(wscalrand) if want_grad else None
 
@@ -799,9 +804,9 @@ class ReportingSpace(ParamSpace):
             omegastar = np.eye(k, dtype=np.float64)
             x11chol = np.eye(k, dtype=np.float64)
         elif k > 1:
-            omegastar = matndupdiagonefull(xrand)
+            omegastar = nearest_pd_correlation(matndupdiagonefull(xrand))
             # GAUSS chol() returns upper-triangular R with R' R = omega
-            x11chol = np.linalg.cholesky(omegastar).T
+            x11chol = safe_cholesky(omegastar)[0].T
         else:
             omegastar = np.ones((k, k), dtype=np.float64)
             x11chol = np.array(1.0)

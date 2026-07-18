@@ -12,6 +12,13 @@ from pybhatlib.utils._logistic import (
     logitmod,
     pdlogit,
 )
+from pybhatlib.utils._safe_reparam import (
+    corr_from_angle,
+    nearest_pd_correlation,
+    safe_cholesky,
+    safe_exp,
+    softmax,
+)
 
 __all__ = [
     "set_seed",
@@ -26,4 +33,9 @@ __all__ = [
     "d_lam_d_lamnew",
     "logitmod",
     "gradlogitmod",
+    "safe_exp",
+    "corr_from_angle",
+    "safe_cholesky",
+    "nearest_pd_correlation",
+    "softmax",
 ]
