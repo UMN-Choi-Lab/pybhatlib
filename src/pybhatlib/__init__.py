@@ -27,6 +27,11 @@ from pybhatlib.models.morp import (
     morp_predict_category,
 )
 from pybhatlib.models.mixmnl import MixMNLControl, MixMNLModel, MixMNLResults
+from pybhatlib.models.mnpkercp import (
+    MNPKerCPControl,
+    MNPKerCPModel,
+    MNPKerCPResults,
+)
 
 __all__ = [
     "__version__",
@@ -56,4 +61,7 @@ __all__ = [
     "MixMNLControl",
     "MixMNLModel",
     "MixMNLResults",
+    "MNPKerCPControl",
+    "MNPKerCPModel",
+    "MNPKerCPResults",
 ]
