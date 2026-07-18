@@ -167,6 +167,18 @@ def test_correst_masks_selected_ordinal_correlations():
     np.testing.assert_array_equal(state.xi2subq, np.eye(2))
 
 
+def test_fix_location_zero_is_wired_to_shared_spec():
+    model = MORPFlexModel(
+        data=_make_data(n=20), dep_vars=DEP, spec=SPEC, n_categories=NCAT,
+        control=MORPFlexControl(
+            normvar=("x1",), fix_location_zero=("x1",), verbose=0
+        ),
+    )
+    spec, _ = model._build_spec_layout()
+
+    np.testing.assert_array_equal(spec.fix_location_zero_mask, [1.0, 0.0])
+
+
 def test_collapse_ate_equals_fixed(collapse_fit):
     model, _ = collapse_fit
     fixed = _fixed_results_from_mixed(model)
