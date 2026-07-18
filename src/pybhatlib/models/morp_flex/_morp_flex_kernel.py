@@ -330,7 +330,9 @@ class RectMvncdKernel:
             # off-diagonal joint correlation, ``kernlam`` the YJ power in (0, 2).
             tau = np.asarray(bthresh, dtype=np.float64).ravel()
             dtau = np.eye(tau.shape[0], dtype=np.float64)
-            if self.nrndtot > 1:
+            if layout.n_rcor == 0 and self.nrndtot > 1:
+                omegastar = np.eye(self.nrndtot, dtype=np.float64)
+            elif self.nrndtot > 1:
                 omegastar = matndupdiagonefull(xrand)
             else:  # single random element -> unit correlation
                 omegastar = np.ones((self.nrndtot, self.nrndtot), dtype=np.float64)
@@ -349,7 +351,9 @@ class RectMvncdKernel:
         tau, dtau = thresh_reparam(bthresh, self.numthresh, want_grad=True)
 
         # --- joint correlation omegastar (rcor block) -----------------------
-        if self.nrndtot > 1:
+        if layout.n_rcor == 0 and self.nrndtot > 1:
+            omegastar = np.eye(self.nrndtot, dtype=np.float64)
+        elif self.nrndtot > 1:
             cholall = newcholparmscaled(xrand, self.scal)
             omegastar = np.asarray(cholall).T @ np.asarray(cholall)
         else:  # single random element -> unit correlation

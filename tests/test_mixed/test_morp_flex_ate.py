@@ -33,6 +33,7 @@ from pybhatlib.models.morp_flex import (
     morp_flex_ate_from_params,
     morp_flex_predict,
 )
+from pybhatlib.vecup._panel import PanelIndex
 
 SPEC = {"x1": {"y1": "x1", "y2": "x1"}, "x2": {"y1": "x2", "y2": "x2"}}
 DEP = ["y1", "y2"]
@@ -102,6 +103,20 @@ def test_collapse_predict_equals_fixed(collapse_fit):
     for d in range(2):
         assert mixed_probs[d].shape == (model.N, NCAT[d])
         np.testing.assert_allclose(mixed_probs[d], fixed_probs[d], atol=1e-6)
+
+
+def test_randdiag_removes_joint_correlation_block():
+    model = MORPFlexModel(
+        data=_make_data(n=20), dep_vars=DEP, spec=SPEC, n_categories=NCAT,
+        control=MORPFlexControl(normvar=("x1",), randdiag=True, verbose=0),
+    )
+    spec, layout = model._build_spec_layout()
+    state = model._build_estimator(
+        spec, layout, PanelIndex.from_ids(model.person_ids)
+    ).kernel.prepare(np.zeros(layout.n_theta), layout)
+
+    assert layout.n_rcor == 0
+    np.testing.assert_array_equal(state.omegastar, np.eye(spec.nrndtot))
 
 
 def test_collapse_ate_equals_fixed(collapse_fit):
