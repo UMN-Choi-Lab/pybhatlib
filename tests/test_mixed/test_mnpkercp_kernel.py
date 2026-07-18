@@ -72,6 +72,20 @@ def _make_case(seed: int, *, copula: bool):
     return kernel, layout, theta, Vsub, rc_draw, obs
 
 
+@pytest.mark.parametrize("method", ["me", "ovus", "tvbs", "bme", "ovbs", "ssj", "scipy"])
+def test_mvncd_kernel_methods_return_finite_probabilities(method):
+    kernel, layout, theta, Vsub, rc_draw, obs = _make_case(17, copula=False)
+    kernel.method = method
+    state = kernel.prepare(theta, layout)
+
+    result = kernel.probability(
+        Vsub, obs, state, rc_draw=rc_draw, want_grad=False
+    )
+
+    assert np.all(np.isfinite(result.p_obs))
+    assert np.all((result.p_obs >= 0.0) & (result.p_obs <= 1.0))
+
+
 def _logp(kernel, layout, theta, Vsub, rc_draw, obs):
     """log(p_obs) vector at the given inputs (value-only, no gradients)."""
     kst = kernel.prepare(theta, layout)
