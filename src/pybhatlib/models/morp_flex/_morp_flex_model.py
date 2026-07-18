@@ -191,6 +191,7 @@ class MORPFlexModel(BaseModel):
             n_categories=self.n_categories,
             normker=not ctrl.yj_kernel,
             randdiag=ctrl.randdiag,
+            fix_location_zero=tuple(ctrl.fix_location_zero),
         )
         layout = ParamLayout(
             n_beta=spec.n_beta,
