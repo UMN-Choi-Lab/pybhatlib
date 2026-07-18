@@ -155,6 +155,19 @@ class TestCollapseToFixedCoefMNP:
         )
         np.testing.assert_array_equal(theta[layout.slices()["rcor"]], 0.0)
 
+    def test_fix_location_zero_is_wired_to_shared_spec(self, binary_probit_data):
+        model = MNPKerCPModel(
+            data=binary_probit_data,
+            alternatives=_ALTS,
+            spec=_SPEC,
+            control=MNPKerCPControl(
+                normvar=("X",), fix_location_zero=("X",), verbose=0
+            ),
+        )
+        spec, _ = model._build_spec_layout()
+
+        np.testing.assert_array_equal(spec.fix_location_zero_mask, [1.0, 0.0])
+
     def _fit_no_mixing(self, data: pd.DataFrame) -> MNPKerCPModel:
         model = MNPKerCPModel(
             data=data,
