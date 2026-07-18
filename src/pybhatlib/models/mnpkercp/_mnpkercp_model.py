@@ -368,6 +368,26 @@ class MNPKerCPModel(BaseModel):
     # fit
     # ------------------------------------------------------------------
 
+    def _starting_values(self, layout: ParamLayout) -> NDArray:
+        """Build estimation-space starts, optionally seeding choice constants."""
+        ctrl = self.control
+        if ctrl.startb is not None:
+            theta = np.asarray(ctrl.startb, dtype=np.float64)
+            if theta.shape != (layout.n_theta,):
+                raise ValueError(
+                    f"startb has length {theta.shape[0]}, expected {layout.n_theta}"
+                )
+            return theta.copy()
+
+        theta = np.zeros(layout.n_theta, dtype=np.float64)
+        if ctrl.start_from_shares and self.n_alts > 1:
+            shares = np.clip(self.chosen.mean(axis=0), 1e-12, 1.0)
+            logits = np.log(shares[:-1] / shares[-1])
+            beta = layout.slices()["beta"]
+            count = min(logits.size, beta.stop - beta.start)
+            theta[beta.start:beta.start + count] = logits[:count]
+        return theta
+
     def _fit(self, *, draws=None) -> MNPKerCPResults:
         """Estimate the MNPKerCP model and return :class:`MNPKerCPResults`.
 
@@ -386,14 +406,7 @@ class MNPKerCPModel(BaseModel):
         est = self._build_estimator(spec, layout, panel, draws=draws)
 
         n_theta = layout.n_theta
-        if ctrl.startb is not None:
-            theta0 = np.asarray(ctrl.startb, dtype=np.float64)
-            if theta0.shape[0] != n_theta:
-                raise ValueError(
-                    f"startb has length {theta0.shape[0]}, expected {n_theta}"
-                )
-        else:
-            theta0 = np.zeros(n_theta, dtype=np.float64)
+        theta0 = self._starting_values(layout)
 
         if ctrl.verbose >= 1:
             print(

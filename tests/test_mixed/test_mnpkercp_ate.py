@@ -138,6 +138,23 @@ class TestCollapseToFixedCoefMNP:
             state.wdiagker @ state.kernel_inner @ state.wdiagker, expected
         )
 
+    def test_start_from_shares_seeds_beta_block(self, binary_probit_data):
+        model = MNPKerCPModel(
+            data=binary_probit_data,
+            alternatives=_ALTS,
+            spec=_SPEC,
+            control=MNPKerCPControl(start_from_shares=True, verbose=0),
+        )
+        _, layout = model._build_spec_layout()
+
+        theta = model._starting_values(layout)
+        shares = model.chosen.mean(axis=0)
+
+        assert theta[layout.slices()["beta"].start] == pytest.approx(
+            np.log(shares[0] / shares[-1])
+        )
+        np.testing.assert_array_equal(theta[layout.slices()["rcor"]], 0.0)
+
     def _fit_no_mixing(self, data: pd.DataFrame) -> MNPKerCPModel:
         model = MNPKerCPModel(
             data=data,
