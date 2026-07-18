@@ -1,0 +1,46 @@
+{
+  "model": "mixmnl",
+  "kernel": "softmax",
+  "dataset": "examples/data/TRAVELMODE.csv",
+  "description": "GAUSS MIXMNL adapted to TRAVELMODE (cross-sectional mode choice, 3 alts). Random coefficients: IVTT normal, COST Yeo-Johnson. Fixed-b reference dump (converged estimates) from an instrumented lpr/lgd at fixed draws. Person = CASE (one obs per person => Dmask = I).",
+  "alternatives": ["Alt1_ch", "Alt2_ch", "Alt3_ch"],
+  "spec": {
+    "IVTT": {"Alt1_ch": "IVTT_DA", "Alt2_ch": "IVTT_SR", "Alt3_ch": "IVTT_TR"},
+    "OVTT": {"Alt1_ch": "OVTT_DA", "Alt2_ch": "OVTT_SR", "Alt3_ch": "OVTT_TR"},
+    "COST": {"Alt1_ch": "COST_DA", "Alt2_ch": "COST_SR", "Alt3_ch": "COST_TR"},
+    "AGE45_DA": {"Alt1_ch": "AGE45", "Alt2_ch": "sero", "Alt3_ch": "sero"},
+    "AGE45_SR": {"Alt1_ch": "sero", "Alt2_ch": "AGE45", "Alt3_ch": "sero"},
+    "CON_SR": {"Alt1_ch": "sero", "Alt2_ch": "uno", "Alt3_ch": "sero"},
+    "CON_TR": {"Alt1_ch": "sero", "Alt2_ch": "sero", "Alt3_ch": "uno"}
+  },
+  "var_names": ["IVTT", "OVTT", "COST", "AGE45_DA", "AGE45_SR", "CON_SR", "CON_TR"],
+  "normvar": ["IVTT"],
+  "logvar": [],
+  "yjvar": ["COST"],
+  "varneg": [],
+  "varpos": [],
+  "param_layout": {
+    "order": "beta | rcor | scale | lam",
+    "n_beta": 7, "n_rcor": 1, "n_scal": 2, "n_lam": 2, "n_theta": 12,
+    "rc_axis_order": "[normal|log|yj] = [IVTT, COST]"
+  },
+  "flags": {
+    "nobs": 1125, "nii": 1125, "nc": 3, "nrndcoef": 2, "nrndtcor": 1,
+    "nscale": 2, "numlam": 2, "n_rep": 15, "intordn1": 20,
+    "spher": 0, "scal": 1.0, "randdiag": 0,
+    "floor_pcomp": 0.0, "floor_z": 0.0,
+    "note": "GAUSS driver sets w1=w2=0 => no flooring (softmax probs always > 0). Python must use floor_pcomp=floor_z=0 to match."
+  },
+  "ids": {"person": "CASE", "cross_sectional": true},
+  "reference": {
+    "ll_total": -658.486191229737,
+    "achieved_tol": {"ll_total": 6.8e-13, "ll_per_obs": 2.3e-14, "grad": 1.2e-14}
+  },
+  "files": {
+    "b": "b.csv (12,)  estimation-space b",
+    "ass": "ass.csv (15, 2250)  post-createhalt draws (n_rep, nii*nrndcoef)",
+    "draws_r{1..15}": "per-rep per-individual standard-normal draws (1125, 2)",
+    "ll_obs": "ll_obs.csv (1125,)  GAUSS per-individual weighted LL",
+    "grad_obs": "grad_obs.csv (1125, 12)  GAUSS per-individual score"
+  }
+}

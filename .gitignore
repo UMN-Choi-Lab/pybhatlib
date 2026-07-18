@@ -60,3 +60,11 @@ nul
 *.fdb_latexmk
 *.fls
 *.synctex.gz
+
+issue*
+pesose*
+PR32*
+0714*
+0717*
+gauss_harness/
+bench/*_log.csv
