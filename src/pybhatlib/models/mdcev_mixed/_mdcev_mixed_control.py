@@ -110,6 +110,7 @@ class MDCEVMixedControl:
     yjvar: Sequence[str] = field(default_factory=tuple)
     varneg: Sequence[str] = field(default_factory=tuple)
     varpos: Sequence[str] = field(default_factory=tuple)
+    fix_location_zero: Sequence[str] = field(default_factory=tuple)
 
     # --- panel / weights -----------------------------------------------------
     person_id: str | None = None

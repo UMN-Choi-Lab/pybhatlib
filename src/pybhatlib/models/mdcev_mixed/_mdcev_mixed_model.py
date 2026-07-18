@@ -300,6 +300,7 @@ class MDCEVMixedModel(BaseModel):
             varpos=tuple(ctrl.varpos),
             nvargam=self.nvargam,
             randdiag=ctrl.randdiag,
+            fix_location_zero=tuple(ctrl.fix_location_zero),
         )
         layout = ParamLayout(
             n_beta=spec.n_beta,
