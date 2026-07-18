@@ -121,7 +121,7 @@ class MORPFlexModel(BaseModel):
             # guards the collector.
             usecols = used_columns_selector(
                 value_cols=dep_vars,
-                id_cols=[self.control.person_id],
+                id_cols=[self.control.person_id, self.control.weight_var],
                 specs=[spec] if spec is not None else [],
             )
             self.data = load_data(str(data), usecols=usecols)
@@ -151,6 +151,12 @@ class MORPFlexModel(BaseModel):
 
         # --- ordinal outcomes: (N, nord), 0-based -------------------------
         self.N = len(self.data)
+        if self.control.weight_var is not None:
+            self.weights = self.data[self.control.weight_var].to_numpy(
+                dtype=np.float64
+            )
+        else:
+            self.weights = np.ones(self.N, dtype=np.float64)
         self.y_ord = np.zeros((self.N, self.nord), dtype=np.int64)
         for d, dv in enumerate(self.dep_vars):
             vals = self.data[dv].to_numpy()
@@ -257,7 +263,7 @@ class MORPFlexModel(BaseModel):
         )
         if draws is None:
             draws = self._make_draw_source(spec.nrndcoef, ctrl.n_rep, panel.n_ind)
-        weightind = np.ones(panel.n_ind, dtype=np.float64)
+        weightind = panel.weightind(self.weights)
         return MixedMSLEstimator(
             panel=panel,
             draws=draws,
