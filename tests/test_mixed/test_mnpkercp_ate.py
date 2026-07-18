@@ -39,6 +39,7 @@ from pybhatlib.models.mnp._mnp_ate import mnp_ate_from_params
 from pybhatlib.models.mnpkercp._mnpkercp_ate import mnpkercp_ate_from_params
 from pybhatlib.models.mnpkercp._mnpkercp_control import MNPKerCPControl
 from pybhatlib.models.mnpkercp._mnpkercp_model import MNPKerCPModel
+from pybhatlib.vecup._panel import PanelIndex
 
 _ALTS = ["Alt1_ch", "Alt2_ch"]
 _SPEC = {
@@ -93,6 +94,24 @@ class TestCollapseToFixedCoefMNP:
         assert spec.nrndcoef == 2
         assert spec.nrndtcor == 0
         assert layout.n_rcor == 0
+
+    def test_observation_weights_are_averaged_by_person(self, binary_probit_data):
+        data = binary_probit_data.iloc[:5].copy()
+        data["pid"] = [0, 0, 1, 1, 1]
+        data["weight"] = [1.0, 3.0, 2.0, 4.0, 6.0]
+        model = MNPKerCPModel(
+            data=data,
+            alternatives=_ALTS,
+            spec=_SPEC,
+            control=MNPKerCPControl(
+                person_id="pid", weight_var="weight", n_rep=1, verbose=0
+            ),
+        )
+        spec, layout = model._build_spec_layout()
+        panel = PanelIndex.from_ids(model.person_ids)
+        estimator = model._build_estimator(spec, layout, panel)
+
+        np.testing.assert_allclose(estimator.weightind, [2.0, 4.0])
 
     def _fit_no_mixing(self, data: pd.DataFrame) -> MNPKerCPModel:
         model = MNPKerCPModel(

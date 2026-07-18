@@ -105,8 +105,9 @@ class MNPKerCPControl:
     varneg: Sequence[str] = field(default_factory=tuple)
     varpos: Sequence[str] = field(default_factory=tuple)
 
-    # --- panel ---------------------------------------------------------------
+    # --- panel / weights -----------------------------------------------------
     person_id: str | None = None
+    weight_var: str | None = None
 
     # --- kernel / copula -----------------------------------------------------
     copula: bool = False
