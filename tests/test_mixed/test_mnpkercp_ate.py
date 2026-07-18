@@ -94,6 +94,10 @@ class TestCollapseToFixedCoefMNP:
         assert spec.nrndcoef == 2
         assert spec.nrndtcor == 0
         assert layout.n_rcor == 0
+        state = model._build_estimator(
+            spec, layout, PanelIndex.from_ids(model.person_ids)
+        ).kernel.prepare(np.zeros(layout.n_theta), layout)
+        np.testing.assert_array_equal(state.omegastar, np.eye(spec.nrndtot))
 
     def test_observation_weights_are_averaged_by_person(self, binary_probit_data):
         data = binary_probit_data.iloc[:5].copy()
