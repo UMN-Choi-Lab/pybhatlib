@@ -32,6 +32,11 @@ from pybhatlib.models.mnpkercp import (
     MNPKerCPModel,
     MNPKerCPResults,
 )
+from pybhatlib.models.morp_flex import (
+    MORPFlexControl,
+    MORPFlexModel,
+    MORPFlexResults,
+)
 
 __all__ = [
     "__version__",
@@ -64,4 +69,7 @@ __all__ = [
     "MNPKerCPControl",
     "MNPKerCPModel",
     "MNPKerCPResults",
+    "MORPFlexControl",
+    "MORPFlexModel",
+    "MORPFlexResults",
 ]
