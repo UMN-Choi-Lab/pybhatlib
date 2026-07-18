@@ -137,6 +137,21 @@ def test_observation_weights_are_averaged_by_person():
     np.testing.assert_allclose(estimator.weightind, [2.0, 4.0])
 
 
+def test_iid_forces_ordinal_independence():
+    model = MORPFlexModel(
+        data=_make_data(n=20), dep_vars=DEP, spec=SPEC, n_categories=NCAT,
+        control=MORPFlexControl(iid=True),
+    )
+    spec, layout = model._build_spec_layout()
+    theta = np.zeros(layout.n_theta)
+    theta[layout.slices()["rcor"]] = 0.8
+    state = model._build_estimator(
+        spec, layout, PanelIndex.from_ids(model.person_ids)
+    ).kernel.prepare(theta, layout)
+
+    np.testing.assert_array_equal(state.xi2subq, np.eye(2))
+
+
 def test_collapse_ate_equals_fixed(collapse_fit):
     model, _ = collapse_fit
     fixed = _fixed_results_from_mixed(model)
