@@ -211,8 +211,12 @@ def _newchol_cs(theta: NDArray, scal: float) -> tuple[NDArray, NDArray]:
     ``s = sqrt(1 - c**2)``.
     """
     temp = np.asarray(theta, dtype=np.float64) / scal
-    et = np.exp(temp)
-    c = (et - 1.0) / (et + 1.0)
+    # Algebraically identical to (exp(temp) - 1) / (exp(temp) + 1), but
+    # stable for the large unconstrained trial steps an optimizer may take.
+    # Keep the result inside the open interval so downstream Cholesky calls do
+    # not receive an exactly singular correlation matrix after saturation.
+    limit = 1.0 - 1e-12
+    c = np.clip(np.tanh(temp / 2.0), -limit, limit)
     s = np.sqrt(1.0 - c**2)
     return c, s
 

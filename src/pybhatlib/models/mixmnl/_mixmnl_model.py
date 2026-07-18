@@ -180,6 +180,7 @@ class MixMNLModel(BaseModel):
             yjvar=tuple(ctrl.yjvar),
             varneg=tuple(ctrl.varneg),
             varpos=tuple(ctrl.varpos),
+            randdiag=ctrl.randdiag,
         )
         layout = ParamLayout(
             n_beta=spec.n_beta,

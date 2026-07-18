@@ -23,11 +23,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from pybhatlib.mixed._reparam import EstimationSpace
 from pybhatlib.models.mixmnl._mixmnl_control import MixMNLControl
 from pybhatlib.models.mixmnl._mixmnl_model import MixMNLModel
 from pybhatlib.models.mixmnl._mixmnl_results import MixMNLResults
 from pybhatlib.models.mnl._mnl_control import MNLControl
 from pybhatlib.models.mnl._mnl_model import MNLModel
+from pybhatlib.vecup._panel import PanelIndex
 
 _ALTS = ["Alt1_ch", "Alt2_ch"]
 _SPEC = {
@@ -76,7 +78,8 @@ def synthetic_mnl_data() -> pd.DataFrame:
 class TestMixMNLControlRoundTrip:
     def test_defaults_construct(self):
         ctrl = MixMNLControl()
-        assert ctrl.n_rep == 15
+        assert ctrl.n_rep == 125
+        assert ctrl.randdiag is False
         assert ctrl.intordn1 == 20
         assert ctrl.spher is False
         assert ctrl.scal == 1.0
@@ -107,6 +110,26 @@ class TestMixMNLControlRoundTrip:
         assert rebuilt.intordn1 == 30
         assert rebuilt.scal == 2.0
         assert rebuilt.optimizer == "lbfgsb"
+
+    def test_randdiag_removes_correlation_parameters(self, synthetic_mnl_data):
+        ctrl = MixMNLControl(normvar=("X1", "X2"), randdiag=True, n_rep=2)
+        model = MixMNLModel(synthetic_mnl_data, _ALTS, spec=_SPEC, control=ctrl)
+        spec, layout = model._build_spec_layout()
+        state = EstimationSpace(layout).unpack(
+            np.zeros(layout.n_theta), spec
+        )
+
+        assert layout.n_rcor == 0
+        np.testing.assert_array_equal(state.omegastar, np.eye(2))
+
+        estimator = model._build_estimator(
+            spec, layout, PanelIndex.from_ids(model.person_ids)
+        )
+        loglik, score = estimator.simulated_loglik(
+            np.zeros(layout.n_theta), want_grad=True
+        )
+        assert np.all(np.isfinite(loglik))
+        assert score.shape == (len(synthetic_mnl_data), layout.n_theta)
 
     def test_replace_is_nondestructive(self):
         ctrl = MixMNLControl(n_rep=10)

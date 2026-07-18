@@ -241,6 +241,7 @@ class MixingSpec:
         n_categories: Sequence[int] = (),
         normker: bool = True,
         nvargam: int = 0,
+        randdiag: bool = False,
     ) -> "MixingSpec":
         """Build a :class:`MixingSpec` from the GAUSS variable-name lists.
 
@@ -299,6 +300,9 @@ class MixingSpec:
             unchanged. Stored verbatim for the MDCEV facade to size the
             ``gamma`` layout block; it does not affect any mask or count derived
             below.
+        randdiag : bool, optional
+            If ``True``, fix the random-coefficient correlation matrix to the
+            identity and omit its free parameters (GAUSS ``_randdiag``).
 
         Returns
         -------
@@ -352,7 +356,7 @@ class MixingSpec:
         #                           their sum is the extra-dimension count.
         n_extra = kernel_dim + nord
         nrndtot = nrndcoef + n_extra
-        nrndtcor = nrndtot * (nrndtot - 1) // 2
+        nrndtcor = 0 if randdiag else nrndtot * (nrndtot - 1) // 2
         # Free kernel-scale params (GAUSS MNP nc-2): one fewer than kernel_dim
         # because the sum-of-squares reparam normalizes wker to unit norm. MORP
         # fixes wker = ones (GAUSS line 617), so it declares no kernel-scale

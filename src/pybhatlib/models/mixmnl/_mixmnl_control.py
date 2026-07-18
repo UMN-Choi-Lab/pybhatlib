@@ -37,8 +37,11 @@ class MixMNLControl:
     person_id : str or None
         Column holding the panel person identifier.  ``None`` (default) treats
         every observation as its own person (cross-sectional; ``Dmask = I``).
+    randdiag : bool
+        If True, fix the random-coefficient correlation matrix to the identity
+        (GAUSS ``_randdiag``) instead of estimating a full correlation matrix.
     n_rep : int
-        Number of MSL replications (GAUSS ``nrep``, default 15).
+        Number of MSL replications (GAUSS ``nrep``, default 125).
     intordn1 : int
         Gauss-Hermite node count for ``meanyj`` (GAUSS ``intordn1``).
     spher : bool
@@ -93,7 +96,8 @@ class MixMNLControl:
     person_id: str | None = None
 
     # --- MSL / reparameterization -------------------------------------------
-    n_rep: int = 15
+    randdiag: bool = False
+    n_rep: int = 125
     intordn1: int = 20
     spher: bool = False
     scal: float = 1.0

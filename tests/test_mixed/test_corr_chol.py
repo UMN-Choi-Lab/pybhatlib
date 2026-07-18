@@ -58,6 +58,17 @@ def test_a_unit_diagonal(K: int) -> None:
     assert np.all(np.linalg.eigvalsh(corr) > 0.0)
 
 
+def test_extreme_optimizer_step_remains_finite() -> None:
+    """Unconstrained trial values must not overflow before an iteration."""
+    theta = np.array([1_000.0, -1_000.0, 750.0])
+    chol = newcholparmscaled(theta, 1.0)
+    corr = chol.T @ chol
+
+    assert np.all(np.isfinite(chol))
+    assert np.all(np.isfinite(corr))
+    np.testing.assert_allclose(np.diag(corr), np.ones(3), atol=1e-12)
+
+
 @pytest.mark.parametrize("K", [3, 4])
 @pytest.mark.parametrize("scal", [1.0, 2.0])
 def test_b_roundtrip(K: int, scal: float) -> None:

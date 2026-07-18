@@ -703,7 +703,13 @@ class EstimationSpace(ParamSpace):
         # here is the RC sub-block (kept ``k x k`` for the pipeline score chain).
         gker = gscal = gtempstar = None
         joint = spec.nrndtot > spec.nrndcoef
-        if joint:
+        if self.layout.n_rcor == 0 and k > 1:
+            x11chol = np.eye(k, dtype=np.float64)
+            omegastar = np.eye(k, dtype=np.float64)
+            if want_grad:
+                gker = np.zeros((0, 0), dtype=np.float64)
+                gtempstar = gker
+        elif joint:
             cholall = newcholparmscaled(xrand, self.scal)
             omegastar_joint = np.asarray(cholall).T @ np.asarray(cholall)
             omegastar = omegastar_joint[:k, :k].copy()
@@ -789,7 +795,10 @@ class ReportingSpace(ParamSpace):
 
         xrand = theta[sl["rcor"]]
         # --- correlation from direct entries (MIXMNL 657-663) ---------------
-        if k > 1:
+        if self.layout.n_rcor == 0 and k > 1:
+            omegastar = np.eye(k, dtype=np.float64)
+            x11chol = np.eye(k, dtype=np.float64)
+        elif k > 1:
             omegastar = matndupdiagonefull(xrand)
             # GAUSS chol() returns upper-triangular R with R' R = omega
             x11chol = np.linalg.cholesky(omegastar).T
