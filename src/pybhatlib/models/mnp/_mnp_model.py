@@ -15,6 +15,8 @@ import pandas as pd
 from numpy.typing import NDArray
 from scipy.special import ndtr as _ndtr
 
+from pybhatlib.utils._safe_reparam import safe_exp
+
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
@@ -890,7 +892,7 @@ class MNPModel(BaseModel):
             dim = self.n_alts - 1
             # Scales: exp transform
             for i in range(dim):
-                b_orig[idx + i] = np.exp(theta[idx + i])
+                b_orig[idx + i] = safe_exp(theta[idx + i])
             idx += dim
             if not self.control.heteronly:
                 n_corr = dim * (dim - 1) // 2
@@ -901,7 +903,7 @@ class MNPModel(BaseModel):
             n_rand = len(self.ranvar_indices)
             if self.control.randdiag:
                 for i in range(n_rand):
-                    b_orig[idx + i] = np.exp(theta[idx + i])
+                    b_orig[idx + i] = safe_exp(theta[idx + i])
                 idx += n_rand
             else:
                 n_omega = n_rand * (n_rand + 1) // 2
