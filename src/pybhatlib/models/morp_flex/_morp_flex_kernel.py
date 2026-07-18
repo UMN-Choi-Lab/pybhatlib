@@ -231,6 +231,7 @@ class RectMvncdKernel:
         scal: float = 1.0,
         intordn1: int = 20,
         reporting: bool = False,
+        iid: bool = False,
     ) -> None:
         if nord < 1:
             raise ValueError(f"nord must be >= 1, got {nord}")
@@ -259,6 +260,7 @@ class RectMvncdKernel:
         self.scal: float = float(scal)
         self.intordn1: int = int(intordn1)
         self.reporting: bool = bool(reporting)
+        self.iid: bool = bool(iid)
         self.nrndtot: int = int(nrndcoef) + int(nord)
         # per-dimension global offset of the threshold sub-block in ``tau``.
         offs = [0]
@@ -408,11 +410,16 @@ class RectMvncdKernel:
         if xp is None:
             xp = np
         omegastar = np.asarray(omegastar, dtype=np.float64)
-        tau = np.asarray(tau, dtype=np.float64).ravel()
-        dtau = np.asarray(dtau, dtype=np.float64)
         k = self.nrndcoef
         nord = self.nord
         nrndtot = self.nrndtot
+        ordinal = omegastar[k:, k:].copy()
+        if self.iid:
+            ordinal = np.eye(nord, dtype=np.float64)
+        omegastar = omegastar.copy()
+        omegastar[k:, k:] = ordinal
+        tau = np.asarray(tau, dtype=np.float64).ravel()
+        dtau = np.asarray(dtau, dtype=np.float64)
 
         indxmarg = np.concatenate(
             [np.ones(k, dtype=np.float64), np.zeros(nord, dtype=np.float64)]
