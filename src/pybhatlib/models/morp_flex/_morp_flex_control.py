@@ -118,6 +118,7 @@ class MORPFlexControl:
     # --- kernel / copula / ordered-response knobs ---------------------------
     copula: bool = False
     iid: bool = False
+    correst: NDArray | None = None
     yj_kernel: bool = False
     scaling: Literal["none"] = "none"
 

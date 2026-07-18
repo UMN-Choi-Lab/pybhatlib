@@ -152,6 +152,21 @@ def test_iid_forces_ordinal_independence():
     np.testing.assert_array_equal(state.xi2subq, np.eye(2))
 
 
+def test_correst_masks_selected_ordinal_correlations():
+    model = MORPFlexModel(
+        data=_make_data(n=20), dep_vars=DEP, spec=SPEC, n_categories=NCAT,
+        control=MORPFlexControl(correst=np.eye(2)),
+    )
+    spec, layout = model._build_spec_layout()
+    theta = np.zeros(layout.n_theta)
+    theta[layout.slices()["rcor"]] = 0.8
+    state = model._build_estimator(
+        spec, layout, PanelIndex.from_ids(model.person_ids)
+    ).kernel.prepare(theta, layout)
+
+    np.testing.assert_array_equal(state.xi2subq, np.eye(2))
+
+
 def test_collapse_ate_equals_fixed(collapse_fit):
     model, _ = collapse_fit
     fixed = _fixed_results_from_mixed(model)
