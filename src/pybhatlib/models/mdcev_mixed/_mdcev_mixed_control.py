@@ -117,6 +117,7 @@ class MDCEVMixedControl:
     outside_good_gamma: float = -1000.0
 
     # --- MSL / reparameterization -------------------------------------------
+    randdiag: bool = False
     n_rep: int = 10
     intordn1: int = 20
     spher: bool = False
