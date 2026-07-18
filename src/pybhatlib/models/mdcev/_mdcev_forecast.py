@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 
 from pybhatlib.models.mdcev._mdcev_model import _ensure_special_cols
 from pybhatlib.models.mdcev._mdcev_results import MDCEVResults
+from pybhatlib.utils._safe_reparam import safe_exp
 
 
 def _normalize_mdcev_forecast_inputs(
@@ -361,7 +362,7 @@ def mdcev_forecast(
 
     u[:, 0] = outside_good_gamma
 
-    f1 = np.exp(u)
+    f1 = safe_exp(u)
     rng = default_rng(seed)
 
     budget_arr = np.asarray(budget, dtype=np.float64).reshape(-1)
@@ -371,7 +372,7 @@ def mdcev_forecast(
     forecasts = []
     for _ in range(n_replications):
         as_draw = rng.gumbel(loc=0.0, scale=sigma, size=(N, nc))
-        v_draw = np.exp(v + as_draw) / price_new
+        v_draw = safe_exp(v + as_draw) / price_new
 
         rep_fc = np.zeros((N, nc), dtype=np.float64)
         for i in range(N):

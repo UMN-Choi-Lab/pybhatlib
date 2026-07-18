@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+from pybhatlib.utils._safe_reparam import safe_exp
 
 from pybhatlib.gradmvn._mvncd_grad_analytic import mvncd_grad_me_analytic
 from pybhatlib.gradmvn._mvncd_grad_ovus import mvncd_grad_ovus_analytic
@@ -306,7 +307,7 @@ def _unpack_with_components(
         tau_d = np.empty_like(raw)
         tau_d[0] = raw[0]
         for m in range(1, len(raw)):
-            tau_d[m] = tau_d[m - 1] + np.exp(raw[m])
+            tau_d[m] = tau_d[m - 1] + safe_exp(raw[m])
         thresholds.append(tau_d)
         delta_log.append(raw.copy())
 
@@ -331,7 +332,7 @@ def _build_sigma_components(
     cov_params = theta[layout["cov"]]
     if control.heteronly:
         scales = np.ones(K, dtype=np.float64)
-        scales[1:] = np.exp(cov_params[: K - 1])
+        scales[1:] = safe_exp(cov_params[: K - 1])
         sigma = np.diag(scales ** 2)
         return sigma, scales, None, None
 
@@ -345,7 +346,7 @@ def _build_sigma_components(
     else:
         n_scale = K - 1
         scales = np.ones(K, dtype=np.float64)
-        scales[1:] = np.exp(cov_params[:n_scale])
+        scales[1:] = safe_exp(cov_params[:n_scale])
 
     n_corr = K * (K - 1) // 2
     corr_theta = cov_params[n_scale: n_scale + n_corr]
@@ -646,7 +647,7 @@ def _tau_to_param_grad(
     grad[0] = float(np.sum(dP_dtau))
     # For m >= 1: dtau_d[k]/d(theta_d[m]) = exp(theta_d[m]) if k >= m else 0.
     for m in range(1, n):
-        grad[m] = float(np.exp(delta_log[m]) * np.sum(dP_dtau[m:]))
+        grad[m] = float(safe_exp(delta_log[m]) * np.sum(dP_dtau[m:]))
     return grad
 
 
