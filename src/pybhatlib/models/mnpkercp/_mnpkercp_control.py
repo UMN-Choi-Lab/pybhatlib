@@ -113,6 +113,7 @@ class MNPKerCPControl:
     iid: bool = False
     copula: bool = False
     scaling: Literal["sumsq"] = "sumsq"
+    method: str = "ovus"
 
     # --- MSL / reparameterization -------------------------------------------
     randdiag: bool = False

@@ -74,6 +74,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from pybhatlib.gradmvn._mvncd_grad_ovus import mvncd_grad_ovus_analytic
+from pybhatlib.gradmvn._mvncd_grad_analytic import mvncd_grad_me_analytic
+from pybhatlib.gradmvn._mvncd import mvncd
 from pybhatlib.matgradient._radial import newcholparmscaled
 from pybhatlib.mixed._copula import condition, gcondnewcov, gcondnewmean
 from pybhatlib.mixed._kernel import KernelObsResult
@@ -162,6 +164,7 @@ class MvncdKernel:
     def __init__(
         self, nc: int, nrndcoef: int, *, copula: bool = False, scal: float = 1.0,
         iid: bool = False,
+        method: str = "ovus",
     ) -> None:
         if nc < 2:
             raise ValueError(f"nc must be >= 2, got {nc}")
@@ -177,6 +180,7 @@ class MvncdKernel:
         self.copula: bool = bool(copula)
         self.scal: float = float(scal)
         self.iid: bool = bool(iid)
+        self.method: str = str(method).lower()
 
     # ------------------------------------------------------------------
     def kernel_param_names(self) -> list[str]:
@@ -408,7 +412,18 @@ class MvncdKernel:
             xisubq = Msubq @ covker2 @ Msubq.T               # (A, A)
 
             a = -B3
-            P, grad_a, grad_sigma = mvncd_grad_ovus_analytic(a, xisubq)
+            if self.method == "ovus":
+                P, grad_a, grad_sigma = mvncd_grad_ovus_analytic(a, xisubq)
+            elif self.method == "me":
+                P, grad_a, grad_sigma = mvncd_grad_me_analytic(a, xisubq)
+            elif want_grad:
+                P, grad_a, grad_sigma = self._finite_difference_gradient(
+                    a, xisubq
+                )
+            else:
+                P = float(mvncd(a, xisubq, method=self.method))
+                grad_a = np.zeros_like(a)
+                grad_sigma = np.zeros(A * (A + 1) // 2, dtype=np.float64)
             P = max(float(P), 1e-300)
             p_obs[i] = P
 
@@ -491,6 +506,37 @@ class MvncdKernel:
             dlogp_drc=dlogp_drc,
             dlogp_domega=dlogp_domega,
         )
+
+    def _finite_difference_gradient(
+        self, a: NDArray, sigma: NDArray, *, eps: float = 1e-6
+    ) -> tuple[float, NDArray, NDArray]:
+        """Return value and central-FD gradients for non-analytic methods."""
+        value = float(mvncd(a, sigma, method=self.method))
+        grad_a = np.zeros_like(a, dtype=np.float64)
+        for j in range(a.size):
+            ap = a.copy()
+            ap[j] += eps
+            am = a.copy()
+            am[j] -= eps
+            grad_a[j] = (
+                float(mvncd(ap, sigma, method=self.method))
+                - float(mvncd(am, sigma, method=self.method))
+            ) / (2.0 * eps)
+        pairs = [(i, j) for i in range(a.size) for j in range(i, a.size)]
+        grad_sigma = np.zeros(len(pairs), dtype=np.float64)
+        for index, (i, j) in enumerate(pairs):
+            sp = sigma.copy()
+            sm = sigma.copy()
+            sp[i, j] += eps
+            sm[i, j] -= eps
+            if i != j:
+                sp[j, i] += eps
+                sm[j, i] -= eps
+            grad_sigma[index] = (
+                float(mvncd(a, sp, method=self.method))
+                - float(mvncd(a, sm, method=self.method))
+            ) / (2.0 * eps)
+        return value, grad_a, grad_sigma
 
 
 __all__ = ["MvncdKernel", "MvncdKernelState"]

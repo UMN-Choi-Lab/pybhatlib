@@ -249,6 +249,7 @@ class MNPKerCPModel(BaseModel):
         kernel = MvncdKernel(
             self.n_alts, spec.nrndcoef, copula=ctrl.copula, scal=ctrl.scal,
             iid=ctrl.iid,
+            method=ctrl.method,
         )
         cfg = MSLConfig(
             n_rep=ctrl.n_rep,
