@@ -180,6 +180,20 @@ def test_collapse_predict_equals_shipped_mdcev_predict():
     np.testing.assert_allclose(shares_mixed, ref, rtol=0.0, atol=1e-6)
 
 
+def test_randdiag_removes_random_correlation_block():
+    fx = _make_frame()
+    model = _make_mixed(
+        fx, MDCEVMixedControl(normvar=("b0", "b1"), randdiag=True)
+    )
+    spec, layout = model._build_spec_layout()
+    state = model.build_estimator(spec, layout).space.unpack(
+        np.zeros(layout.n_theta), spec
+    )
+
+    assert layout.n_rcor == 0
+    np.testing.assert_array_equal(state.omegastar, np.eye(2))
+
+
 def test_collapse_ate_equals_shipped_mdcev_ate():
     """nrndcoef=0 mixed ate == shipped mdcev_ate (base + per scenario), 1e-6."""
     fx = _make_frame()
