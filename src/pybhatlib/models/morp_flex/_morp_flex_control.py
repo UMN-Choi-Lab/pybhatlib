@@ -119,6 +119,7 @@ class MORPFlexControl:
     copula: bool = False
     iid: bool = False
     correst: NDArray | None = None
+    method: str = "me"
     yj_kernel: bool = False
     scaling: Literal["none"] = "none"
 
