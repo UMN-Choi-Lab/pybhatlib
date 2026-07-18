@@ -61,6 +61,17 @@ def test_plain_rectangle_matches_mvncd_rect():
     assert abs(P - ref) < 1e-12
 
 
+@pytest.mark.parametrize("method", ["me", "ovus", "tvbs", "bme", "ovbs", "ssj", "scipy"])
+def test_pdfrectn_methods_return_finite_probabilities(method):
+    io, ic, ie = _idx(CASES["rect"][:3])
+    probability, _ = pdfrectn(
+        MU, COVA, XG, XLOW, XUP, SEED, io, ic, ie, method=method
+    )
+
+    assert np.isfinite(probability)
+    assert 0.0 <= probability <= 1.0
+
+
 @pytest.mark.parametrize("name", list(CASES))
 def test_gradpdfrectn_returns_consistent_value(name):
     io, ic, ie = _idx(CASES[name][:3])

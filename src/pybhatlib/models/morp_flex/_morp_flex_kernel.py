@@ -100,7 +100,7 @@ from pybhatlib.mixed._copula import condition, gcondnewcov, gcondnewmean
 from pybhatlib.mixed._kernel import KernelObsResult
 from pybhatlib.mixed._reparam import thresh_reparam
 from pybhatlib.utils._logistic import cdlogit, pdlogit
-from pybhatlib.vecup._yj import gradmeanyj, gyjnonp, meanyj, yjnonp
+from pybhatlib.vecup._yj import gradmeanyj, gyjnonp, yjnonp
 
 # Yeo-Johnson kernel power ``xlamker`` lives in the open interval ``(0, 2)``.
 # ``cdlogit`` saturates to exactly 1.0 for arguments above ~37, which would push
@@ -233,6 +233,7 @@ class RectMvncdKernel:
         reporting: bool = False,
         iid: bool = False,
         correst: Optional[NDArray] = None,
+        method: str = "me",
     ) -> None:
         if nord < 1:
             raise ValueError(f"nord must be >= 1, got {nord}")
@@ -262,6 +263,7 @@ class RectMvncdKernel:
         self.intordn1: int = int(intordn1)
         self.reporting: bool = bool(reporting)
         self.iid: bool = bool(iid)
+        self.method: str = str(method).lower()
         if correst is not None:
             mask = np.asarray(correst, dtype=bool)
             if mask.shape != (nord, nord):
@@ -760,14 +762,14 @@ class RectMvncdKernel:
             if not want_grad:
                 P, _s = pdfrectn(
                     B3subq, xi2subq, tzgg, tzlow, tzup, zero_seed,
-                    indxone, indxcomp, indxeq,
+                    indxone, indxcomp, indxeq, method=self.method,
                 )
                 p_obs[i] = max(float(P), 1e-300)
                 continue
 
             P, gmu, gcov, gxg, gx1, gx2, _s = gradpdfrectn(
                 B3subq, xi2subq, tzgg, tzlow, tzup, zero_seed,
-                indxone, indxcomp, indxeq,
+                indxone, indxcomp, indxeq, method=self.method,
             )
             P = max(float(P), 1e-300)
             p_obs[i] = P

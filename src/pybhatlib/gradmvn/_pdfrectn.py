@@ -141,13 +141,14 @@ def _rect_prob(
     xup: NDArray,
     indxone: NDArray,
     indxcomp: NDArray,
+    method: str = "ovus",
 ) -> float:
     """Value of the combined orthant/rectangle integral (GAUSS ``cdorrectmvn``).
 
     Reuses :func:`pybhatlib.gradmvn.mvncd_rect` for the plain-rectangle machinery.
     """
     lower_c, upper_c = _build_bounds(mu, xg, xlow, xup, indxone, indxcomp)
-    return float(mvncd_rect(lower_c, upper_c, cova))
+    return float(mvncd_rect(lower_c, upper_c, cova, method=method))
 
 
 def _rect_prob_analytic(
@@ -352,6 +353,7 @@ def pdfrectn(
     indxcomp: NDArray,
     indxeq: NDArray,
     *,
+    method: str = "me",
     xp=None,
 ) -> tuple[float, float]:
     """Rectangle MVN probability with extreme-category / equality routing.
@@ -397,10 +399,13 @@ def pdfrectn(
         # the same analytic method the gradient path uses (skipping scipy's
         # frozen-dist value path). For K >= 3 keep OVUS (mvncd_rect) so the value
         # path is not silently swapped to the coarser ME approximation.
-        if k <= 2:
+        if method == "me" and k <= 2:
             P = _rect_prob_analytic(mu, cova, xg, xlow, xup, indxone, indxcomp)
         else:
-            P = _rect_prob(mu, cova, xg, xlow, xup, indxone, indxcomp)
+            value_method = "ovus" if method == "me" else method
+            P = _rect_prob(
+                mu, cova, xg, xlow, xup, indxone, indxcomp, value_method
+            )
         return P, float(s)
 
     # --- equality dimensions present: condition on the "given" block ---
@@ -428,7 +433,8 @@ def pdfrectn(
 
     D, _gx, _gf = _mvn_density_grad(newxg1, X11)
     Q = _rect_prob(
-        mu2condcov, X22condcov, newxg2, newx12, newx22, newindxone, newindxcomp
+        mu2condcov, X22condcov, newxg2, newx12, newx22, newindxone,
+        newindxcomp, "ovus" if method == "me" else method,
     )
     return float(D * Q), float(s)
 
@@ -444,6 +450,7 @@ def gradpdfrectn(
     indxcomp: NDArray,
     indxeq: NDArray,
     *,
+    method: str = "me",
     xp=None,
 ) -> tuple[float, NDArray, NDArray, NDArray, NDArray, NDArray, float]:
     """Analytic gradient of :func:`pdfrectn` (GAUSS ``gradpdfrectn``, ``_covarr=1``).
@@ -475,6 +482,44 @@ def gradpdfrectn(
     )
     k = len(mu)
     upper_pairs = _upper_pairs(k)
+
+    if method != "me":
+        def value(m, cov, gg, low, up):
+            return pdfrectn(
+                m, cov, gg, low, up, s, indxone, indxcomp, indxeq,
+                method=method,
+            )[0]
+
+        eps = 1e-6
+        base = value(mu, cova, xg, xlow, xup)
+        grads = []
+        for slot, target in zip((0, 2, 3, 4), (mu, xg, xlow, xup)):
+            grad = np.zeros(k, dtype=np.float64)
+            for j in range(k):
+                plus = target.copy()
+                plus[j] += eps
+                minus = target.copy()
+                minus[j] -= eps
+                args_p = [mu, cova, xg, xlow, xup]
+                args_m = [mu, cova, xg, xlow, xup]
+                args_p[slot] = plus
+                args_m[slot] = minus
+                grad[j] = (value(*args_p) - value(*args_m)) / (2.0 * eps)
+            grads.append(grad)
+        gcov = np.zeros(len(upper_pairs), dtype=np.float64)
+        for index, (i, j) in enumerate(upper_pairs):
+            plus = cova.copy()
+            minus = cova.copy()
+            plus[i, j] += eps
+            minus[i, j] -= eps
+            if i != j:
+                plus[j, i] += eps
+                minus[j, i] -= eps
+            gcov[index] = (
+                value(mu, plus, xg, xlow, xup)
+                - value(mu, minus, xg, xlow, xup)
+            ) / (2.0 * eps)
+        return base, grads[0], gcov, grads[1], grads[2], grads[3], float(s)
 
     if int(indxeq.sum()) == 0:
         P, gmu, gxg, gxlow, gxup, gfull = _rect_prob_grad(

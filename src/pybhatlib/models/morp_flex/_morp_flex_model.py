@@ -252,6 +252,7 @@ class MORPFlexModel(BaseModel):
             copula=ctrl.copula, yj_kernel=ctrl.yj_kernel, scal=ctrl.scal,
             intordn1=ctrl.intordn1, reporting=reporting,
             iid=ctrl.iid, correst=ctrl.correst,
+            method=ctrl.method,
         )
         cfg = MSLConfig(
             n_rep=ctrl.n_rep,
