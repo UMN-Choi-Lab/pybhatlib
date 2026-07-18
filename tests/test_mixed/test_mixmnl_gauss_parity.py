@@ -98,10 +98,14 @@ def test_loglik_matches_gauss_value_for_value():
 
 
 def test_analytic_score_matches_gauss_value_for_value():
-    est, _, _, _ = _build_estimator_with_gauss_draws()
+    est, spec, layout, _ = _build_estimator_with_gauss_draws()
     b = np.loadtxt(FIX / "b.csv", delimiter=",")
     _, score = est.simulated_loglik(b, want_grad=True)
     gr_ref = np.loadtxt(FIX / "grad_obs.csv", delimiter=",")
+    # GAUSS dumps the raw ``lgd`` lambda columns before ``_max_active`` masks
+    # normal/log lambdas. Compare the effective score seen by its optimizer.
+    lam = layout.slices()["lam"]
+    gr_ref[:, lam] *= spec.actlam
     assert score.shape == gr_ref.shape
     np.testing.assert_allclose(score, gr_ref, atol=1e-5)
     # summed gradient (what the optimizer sees) also matches

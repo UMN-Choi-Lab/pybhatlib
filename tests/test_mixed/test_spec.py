@@ -269,6 +269,30 @@ def test_estimation_space_no_grad(spec: MixingSpec) -> None:
     np.testing.assert_allclose(rc.siglamrnd, np.ones(spec.nrndcoef), atol=1e-9)
 
 
+def test_actlam_pins_non_yj_lambdas_in_estimation_space(spec: MixingSpec) -> None:
+    lay = layout_for(spec)
+    theta = np.zeros(lay.n_theta)
+    theta[lay.slices()["lam"]] = [20.0, -20.0, 0.7]
+
+    rc = EstimationSpace(lay).unpack(theta, spec, want_grad=True)
+
+    np.testing.assert_array_equal(rc.xlamrnd[:2], [1.0, 1.0])
+    assert rc.xlamrnd[2] != pytest.approx(1.0)
+    np.testing.assert_array_equal(rc.dxlamrnddxlam[:2], np.zeros((2, 3)))
+    assert rc.dxlamrnddxlam[2, 2] > 0.0
+
+
+def test_actlam_pins_non_yj_lambdas_in_reporting_space(spec: MixingSpec) -> None:
+    lay = layout_for(spec)
+    theta = np.zeros(lay.n_theta)
+    theta[lay.slices()["scal"]] = 1.0
+    theta[lay.slices()["lam"]] = [0.2, 1.8, 0.7]
+
+    rc = ReportingSpace(lay).unpack(theta, spec)
+
+    np.testing.assert_array_equal(rc.xlamrnd, [1.0, 1.0, 0.7])
+
+
 def test_estimation_space_extreme_sign_and_scale_blocks_remain_finite() -> None:
     rich_spec = MixingSpec.from_var_names(
         ["A", "B", "C"], normvar=["A", "B", "C"], varneg=["A"], varpos=["B"]

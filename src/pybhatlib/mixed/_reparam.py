@@ -747,8 +747,12 @@ class EstimationSpace(ParamSpace):
         dwscalranddxscalrand = np.diag(wscalrand) if want_grad else None
 
         # --- Yeo-Johnson power (MIXMNL 426-427, 542-544) --------------------
-        xlamrnd = np.clip(2.0 * cdlogit(xlam), _LAM_EPS, 2.0 - _LAM_EPS)
-        dxlamrnddxlam = np.diag(2.0 * pdlogit(xlam)) if want_grad else None
+        actlam = np.asarray(spec.actlam, dtype=np.float64)
+        mapped_lam = np.clip(2.0 * cdlogit(xlam), _LAM_EPS, 2.0 - _LAM_EPS)
+        xlamrnd = actlam * mapped_lam + (1.0 - actlam)
+        dxlamrnddxlam = (
+            np.diag(actlam * 2.0 * pdlogit(xlam)) if want_grad else None
+        )
         if want_grad:
             mulamrnd, siglamrnd, dmulamrnddxlamrnd, dsiglamrnddxlamrnd = gradmeanyj(
                 xlamrnd, self.intordn1
@@ -814,7 +818,8 @@ class ReportingSpace(ParamSpace):
         # --- scale and lambda entered directly (MIXMNL 665-668) -------------
         wscalrand = theta[sl["scal"]].copy()
         wdiagrand = np.diag(wscalrand)
-        xlamrnd = theta[sl["lam"]].copy()
+        actlam = np.asarray(spec.actlam, dtype=np.float64)
+        xlamrnd = actlam * theta[sl["lam"]] + (1.0 - actlam)
         mulamrnd, siglamrnd = meanyj(xlamrnd, self.intordn1)
 
         return RCState(
