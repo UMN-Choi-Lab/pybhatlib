@@ -232,6 +232,7 @@ class RectMvncdKernel:
         intordn1: int = 20,
         reporting: bool = False,
         iid: bool = False,
+        correst: Optional[NDArray] = None,
     ) -> None:
         if nord < 1:
             raise ValueError(f"nord must be >= 1, got {nord}")
@@ -261,6 +262,17 @@ class RectMvncdKernel:
         self.intordn1: int = int(intordn1)
         self.reporting: bool = bool(reporting)
         self.iid: bool = bool(iid)
+        if correst is not None:
+            mask = np.asarray(correst, dtype=bool)
+            if mask.shape != (nord, nord):
+                raise ValueError(
+                    f"correst must have shape {(nord, nord)}, got {mask.shape}"
+                )
+            if not np.array_equal(mask, mask.T) or not np.all(np.diag(mask)):
+                raise ValueError("correst must be symmetric with a true diagonal")
+            self.correst: Optional[NDArray] = mask
+        else:
+            self.correst = None
         self.nrndtot: int = int(nrndcoef) + int(nord)
         # per-dimension global offset of the threshold sub-block in ``tau``.
         offs = [0]
@@ -416,6 +428,9 @@ class RectMvncdKernel:
         ordinal = omegastar[k:, k:].copy()
         if self.iid:
             ordinal = np.eye(nord, dtype=np.float64)
+        elif self.correst is not None:
+            ordinal = np.where(self.correst, ordinal, 0.0)
+            np.fill_diagonal(ordinal, 1.0)
         omegastar = omegastar.copy()
         omegastar[k:, k:] = ordinal
         tau = np.asarray(tau, dtype=np.float64).ravel()
