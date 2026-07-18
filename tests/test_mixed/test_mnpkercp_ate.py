@@ -117,6 +117,27 @@ class TestCollapseToFixedCoefMNP:
 
         np.testing.assert_allclose(estimator.weightind, [2.0, 4.0])
 
+    def test_iid_removes_kernel_scale_and_uses_scalar_identity(
+        self, binary_probit_data
+    ):
+        model = MNPKerCPModel(
+            data=binary_probit_data,
+            alternatives=_ALTS,
+            spec=_SPEC,
+            control=MNPKerCPControl(iid=True, verbose=0),
+        )
+        spec, layout = model._build_spec_layout()
+        estimator = model._build_estimator(
+            spec, layout, PanelIndex.from_ids(model.person_ids)
+        )
+        state = estimator.kernel.prepare(np.zeros(layout.n_theta), layout)
+
+        assert layout.n_kern == 0
+        expected = np.eye(spec.kernel_dim) / spec.kernel_dim
+        np.testing.assert_allclose(
+            state.wdiagker @ state.kernel_inner @ state.wdiagker, expected
+        )
+
     def _fit_no_mixing(self, data: pd.DataFrame) -> MNPKerCPModel:
         model = MNPKerCPModel(
             data=data,
