@@ -34,6 +34,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
+from pybhatlib.utils._safe_reparam import safe_exp
 from scipy.special import ndtr as _ndtr
 
 from pybhatlib.matgradient._spherical import (
@@ -119,7 +120,7 @@ def reporting_jacobian(
         for j in range(m):
             G[idx + j, idx] = 1.0
             for k in range(1, j + 1):
-                G[idx + j, idx + k] = np.exp(p[k])
+                G[idx + j, idx + k] = safe_exp(p[k])
         idx += m
 
     # Scale slots (when present) are left in raw space — identity rows. The
@@ -145,7 +146,7 @@ def _cumulative_thresholds(p: NDArray) -> NDArray:
         return t
     t[0] = p[0]
     for j in range(1, m):
-        t[j] = t[j - 1] + np.exp(p[j])
+        t[j] = t[j - 1] + safe_exp(p[j])
     return t
 
 
