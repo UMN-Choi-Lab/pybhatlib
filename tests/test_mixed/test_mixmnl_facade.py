@@ -84,6 +84,7 @@ class TestMixMNLControlRoundTrip:
         assert ctrl.spher is False
         assert ctrl.scal == 1.0
         assert ctrl.person_id is None
+        assert ctrl.weight_var is None
         assert tuple(ctrl.normvar) == ()
 
     def test_asdict_roundtrip(self):
@@ -130,6 +131,31 @@ class TestMixMNLControlRoundTrip:
         )
         assert np.all(np.isfinite(loglik))
         assert score.shape == (len(synthetic_mnl_data), layout.n_theta)
+
+    def test_observation_weights_are_averaged_by_person(self, synthetic_mnl_data):
+        data = synthetic_mnl_data.iloc[:6].copy()
+        data["pid"] = [0, 0, 1, 1, 1, 2]
+        data["weight"] = [1.0, 3.0, 2.0, 4.0, 6.0, 5.0]
+        control = MixMNLControl(
+            person_id="pid", weight_var="weight", n_rep=1
+        )
+        model = MixMNLModel(data, _ALTS, spec=_SPEC, control=control)
+        spec, layout = model._build_spec_layout()
+        panel = PanelIndex.from_ids(model.person_ids)
+        estimator = model._build_estimator(spec, layout, panel)
+
+        np.testing.assert_allclose(estimator.weightind, [2.0, 4.0, 5.0])
+
+    def test_no_weight_column_defaults_to_person_weights_of_one(
+        self, synthetic_mnl_data
+    ):
+        control = MixMNLControl(n_rep=1)
+        model = MixMNLModel(synthetic_mnl_data, _ALTS, spec=_SPEC, control=control)
+        spec, layout = model._build_spec_layout()
+        panel = PanelIndex.from_ids(model.person_ids)
+
+        estimator = model._build_estimator(spec, layout, panel)
+        np.testing.assert_array_equal(estimator.weightind, np.ones(panel.n_ind))
 
     def test_replace_is_nondestructive(self):
         ctrl = MixMNLControl(n_rep=10)

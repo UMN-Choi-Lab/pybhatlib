@@ -37,6 +37,9 @@ class MixMNLControl:
     person_id : str or None
         Column holding the panel person identifier.  ``None`` (default) treats
         every observation as its own person (cross-sectional; ``Dmask = I``).
+    weight_var : str or None
+        Column holding observation weights. ``None`` assigns unit weight to
+        every observation. Panel weights are averaged within each person.
     randdiag : bool
         If True, fix the random-coefficient correlation matrix to the identity
         (GAUSS ``_randdiag``) instead of estimating a full correlation matrix.
@@ -92,8 +95,9 @@ class MixMNLControl:
     varneg: Sequence[str] = field(default_factory=tuple)
     varpos: Sequence[str] = field(default_factory=tuple)
 
-    # --- panel ---------------------------------------------------------------
+    # --- panel / weights -----------------------------------------------------
     person_id: str | None = None
+    weight_var: str | None = None
 
     # --- MSL / reparameterization -------------------------------------------
     randdiag: bool = False

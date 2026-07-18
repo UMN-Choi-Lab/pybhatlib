@@ -120,7 +120,7 @@ class MixMNLModel(BaseModel):
             usecols = used_columns_selector(
                 value_cols=alternatives,
                 avail_cols=_prune_avail,
-                id_cols=[self.control.person_id],
+                id_cols=[self.control.person_id, self.control.weight_var],
                 specs=[spec] if spec is not None else [],
             )
             self.data = load_data(data, usecols=usecols)
@@ -159,6 +159,14 @@ class MixMNLModel(BaseModel):
         self.chosen = choice_data
         self.y = np.argmax(choice_data, axis=1).astype(np.int64)
         self.N = len(self.y)
+
+        # --- observation weights -----------------------------------------
+        if self.control.weight_var is not None:
+            self.weights = self.data[self.control.weight_var].to_numpy(
+                dtype=np.float64
+            )
+        else:
+            self.weights = np.ones(self.N, dtype=np.float64)
 
         # --- panel person ids ---------------------------------------------
         if self.control.person_id is not None:
@@ -223,7 +231,7 @@ class MixMNLModel(BaseModel):
             score_convention="mask",
         )
         draws = self._make_draw_source(spec.nrndcoef, ctrl.n_rep, panel.n_ind)
-        weightind = np.ones(panel.n_ind, dtype=np.float64)
+        weightind = panel.weightind(self.weights)
         return MixedMSLEstimator(
             panel=panel,
             draws=draws,
