@@ -143,6 +143,21 @@ class TestMDCEVModel:
         assert forecasts.shape == (2 * len(df), 3)
         assert np.all(forecasts >= 0)
 
+    def test_forecast_extreme_utilities_remain_finite(self):
+        forecasts = mdcev_forecast(
+            results=None,
+            X_new=np.ones((1, 3, 1), dtype=np.float64),
+            X_gam_new=np.ones((1, 3, 1), dtype=np.float64),
+            price_new=np.ones((1, 3), dtype=np.float64),
+            budget=np.ones(1, dtype=np.float64),
+            n_replications=1,
+            seed=123,
+            b_reported=np.array([1e6, 0.0]),
+            sigma=1.0,
+        )
+
+        assert np.all(np.isfinite(forecasts))
+
     def test_forecast_with_full_raw_vector_and_implicit_sigma(self, synthetic_mdcev_data):
         df = synthetic_mdcev_data
         model = MDCEVModel(
