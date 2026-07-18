@@ -135,3 +135,4 @@ class MNPKerCPControl:
     verbose: int = 1
     seed: int | None = None
     startb: NDArray | None = None
+    start_from_shares: bool = False
