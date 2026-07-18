@@ -37,6 +37,11 @@ from pybhatlib.models.morp_flex import (
     MORPFlexModel,
     MORPFlexResults,
 )
+from pybhatlib.models.mdcev_mixed import (
+    MDCEVMixedControl,
+    MDCEVMixedModel,
+    MDCEVMixedResults,
+)
 
 __all__ = [
     "__version__",
@@ -72,4 +77,7 @@ __all__ = [
     "MORPFlexControl",
     "MORPFlexModel",
     "MORPFlexResults",
+    "MDCEVMixedControl",
+    "MDCEVMixedModel",
+    "MDCEVMixedResults",
 ]

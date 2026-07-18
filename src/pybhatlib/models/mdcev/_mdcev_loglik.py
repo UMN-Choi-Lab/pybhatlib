@@ -37,6 +37,8 @@ The outside-good gamma is forced to ``MDCEVControl.outside_good_gamma``
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -111,20 +113,55 @@ def _compute_utility_terms(
     dict
         All intermediate arrays needed by the log-likelihood and gradient.
     """
+    # Composition of the draw-invariant satiation/gamma block (no ``beta``
+    # dependence) and the ``beta``-dependent v/vdisc/vcont block. Splitting the
+    # two lets the mixed MDCEV kernel cache the satiation block across MSL draws
+    # (only ``beta = Vsub`` varies) without changing the value produced here: the
+    # two halves are a pure code move, so the fixed-coefficient model is
+    # byte-identical to the original single-pass implementation.
+    sat = _compute_satiation_block(
+        x, dta, ivg, flagchm, flagprcm, wtind,
+        nvarm, nvargam, nc, eqmatgam, control,
+    )
+    return _compute_utility_terms_from_sat(
+        x, dta, ivm, flagchm, flagprcm, nvarm, nc, sat, control,
+    )
+
+
+def _compute_satiation_block(
+    x: NDArray,
+    dta: NDArray,
+    ivg: NDArray,
+    flagchm: NDArray,
+    flagprcm: NDArray,
+    wtind: int,
+    nvarm: int,
+    nvargam: int,
+    nc: int,
+    eqmatgam: NDArray,
+    control: MDCEVControl,
+) -> dict:
+    """Draw-invariant (``beta``-independent) satiation/gamma block.
+
+    Computes every intermediate in :func:`_compute_utility_terms` that does
+    **not** depend on ``beta = x[:nvarm]`` -- i.e. the satiation utilities
+    ``u``/``f``, the consumption indicators ``b``/``newf``/``m``/``h``, the
+    prices, and the Jacobian scalar ``c`` (with its ``c2``/``c3`` helpers). In
+    the mixed MDCEV kernel these depend only on the (per-eval constant) ``gamma``
+    / ``log_sigma`` and the per-observation data, so the block is identical
+    across the MSL draws and can be cached once per evaluation.
+
+    Returns
+    -------
+    dict
+        ``e1, wt, xsigm, f, b, newf, m, h, c, c2, c3, price_inside`` -- the
+        draw-invariant subset of :func:`_compute_utility_terms`' output.
+    """
     e1 = dta.shape[0]
 
     wt    = dta[:, wtind]                                       # (e1,)
     xgam  = eqmatgam.T @ x[nvarm: nvarm + nvargam]             # (nvargam,)
     xsigm = np.exp(x[nvarm + nvargam])                         # scalar
-
-    # Baseline utilities v[q, k] = X_{qk} @ beta, shape (e1, nc)
-    # GAUSS: v2 = (ones(nc,1) .*. x[1:nvarm]) *~ (dta[.,ivm])'
-    # ivm is column-major: [cols for param 0 all alts, cols for param 1 all alts, ...]
-    beta = x[:nvarm]
-    v = np.zeros((e1, nc), dtype=np.float64)
-    for j in range(nvarm):
-        cols_j = ivm[j * nc: (j + 1) * nc]
-        v[:, :] += dta[:, cols_j] * beta[j]
 
     # Satiation utility u[q, k] = X_gam_{qk} @ xgam, shape (e1, nc)
     # ivg is column-major: [cols for param 0 all alts, cols for param 1 all alts, ...]
@@ -181,13 +218,74 @@ def _compute_utility_terms(
         c3       = None                                         # unused for linear
         c2       = None                                         # unused for linear
 
+    return dict(
+        e1=e1, wt=wt, xsigm=xsigm,
+        f=f, b=b, newf=newf,
+        m=m, h=h, c=c, c2=c2, c3=c3,
+        price_inside=price_inside,
+    )
+
+
+def _compute_utility_terms_from_sat(
+    x: NDArray,
+    dta: NDArray,
+    ivm: NDArray,
+    flagchm: NDArray,
+    flagprcm: NDArray,
+    nvarm: int,
+    nc: int,
+    sat: dict,
+    control: MDCEVControl,
+    *,
+    v_override: Optional[NDArray] = None,
+) -> dict:
+    """``beta``-dependent v/vdisc/vcont block, merged with a satiation block.
+
+    Given a precomputed draw-invariant ``sat`` block (see
+    :func:`_compute_satiation_block`), computes the baseline utilities ``v`` and
+    the price-adjusted utility differences ``vdisc``/``vcont`` (the only
+    quantities that depend on ``beta = x[:nvarm]``), and returns the full terms
+    dict expected by the log-likelihood / gradient bodies. Byte-identical to the
+    original monolithic :func:`_compute_utility_terms`.
+
+    Parameters
+    ----------
+    v_override : NDArray, shape (e1, nc), optional
+        Precomputed baseline utilities ``v``. When supplied, the per-parameter
+        ``v = X @ beta`` sum (and hence ``x``/``ivm``) is skipped and ``v`` is
+        taken directly. Used by the mixed MDCEV kernel, whose baseline utility
+        is the drawn ``Vsub`` (per observation), to batch every observation into
+        one call while producing exactly the ``v`` the identity-baseline design
+        would (``v[q, k] == Vsub[q, k]``). ``None`` (default) preserves the
+        original ``beta``-driven behaviour for the fixed-coefficient model.
+    """
+    e1 = sat["e1"]
+    f  = sat["f"]
+
+    if v_override is not None:
+        # Mixed-MDCEV batched path: v is supplied directly (identity baseline
+        # design would give v[q, k] == Vsub[q, k]); skip the beta sum.
+        v = np.asarray(v_override, dtype=np.float64)
+    else:
+        # Baseline utilities v[q, k] = X_{qk} @ beta, shape (e1, nc)
+        # GAUSS: v2 = (ones(nc,1) .*. x[1:nvarm]) *~ (dta[.,ivm])'
+        # ivm is column-major: [cols for param 0 all alts, cols for param 1 all alts, ...]
+        beta = x[:nvarm]
+        v = np.zeros((e1, nc), dtype=np.float64)
+        for j in range(nvarm):
+            cols_j = ivm[j * nc: (j + 1) * nc]
+            v[:, :] += dta[:, cols_j] * beta[j]
+
+    price_all    = dta[:, flagprcm]                            # (e1, nc)
+    price_inside = price_all[:, 1:]                            # (e1, nc-1)
+    qty_inside   = dta[:, flagchm[1:]]                         # (e1, nc-1)
+    qty_out      = dta[:, flagchm[0]]                          # (e1,)
+
     # ------------------------------------------------------------------
     # Price-adjusted utility differences — vdisc and vcont
     # The only other difference: trad subtracts ln(qty_outside)
     # ------------------------------------------------------------------
-    qty_out = dta[:, flagchm[0]]                                # (e1,)
-
-    vdisc_raw = v[:, 1:] - np.log(price_inside)                # (e1, nc-1)
+    vdisc_raw = v[:, 1:] - np.log(price_inside)               # (e1, nc-1)
 
     v_adj = v.copy()
     v_adj[:, 0] -= np.log(price_all[:, 0])
@@ -206,13 +304,10 @@ def _compute_utility_terms(
         vdisc    = v_adj[:, 0:1] - vdisc_raw                   # (e1, nc-1)
         vcont    = v_adj[:, 0:1] - v_adj[:, 1:]                # (e1, nc-1)
 
-    return dict(
-        e1=e1, wt=wt, xsigm=xsigm,
-        f=f, b=b, newf=newf,
-        m=m, h=h, c=c, c2=c2, c3=c3,
-        vdisc=vdisc, vcont=vcont,
-        price_inside=price_inside,
-    )
+    terms = dict(sat)
+    terms["vdisc"] = vdisc
+    terms["vcont"] = vcont
+    return terms
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +369,16 @@ def mdcev_loglik(
         x, dta, ivm, ivg, flagchm, flagprcm, wtind,
         nvarm, nvargam, nc, eqmatgam, control,
     )
+    return _loglik_from_terms(terms)
+
+
+def _loglik_from_terms(terms: dict) -> NDArray:
+    """Log-likelihood loop over the ``pdisc``/``pcont`` branches (GAUSS ``lpr`` body).
+
+    Separated from :func:`mdcev_loglik` so the log-likelihood loop can run from
+    a precomputed ``terms`` dict (the mixed MDCEV kernel reuses it across MSL
+    draws). Byte-identical to the original inline body.
+    """
     e1     = terms["e1"]
     wt     = terms["wt"]
     xsigm  = terms["xsigm"]
@@ -371,6 +476,31 @@ def mdcev_gradient(
         x, dta, ivm, ivg, flagchm, flagprcm, wtind,
         nvarm, nvargam, nc, eqmatgam, control,
     )
+    grad_obs, _z = _gradient_from_terms(
+        terms, dta, ivm, ivg, nvarm, nvargam, nc, eqmatgam, control,
+    )
+    return grad_obs
+
+
+def _gradient_from_terms(
+    terms: dict,
+    dta: NDArray,
+    ivm: NDArray,
+    ivg: NDArray,
+    nvarm: int,
+    nvargam: int,
+    nc: int,
+    eqmatgam: NDArray,
+    control: MDCEVControl,
+) -> tuple[NDArray, NDArray]:
+    """Analytic-gradient loop over the ``pdisc``/``pcont`` branches (GAUSS ``lgd`` body).
+
+    Separated from :func:`mdcev_gradient` so the gradient loop can run from a
+    precomputed ``terms`` dict (the mixed MDCEV kernel reuses it across MSL
+    draws). Returns ``(grad_obs, z)`` where ``z = pdisc * pcont`` (floored) --
+    exactly the ``z`` :func:`_loglik_from_terms` forms. Byte-identical to the
+    original inline body.
+    """
     e1            = terms["e1"]
     wt            = terms["wt"]
     xsigm         = terms["xsigm"]
@@ -521,7 +651,7 @@ def mdcev_gradient(
     z = np.where(z <= 0.0, 1e-4, z)
 
     grad_raw = np.hstack([gv, gg, gsiggg[:, np.newaxis]])       # (e1, nvarm+nvargam+1)
-    return wt[:, np.newaxis] * (grad_raw / z[:, np.newaxis])
+    return wt[:, np.newaxis] * (grad_raw / z[:, np.newaxis]), z
 
 
 # ---------------------------------------------------------------------------
