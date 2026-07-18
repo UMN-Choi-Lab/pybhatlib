@@ -215,7 +215,9 @@ class MvncdKernel:
         # --- joint correlation omegastar (GAUSS lines 556-561) --------------
         xrand = theta[sl["rcor"]]
         nrndtot = k + kd
-        if nrndtot > 1:
+        if layout.n_rcor == 0 and nrndtot > 1:
+            omegastar = np.eye(nrndtot, dtype=np.float64)
+        elif nrndtot > 1:
             cholall = newcholparmscaled(xrand, self.scal)
             omegastar = np.asarray(cholall).T @ np.asarray(cholall)
         else:  # single random element -> unit correlation
