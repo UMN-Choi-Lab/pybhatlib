@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "pybhatlib"
-version = "0.3.1"
+dynamic = ["version"]
 description = "Python implementation of BHATLIB: matrix-based inference for advanced econometric models"
 readme = "README.md"
 license = "MIT"
@@ -39,6 +39,7 @@ Homepage = "https://github.com/UMN-Choi-Lab/pybhatlib"
 Repository = "https://github.com/UMN-Choi-Lab/pybhatlib"
 Documentation = "https://github.com/UMN-Choi-Lab/pybhatlib#readme"
 Issues = "https://github.com/UMN-Choi-Lab/pybhatlib/issues"
+Changelog = "https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 torch = ["torch>=2.0"]
@@ -50,8 +51,30 @@ dev = [
 ]
 all = ["pybhatlib[torch,dev]"]
 
+# Single source of truth for the version: hatchling reads __version__ from
+# this file, so the built METADATA and runtime pybhatlib.__version__ always agree.
+[tool.hatch.version]
+path = "src/pybhatlib/_version.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/pybhatlib"]
+
+# Explicit allowlist for the sdist. Without this, hatchling's default sdist
+# sweeps in every non-VCS-ignored file in the tree — including untracked local
+# artifacts (e.g. the 282 MB proprietary GAUSS installer, experiments/). This
+# allowlist guarantees only intended sources ship, regardless of what is lying
+# around the working directory at build time.
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/pybhatlib",
+    "tests",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "CHANGELOG.md",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -28,7 +28,10 @@ htmlcov/
 *.dat
 *.pkl
 *.pdf
+*.tar.gz
 results/
+experiments/
+pr32-*.md
 
 # Original GAUSS source
 chandra_code/
@@ -60,3 +63,10 @@ nul
 *.fdb_latexmk
 *.fls
 *.synctex.gz
+
+# PESOSE proposal working files — internal, NOT for the (soon-public) repo
+PESOSE_*
+PESOSE-related
+.env
+.claude
+

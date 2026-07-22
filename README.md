@@ -67,7 +67,7 @@ results.summary()
 
 A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 `morp_predict_category`) is at
-[`examples/tutorials/t05b_morp_ate_predict.ipynb`](examples/tutorials/t05b_morp_ate_predict.ipynb).
+[`examples/tutorials/t05b_morp_ate_predict.ipynb`](https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/examples/tutorials/t05b_morp_ate_predict.ipynb).
 
 ## Features
 
@@ -136,13 +136,13 @@ and correlation matrices. `summary()` reports the actual threshold cut-points
 output. See `docs/plans/MORP_BHATLIB_PARITY.md`.
 
 The driving notebooks are
-[`t04h_bhatlib_table1.ipynb`](examples/tutorials/t04h_bhatlib_table1.ipynb) and
-[`t04i_bhat2018_table2.ipynb`](examples/tutorials/t04i_bhat2018_table2.ipynb).
+[`t04h_bhatlib_table1.ipynb`](https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/examples/tutorials/t04h_bhatlib_table1.ipynb) and
+[`t04i_bhat2018_table2.ipynb`](https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/examples/tutorials/t04i_bhat2018_table2.ipynb).
 
 ## Tutorials
 
 A complete tutorial series lives under
-[`examples/tutorials/`](examples/tutorials/) as Jupyter notebooks (each with a
+[`examples/tutorials/`](https://github.com/UMN-Choi-Lab/pybhatlib/tree/main/examples/tutorials/) as Jupyter notebooks (each with a
 matching `.py` script under `python_scripts/`):
 
 | Track | Notebooks |
@@ -157,7 +157,7 @@ matching `.py` script under `python_scripts/`):
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, the PR-test
+See [`CONTRIBUTING.md`](https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/CONTRIBUTING.md) for development setup, the PR-test
 workflow, and CODEOWNERS conventions. Key tests:
 
 ```bash
