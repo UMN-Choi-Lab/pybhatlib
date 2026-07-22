@@ -1,6 +1,8 @@
 # pybhatlib
 
+[![PyPI](https://img.shields.io/pypi/v/pybhatlib)](https://pypi.org/project/pybhatlib/)
 [![Python](https://img.shields.io/pypi/pyversions/pybhatlib)](https://pypi.org/project/pybhatlib/)
+[![Tests](https://img.shields.io/github/actions/workflow/status/UMN-Choi-Lab/pybhatlib/tests.yml?branch=main&label=tests)](https://github.com/UMN-Choi-Lab/pybhatlib/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/pypi/l/pybhatlib)](https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/LICENSE)
 
 Python reimplementation of **BHATLIB** — an open-source library for statistical and
