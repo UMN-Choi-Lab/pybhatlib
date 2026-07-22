@@ -464,9 +464,24 @@ def _mixture_analytic_gradient(
 
     n_seg_params = nseg - 1
 
+    # Shared-coefficients layout: only variables in ``ranvar_indices`` get a
+    # segment-specific beta value; every other coefficient is shared with
+    # segment 1. See docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md and the
+    # matching layout in ``_mnp_loglik._unpack_params``.
+    n_rand_shared = len(ranvar_indices) if ranvar_indices else 0
+    ranvar_idx_arr = (
+        np.asarray(ranvar_indices, dtype=np.int64)
+        if n_rand_shared > 0
+        else np.zeros(0, dtype=np.int64)
+    )
+
     # ---- Unpack parameter vector ----
     # Layout: [beta_1 | lambda_params | omega_params_1 | segment_params |
-    #          beta_2 | omega_params_2 | ... | beta_H | omega_params_H]
+    #          beta_2_free | omega_params_2 | ... | beta_H_free | omega_params_H]
+    # beta_h_free (h>=2) has length n_rand_shared, not n_beta: it only
+    # supplies the segment-specific override values at ranvar_indices. The
+    # full-length beta used to compute utilities (``betas[h]``) is
+    # reconstructed as a copy of beta_1 with those slots overridden.
     idx = 0
     betas = []
     omega_params_list = []
@@ -494,9 +509,16 @@ def _mixture_analytic_gradient(
 
     # Additional segments
     for h in range(1, nseg):
-        beta_h = theta[idx:idx + n_beta]
-        idx += n_beta
-        betas.append(beta_h)
+        if n_rand_shared > 0:
+            beta_h_free = theta[idx:idx + n_rand_shared]
+            idx += n_rand_shared
+        else:
+            beta_h_free = np.zeros(0, dtype=np.float64)
+
+        beta_h_full = beta_1.copy()
+        if n_rand_shared > 0:
+            beta_h_full[ranvar_idx_arr] = beta_h_free
+        betas.append(beta_h_full)
 
         omega_h = None
         if control.mix and ranvar_indices is not None:
@@ -548,17 +570,18 @@ def _mixture_analytic_gradient(
     # Segment 1: beta at [0, n_beta), lambda at [n_beta, n_beta+n_lambda),
     #            omega at [n_beta+n_lambda, n_beta+n_lambda+n_omega)
     # segment_params at [n_beta+n_lambda+n_omega, n_beta+n_lambda+n_omega+nseg-1)
-    # Segment h (h>=2): beta at seg_h_start, omega at seg_h_start + n_beta
+    # Segment h (h>=2): beta_free at seg_h_start (length n_rand_shared),
+    #                   omega at seg_h_start + n_rand_shared
     beta_1_start = 0
     lambda_start = n_beta
     omega_1_start = n_beta + n_lambda
 
-    seg_extra_starts = []  # (beta_start, omega_start) for segments 2..H
+    seg_extra_starts = []  # (beta_free_start, omega_start) for segments 2..H
     extra_idx = seg_params_start + n_seg_params
     for h in range(1, nseg):
         beta_h_start = extra_idx
-        extra_idx += n_beta
-        omega_h_start = extra_idx if (control.mix and ranvar_indices is not None) else extra_idx
+        extra_idx += n_rand_shared
+        omega_h_start = extra_idx
         if control.mix and ranvar_indices is not None:
             extra_idx += n_omega
         seg_extra_starts.append((beta_h_start, omega_h_start))
@@ -574,7 +597,7 @@ def _mixture_analytic_gradient(
             control, I, N, dim, n_beta, n_lambda, n_params,
             n_scale, n_corr, dim_lambda, nseg, n_seg_params,
             beta_1_start, lambda_start, seg_params_start,
-            seg_extra_starts,
+            seg_extra_starts, ranvar_idx_arr, n_rand_shared,
         )
 
     for q in range(N):
@@ -719,11 +742,31 @@ def _mixture_analytic_gradient(
         # Additional segments (h >= 2): beta and omega
         for h in range(1, nseg):
             h_beta_start, h_omega_start = seg_extra_starts[h - 1]
+            g_h = seg_grad_beta[h]  # length n_beta: d(P_q_h)/d(beta_h_full)
 
-            # Beta for segment h
-            grad[h_beta_start:h_beta_start + n_beta] += (
-                inv_P_q * pi_h[h] * seg_grad_beta[h]
-            )
+            # beta_h_full[j] = beta_1[j] for j not in ranvar_indices (shared
+            # coefficient — same theta parameter as segment 1), and
+            # beta_h_full[j] = beta_h_free[k] for j = ranvar_indices[k] (this
+            # segment's own free parameter). Chain rule splits g_h the same
+            # way: shared components add back into segment 1's beta slot,
+            # ranvar components add into this segment's own small slot.
+            if n_rand_shared > 0:
+                g_h_shared = g_h.copy()
+                g_h_shared[ranvar_idx_arr] = 0.0
+                grad[beta_1_start:beta_1_start + n_beta] += (
+                    inv_P_q * pi_h[h] * g_h_shared
+                )
+
+                g_h_rand = g_h[ranvar_idx_arr]
+                grad[h_beta_start:h_beta_start + n_rand_shared] += (
+                    inv_P_q * pi_h[h] * g_h_rand
+                )
+            else:
+                # No ranvars: beta_h_full is identical to beta_1 in every
+                # component, so the entire gradient flows back to segment 1.
+                grad[beta_1_start:beta_1_start + n_beta] += (
+                    inv_P_q * pi_h[h] * g_h
+                )
 
             # Omega for segment h
             if n_omega > 0 and seg_grad_omega[h] is not None:
@@ -742,7 +785,7 @@ def _mixture_vectorized_k2(
     control, I, N, dim, n_beta, n_lambda, n_params,
     n_scale, n_corr, dim_lambda, nseg, n_seg_params,
     beta_1_start, lambda_start, seg_params_start,
-    seg_extra_starts,
+    seg_extra_starts, ranvar_idx_arr, n_rand_shared,
 ):
     """Vectorized mixture gradient for K=2, all available, no random coeff.
 
@@ -835,16 +878,29 @@ def _mixture_vectorized_k2(
 
     # Beta gradients per segment
     for h in range(nseg):
-        # Weight: (1/P_q) * pi_h * dP_q_h/d(beta_h)
+        # Weight: (1/P_q) * pi_h * dP_q_h/d(beta_h_full)
         weights = inv_P_q * pi_h[h]  # (N,)
         weighted_grad = weights[:, None] * seg_grad_beta_all[h]  # (N, n_beta)
-        grad_beta_h = weighted_grad.sum(axis=0)
+        grad_beta_h = weighted_grad.sum(axis=0)  # (n_beta,) d(nll)/d(beta_h_full)
 
         if h == 0:
             grad[beta_1_start:beta_1_start + n_beta] += grad_beta_h
         else:
+            # Same shared/ranvar split as the sequential path: components of
+            # beta_h_full not in ranvar_indices are literally segment 1's
+            # theta values (shared coefficient), so their gradient flows
+            # back there; components at ranvar_indices are this segment's
+            # own free parameters.
             h_beta_start = seg_extra_starts[h - 1][0]
-            grad[h_beta_start:h_beta_start + n_beta] += grad_beta_h
+            if n_rand_shared > 0:
+                grad_beta_h_shared = grad_beta_h.copy()
+                grad_beta_h_shared[ranvar_idx_arr] = 0.0
+                grad[beta_1_start:beta_1_start + n_beta] += grad_beta_h_shared
+
+                grad_beta_h_rand = grad_beta_h[ranvar_idx_arr]
+                grad[h_beta_start:h_beta_start + n_rand_shared] += grad_beta_h_rand
+            else:
+                grad[beta_1_start:beta_1_start + n_beta] += grad_beta_h
 
     # Lambda gradient (shared across segments)
     if need_sigma_chain and n_lambda > 0:
