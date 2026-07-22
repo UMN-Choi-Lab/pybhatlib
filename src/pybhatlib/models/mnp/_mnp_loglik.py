@@ -85,6 +85,20 @@ def mnp_loglik(
     if return_gradient:
         # Analytic gradient computes both nll and grad in one pass,
         # avoiding a redundant forward-only evaluation.
+        #
+        # NOTE (shared-coefficients fix): ``mnp_analytic_gradient``'s
+        # mixture-of-normals path (nseg > 1) has been updated to match the
+        # current theta layout, where extra segments only carry
+        # ``len(ranvar_indices)`` free beta params (see ``_unpack_params``)
+        # and every other coefficient is shared with segment 1. The chain
+        # rule in ``_mixture_analytic_gradient`` (and its K=2 fast path)
+        # now correctly splits each segment's raw beta gradient into the
+        # "shared" part (flows back into segment 1's theta slot) and the
+        # "ranvar" part (flows into that segment's own small slot).
+        #
+        # ``_mnp_grad_gpu.py``'s mixture path has NOT been updated yet and
+        # is still stale against this layout, so GPU dispatch for nseg > 1
+        # remains disabled separately in ``_mnp_model.py``.
         if (
             control.analytic_grad
             and control.method in ("me", "ovus")
@@ -525,13 +539,39 @@ def _unpack_params(
         params["segment_params"] = theta[idx: idx + n_seg_params]
         idx += n_seg_params
 
-        # Additional beta and omega for extra segments
+        # Additional (shared-coefficients) beta and omega for extra segments.
+        #
+        # Only variables listed in ``ranvars`` (i.e. ``ranvar_indices``) get a
+        # segment-specific coefficient value; every other variable is SHARED
+        # across all segments (its value is whatever is in ``params["beta"]``
+        # for segment 1). So each extra segment only carries
+        # ``len(ranvar_indices)`` free beta parameters, not the full
+        # ``n_beta``. See docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md.
+        #
+        # ``segment_betas`` holds the RAW free parameters (length
+        # ``n_rand_shared`` each) — this is what round-trips through
+        # ``_param_to_unpar`` / theta0 / param-name building.
+        # ``segment_betas_full`` holds the RECONSTRUCTED length-``n_beta``
+        # vector (shared base + segment-specific overrides at
+        # ``ranvar_indices``) — this is what likelihood evaluation
+        # (``_compute_mixture_prob``) actually uses as the segment's beta.
+        n_rand_shared = len(ranvar_indices) if ranvar_indices else 0
+
         params["segment_betas"] = []
+        params["segment_betas_full"] = []
         params["segment_omegas"] = []
         for h in range(1, control.nseg):
-            seg_beta = theta[idx: idx + n_beta]
-            idx += n_beta
-            params["segment_betas"].append(seg_beta)
+            if n_rand_shared > 0:
+                seg_beta_free = theta[idx: idx + n_rand_shared]
+                idx += n_rand_shared
+            else:
+                seg_beta_free = np.zeros(0, dtype=np.float64)
+            params["segment_betas"].append(seg_beta_free)
+
+            seg_beta_full = params["beta"].copy()
+            if n_rand_shared > 0:
+                seg_beta_full[np.asarray(ranvar_indices)] = seg_beta_free
+            params["segment_betas_full"].append(seg_beta_full)
 
             if control.mix and ranvar_indices is not None:
                 n_rand = len(ranvar_indices)
@@ -1133,10 +1173,12 @@ def _compute_mixture_prob(
         X_q, beta_1, chosen, avail_q, Lambda, None, None, control, xp
     )
 
-    # Additional segments
+    # Additional segments. ``segment_betas_full`` is the shared base beta
+    # with only the ranvar_indices slots overridden per segment; every other
+    # coefficient is identical to segment 1 by construction.
     for h in range(1, nseg):
-        if h - 1 < len(params.get("segment_betas", [])):
-            beta_h = params["segment_betas"][h - 1]
+        if h - 1 < len(params.get("segment_betas_full", [])):
+            beta_h = params["segment_betas_full"][h - 1]
         else:
             beta_h = beta_1
 
@@ -1420,12 +1462,27 @@ def _unpack_params_unpar(
         params["segment_params"] = theta[idx: idx + n_seg_params]
         idx += n_seg_params
 
+        # Shared-coefficients layout: see the matching comment in
+        # ``_unpack_params`` (parameterized). Only ``ranvar_indices`` slots
+        # get segment-specific values; everything else is shared from
+        # ``params["beta"]``.
+        n_rand_shared = len(ranvar_indices) if ranvar_indices else 0
+
         params["segment_betas"] = []
+        params["segment_betas_full"] = []
         params["segment_omegas"] = []
         for _h in range(1, control.nseg):
-            seg_beta = theta[idx: idx + n_beta]
-            idx += n_beta
-            params["segment_betas"].append(seg_beta)
+            if n_rand_shared > 0:
+                seg_beta_free = theta[idx: idx + n_rand_shared]
+                idx += n_rand_shared
+            else:
+                seg_beta_free = np.zeros(0, dtype=np.float64)
+            params["segment_betas"].append(seg_beta_free)
+
+            seg_beta_full = params["beta"].copy()
+            if n_rand_shared > 0:
+                seg_beta_full[np.asarray(ranvar_indices)] = seg_beta_free
+            params["segment_betas_full"].append(seg_beta_full)
 
             if control.mix and ranvar_indices is not None:
                 n_rand = len(ranvar_indices)
@@ -1602,8 +1659,8 @@ def _compute_mixture_prob_unpar(
 
     for h in range(1, nseg):
         beta_h = (
-            params["segment_betas"][h - 1]
-            if h - 1 < len(params.get("segment_betas", []))
+            params["segment_betas_full"][h - 1]
+            if h - 1 < len(params.get("segment_betas_full", []))
             else beta_1
         )
         Omega_L_h = None
@@ -1694,9 +1751,13 @@ def count_params(
 
     if control.nseg > 1:
         n += control.nseg - 1  # segment probability params
-        # Additional beta and omega for each extra segment
+        # Additional beta and omega for each extra segment.
+        # Shared-coefficients layout: only variables in ``ranvar_indices``
+        # get a segment-specific beta value; all other variables are shared
+        # with segment 1 and contribute no extra parameters here.
+        n_rand_shared = len(ranvar_indices) if ranvar_indices else 0
         for _ in range(1, control.nseg):
-            n += n_beta
+            n += n_rand_shared
             if control.mix and ranvar_indices is not None:
                 n_rand = len(ranvar_indices)
                 if control.randdiag:

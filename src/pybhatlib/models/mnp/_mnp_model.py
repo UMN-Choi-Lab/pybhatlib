@@ -161,22 +161,44 @@ class MNPModel(BaseModel):
         if self.ranvar_indices is None:
             self.control.mix = False
 
-        # Warn only when auto-expansion produced duplicate column indices,
-        # which makes the random-coefficient Omega rank-deficient. User-
-        # supplied duplicate names (e.g. ``ranvars=["OVTT", "OVTT"]``) are a
-        # deliberate choice and not flagged here.
-        if (
-            ranvars_expanded
-            and self.ranvar_indices
-            and len(set(self.ranvar_indices)) < len(self.ranvar_indices)
-        ):
+        # Shared-coefficients layout: variables not listed in ``ranvars`` are
+        # now SHARED across all mixture segments (single coefficient, no
+        # extra theta slot). With ``nseg > 1`` and no ranvars at all, every
+        # segment would therefore have an identical beta and identical
+        # (absent) Omega — a fully unidentified model that differs only in
+        # meaningless mixing weights over duplicate components. Fail fast
+        # instead of silently fitting a degenerate model.
+        if self.control.nseg > 1 and not self.ranvar_indices:
+            raise ValueError(
+                "control.nseg > 1 requires at least one variable in `ranvars`. "
+                "Under the shared-coefficients parameterization, variables not "
+                "listed in `ranvars` are identical across all segments, so "
+                "nseg > 1 with no ranvars produces an unidentified model "
+                "(every segment is the same). Pass `ranvars=[...]` naming the "
+                "variable(s) that should vary by segment."
+            )
+
+        # Warn whenever ranvars resolve to duplicate column indices — this
+        # always makes the random-coefficient Omega rank-deficient,
+        # regardless of how the duplicate arose (auto-expansion no longer
+        # exists; this now only happens if the same underlying variable is
+        # listed more than once in `ranvars`, directly or via two spec
+        # columns built from the same source data).
+        if self.ranvar_indices and len(set(self.ranvar_indices)) < len(self.ranvar_indices):
             warnings.warn(
-                "Mixture ranvars auto-expansion produced duplicate column indices "
-                f"{self.ranvar_indices}. The resulting random-coefficient Omega is "
-                "rank-deficient and the optimizer can only recover effective scalar "
-                "variance per segment. To fit a model with truly per-segment random "
-                "coefficients, list segment-suffixed names in spec (e.g. OVTT_seg1, "
-                "OVTT_seg2) and pass them explicitly. See "
+                "`ranvars` resolved to duplicate column indices "
+                f"{self.ranvar_indices} — the same underlying variable "
+                "appears more than once. The resulting random-coefficient "
+                "Omega will be rank-deficient. This is usually caused by "
+                "listing the same variable twice in `ranvars`, including "
+                "indirectly via two spec columns built from the same source "
+                "data (e.g. separate 'OVTT_seg1'/'OVTT_seg2' columns both "
+                "mapped to the same underlying OVTT data). With "
+                "`control.nseg > 1`, a single name — e.g. `ranvars=['OVTT']` "
+                "— already gets its own coefficient value in every segment "
+                "automatically; there is no need to create separate "
+                "per-segment spec columns. List each distinct random "
+                "coefficient once. See "
                 "docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md.",
                 RuntimeWarning,
                 stacklevel=2,
@@ -201,40 +223,37 @@ class MNPModel(BaseModel):
     ) -> tuple[list[int], bool]:
         """Resolve user-supplied ranvar names into indices in ``var_names``.
 
-        Implements the MNP-006 (M1) auto-expansion ergonomic fix.
-        Mirrors the GAUSS pattern ``ranvars = { OVTT1 OVTT2 }`` from
-        ``MNP Table2 d.gss:113`` — with ``control.nseg > 1`` the user
-        may write ``ranvars=["OVTT"]`` (base name) and the index is
-        replicated across segments automatically.
+        NOTE — post shared-coefficients fix: this used to also auto-expand a
+        bare base name (e.g. ``"OVTT"``) into ``nseg`` duplicate indices (the
+        MNP-006 (M1) ergonomic fix, mirroring the GAUSS pattern
+        ``ranvars = { OVTT1 OVTT2 }`` from ``MNP Table2 d.gss:113``). That
+        expansion is now REMOVED: ``_unpack_params`` (see
+        ``_mnp_loglik.py``) already gives every name in ``ranvars`` its own
+        segment-specific coefficient/Omega slot for each of the ``nseg``
+        segments automatically. Pre-duplicating the index here would double
+        that — you'd get a rank-deficient per-segment Omega on top of the
+        (correct) per-segment expansion.
+
+        Practical upshot: to make a variable ``"OVTT"`` vary by mixture
+        segment, just pass ``ranvars=["OVTT"]`` once (with ``control.nseg >
+        1``) — do NOT create separate ``"OVTT_seg1"``/``"OVTT_seg2"`` spec
+        columns and pass both as ranvars; that now creates two independent
+        random-coefficient variables (each of which *also* gets its own
+        per-segment expansion), not one variable that differs by segment.
 
         Resolution rules
         ----------------
         Each user-supplied name ``rv`` is classified as:
 
-        - **base** — appears in ``var_names`` and does NOT end with a
-          digit or an explicit ``_seg``/``_s`` suffix (e.g. ``"OVTT"``).
-          Auto-expanded to one slot per segment when ``nseg > 1``.
-        - **segment-suffixed (literal)** — appears in ``var_names`` and
-          ends with a digit or ``_sN`` suffix (e.g. ``"OVTT1"``,
-          ``"OVTT_s2"``). Used as-is, no expansion.
+        - **literal** — appears in ``var_names`` as-is (e.g. ``"OVTT"``,
+          or an explicitly-created ``"OVTT_seg1"`` column). Resolved to
+          that column's index directly.
         - **segment-suffixed (inferred)** — does not appear in
           ``var_names``, but stripping a trailing digit or ``_sN``
-          yields a base that does (e.g. ``"OVTT1"`` → ``"OVTT"``).
-          Used as-is for that base index, no expansion.
+          suffix yields a base that does (e.g. legacy GAUSS-style
+          ``"OVTT1"`` → ``"OVTT"``). Resolved to the base column's index.
+          Only recognised when ``nseg > 1`` (see the nseg==1 branch below).
         - Otherwise → ``ValueError``.
-
-        is_base heuristic limitation
-        ----------------------------
-        A name is treated as a "base" eligible for auto-expansion only
-        when it neither matches the explicit ``_seg``/``_s`` regex nor
-        ends in a digit. This means a name like ``"AGE45"`` (ends in
-        digit) is **never** auto-expanded — even when the user might
-        want a per-segment AGE45 random coefficient. Conversely, a name
-        like ``"X1Y"`` (does not end in digit) **is** auto-expanded if
-        ``nseg > 1``, even when the user only wanted a single column.
-        If you need the non-default behavior, list explicit segment
-        names (e.g. ``"AGE45_seg1"``, ``"AGE45_seg2"``) in spec and
-        pass them in ``ranvars`` directly.
 
         Parameters
         ----------
@@ -244,13 +263,13 @@ class MNPModel(BaseModel):
         Returns
         -------
         indices : list of int
-            Resolved indices into ``self.var_names``. When auto-expansion
-            fires, length is ``n_base_names * nseg + n_non_base_names``
-            (no dedup of input names); otherwise ``len(ranvars)``.
+            Resolved indices into ``self.var_names``, length ``len(ranvars)``
+            (no dedup — user-supplied duplicate names, e.g.
+            ``ranvars=["OVTT", "OVTT"]``, are preserved as a deliberate
+            choice; see the duplicate-index warning in ``__init__``).
         expanded : bool
-            ``True`` iff auto-expansion replicated at least one base
-            index across segments. Used by ``__init__`` to attribute
-            duplicate-index warnings correctly.
+            Always ``False`` now that auto-expansion has been removed.
+            Kept in the return signature for call-site compatibility.
 
         Raises
         ------
@@ -259,8 +278,6 @@ class MNPModel(BaseModel):
         """
         nseg = self.control.nseg
         resolved: list[int] = []
-        # Classify per-name so we know which to auto-expand.
-        is_base: list[bool] = []
 
         for rv in ranvars:
             base = self._strip_segment_suffix(rv, var_names=self.var_names)
@@ -268,18 +285,6 @@ class MNPModel(BaseModel):
 
             if rv in self.var_names:
                 resolved.append(self.var_names.index(rv))
-                # A name qualifies as a "base" for per-segment auto-expansion
-                # only when it carries NO segment suffix (explicit or legacy).
-                # Names that end in digits but are not recognised as a legacy
-                # segment form (e.g. ``"AGE45"`` when ``"AGE4"`` is absent
-                # from spec) are treated as literal variable names, NOT bases
-                # — even though ``_strip_segment_suffix`` returns None for them.
-                # We detect the "ends-in-digits but not a recognised suffix"
-                # case by checking whether the raw name ends in a digit.
-                ends_in_digit = rv[-1].isdigit() if rv else False
-                # Treat as base only when no suffix at all (no trailing digits,
-                # no explicit _seg/_s form).
-                is_base.append(not looks_segment_suffixed and not ends_in_digit)
                 continue
 
             # Not literally in var_names — try base lookup (only
@@ -287,7 +292,6 @@ class MNPModel(BaseModel):
             # suffix has no semantic meaning).
             if nseg > 1 and looks_segment_suffixed and base in self.var_names:
                 resolved.append(self.var_names.index(base))
-                is_base.append(False)  # explicit segment form
                 continue
 
             # Targeted hint when the failure is the nseg=1 + legacy-suffix
@@ -308,21 +312,7 @@ class MNPModel(BaseModel):
                 f"{self.var_names}"
             )
 
-        # Auto-expand base names when nseg > 1: replicate each base
-        # index ``nseg`` times so that every mixture segment receives
-        # its own random-coefficient slot.
-        expanded = False
-        if nseg > 1 and any(is_base):
-            expanded = True
-            replicated: list[int] = []
-            for idx, base_flag in zip(resolved, is_base):
-                if base_flag:
-                    replicated.extend([idx] * nseg)
-                else:
-                    replicated.append(idx)
-            resolved = replicated
-
-        return resolved, expanded
+        return resolved, False
 
     @staticmethod
     def _strip_segment_suffix(
@@ -467,6 +457,24 @@ class MNPModel(BaseModel):
                     gpu_device = "cuda" if self.control.device == "auto" else self.control.device
             except ImportError:
                 pass
+
+            # _mnp_grad_gpu.py's mixture-of-normals path (nseg > 1) still
+            # assumes the OLD full-n_beta-per-segment theta layout and has
+            # not yet been updated for the shared-coefficients fix (only
+            # `ranvar_indices` vary by segment now). Using it would silently
+            # compute a wrong-shaped/wrong-valued gradient, so fall back to
+            # the CPU path (which uses the corrected numerical gradient)
+            # until _mnp_grad_gpu.py is rewritten to match.
+            if use_gpu and self.control.nseg > 1:
+                warnings.warn(
+                    "GPU-accelerated gradient is not yet supported for "
+                    "mixture-of-normals models (nseg > 1) under the "
+                    "shared-coefficients parameterization; falling back to "
+                    "the CPU path.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                use_gpu = False
 
         if use_gpu:
             import torch
@@ -815,10 +823,22 @@ class MNPModel(BaseModel):
             n_seg = self.control.nseg - 1
             theta0[idx:idx + n_seg] = 0.0
             idx += n_seg
-            # Extra segment betas and omegas
+            # Extra segment betas and omegas.
+            #
+            # Shared-coefficients layout: only variables in ``ranvars``
+            # (``self.ranvar_indices``) get a segment-specific starting
+            # value; every other coefficient is shared with segment 1 and
+            # gets no separate theta slot here. See
+            # docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md.
+            n_rand_shared = len(self.ranvar_indices) if self.ranvar_indices else 0
+            base_beta = theta0[:self.n_beta]
             for _ in range(1, self.control.nseg):
-                theta0[idx:idx + self.n_beta] = theta0[:self.n_beta] + np.random.randn(self.n_beta) * 0.05
-                idx += self.n_beta
+                if n_rand_shared > 0:
+                    base_rand = base_beta[np.asarray(self.ranvar_indices)]
+                    theta0[idx:idx + n_rand_shared] = (
+                        base_rand + np.random.randn(n_rand_shared) * 0.05
+                    )
+                    idx += n_rand_shared
                 if self.control.mix and self.ranvar_indices is not None:
                     n_rand = len(self.ranvar_indices)
                     if self.control.randdiag:
@@ -860,9 +880,13 @@ class MNPModel(BaseModel):
         if self.control.nseg > 1:
             for h in range(1, self.control.nseg):
                 names.append(f"segunpar")
+            # Shared-coefficients layout: only variables in ``ranvars`` get a
+            # segment-specific name/slot; everything else is shared with
+            # segment 1 and is not repeated here.
             for h in range(1, self.control.nseg):
-                for vn in self.var_names:
-                    names.append(f"{vn}_s{h + 1}")
+                if self.ranvar_indices:
+                    for i in self.ranvar_indices:
+                        names.append(f"{self.var_names[i]}_s{h + 1}")
                 if self.control.mix and self.ranvar_indices is not None:
                     n_rand = len(self.ranvar_indices)
                     if self.control.randdiag:
@@ -1114,9 +1138,13 @@ class MNPModel(BaseModel):
                 mapping[theta_idx] = report_idx
                 theta_idx += 1
                 report_idx += 1
-            # Extra segment betas and omegas
+            # Extra segment betas and omegas.
+            # Shared-coefficients layout: only ``ranvar_indices`` slots exist
+            # in theta/report space for extra segments (everything else is
+            # shared with segment 1 and has no separate theta column).
+            n_rand_shared = len(self.ranvar_indices) if self.ranvar_indices else 0
             for _ in range(1, self.control.nseg):
-                for k in range(self.n_beta):
+                for k in range(n_rand_shared):
                     mapping[theta_idx] = report_idx
                     theta_idx += 1
                     report_idx += 1
@@ -1174,9 +1202,13 @@ class MNPModel(BaseModel):
         if self.control.nseg > 1:
             for _h in range(1, self.control.nseg):
                 names.append("segunpar")
+            # Shared-coefficients layout: only ranvar names get a
+            # segment-specific report entry; shared coefficients are not
+            # repeated per segment.
             for h in range(1, self.control.nseg):
-                for vn in self.var_names:
-                    names.append(f"{vn}_s{h + 1}")
+                if self.ranvar_indices:
+                    for i in self.ranvar_indices:
+                        names.append(f"{self.var_names[i]}_s{h + 1}")
                 if self.control.mix and self.ranvar_indices is not None:
                     n_rand = len(self.ranvar_indices)
                     if self.control.randdiag:
