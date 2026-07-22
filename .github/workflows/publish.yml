@@ -39,7 +39,9 @@ jobs:
           python -m build
       - name: Guard — no proprietary/large/secret files in the sdist
         run: |
-          if tar tzf dist/*.tar.gz | grep -iE 'GAUSS|\.env|experiments/|pr32-'; then
+          # Match the actual hazards (GAUSS installer tarball, .env, experiments/,
+          # pr32 notes) WITHOUT tripping on the legit *_gauss_parity.py test files.
+          if tar tzf dist/*.tar.gz | grep -iE 'GAUSS_[0-9].*\.tar\.gz|/\.env$|/experiments/|/pr32-'; then
             echo '::error::sdist contains files that must not be published'; exit 1
           fi
           python -m twine check dist/*
