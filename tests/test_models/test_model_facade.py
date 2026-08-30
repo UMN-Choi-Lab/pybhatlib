@@ -185,9 +185,8 @@ MDCEV_USPEC = {
     "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
 }
 MDCEV_GSPEC = {
-    "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-    "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-    "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+    "g1": {"alt1": "uno", "alt2": "sero"},
+    "g2": {"alt1": "sero", "alt2": "uno"},
 }
 
 

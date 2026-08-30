@@ -126,15 +126,18 @@ def _compute_utility_terms(
         cols_j = ivm[j * nc: (j + 1) * nc]
         v[:, :] += dta[:, cols_j] * beta[j]
 
+    inside_count = max(1, nc - 1)
     # Satiation utility u[q, k] = X_gam_{qk} @ xgam, shape (e1, nc)
-    # ivg is column-major: [cols for param 0 all alts, cols for param 1 all alts, ...]
+    # ivg is column-major: [cols for param 0 all inside goods, cols for param 1 all inside goods, ...]
     u = np.zeros((e1, nc), dtype=np.float64)
     for j in range(nvargam):
-        cols_j = ivg[j * nc: (j + 1) * nc]
-        u[:, :] += dta[:, cols_j] * xgam[j]
+        cols_j = ivg[j * inside_count: (j + 1) * inside_count]
+        if dta[:, cols_j].shape[1] == inside_count:
+            u[:, 1:] += dta[:, cols_j].reshape(e1, inside_count) * xgam[j]
 
-    # Outside good gamma forced to large negative value.
-    # GAUSS: u[.,1] = -1000*ones(e1,1)
+    # Outside good gamma is fixed at the control value and is never part of
+    # the user-supplied gamma_spec; it is only injected here for the MDCEV
+    # decomposition.
     u[:, 0] = control.outside_good_gamma
 
     # gamma_k = exp(u_k) for inside goods, shape (e1, nc-1)
@@ -509,12 +512,13 @@ def mdcev_gradient(
     # GAUSS: g2g = ones(1,nvargam) .*. ggam'; gg = reshape(sumc(...))'
     #        return ... gg*eqmatgam' ...
     # ivg is column-major: [cols for param 0 all alts, cols for param 1 all alts, ...]
+    gamma_count = ggam.shape[1] - 1
     gg_raw = np.zeros((e1, nvargam), dtype=np.float64)
     for j in range(nvargam):
-        cols_j = ivg[j * nc: (j + 1) * nc]
-        # For each parameter j, sum contribution from all alternatives
-        for k in range(nc):
-            gg_raw[:, j] += ggam[:, k] * dta[:, cols_j[k]]
+        cols_j = ivg[j * gamma_count: (j + 1) * gamma_count]
+        # For each parameter j, sum contribution from all inside goods
+        for k in range(gamma_count):
+            gg_raw[:, j] += ggam[:, k + 1] * dta[:, cols_j[k]]
     gg = gg_raw @ eqmatgam.T                                    # (e1, nvargam)
 
     z = pdisc * pcont

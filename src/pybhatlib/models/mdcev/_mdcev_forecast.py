@@ -1,8 +1,10 @@
 """MDCEV model prediction and forecasting.
 
-Provides predicted consumption shares for new observations or
-counterfactual scenarios, using Monte Carlo simulation over error draws
-via ``simtradmdcev`` from mvlogit.py.
+The traditional MDCEV forecast path uses the acceptance-rejection
+``simtradmdcev`` simulator.  The linear MDCEV forecast path instead uses
+the GAUSS-style ``forec`` allocation recursion, which allocates the
+outside-good budget residual and consumes inside goods only when their
+latent utility exceeds the outside-good reservation value.
 """
 
 from __future__ import annotations
@@ -80,6 +82,76 @@ def _extract_mdcev_forecast_params(
     return b, sigma_val, outside_good_gamma
 
 
+def _resolve_mdcev_utility(
+    results: MDCEVResults | None,
+    utility: str | None,
+) -> str:
+    """Resolve the MDCEV utility form from results, explicit kwargs, or default."""
+    if utility is not None:
+        return utility
+    if results is not None:
+        ctrl = getattr(results, "control", None)
+        if ctrl is not None and getattr(ctrl, "utility", None) is not None:
+            return ctrl.utility
+    return "trad"
+
+
+def _mdcev_linear_forecast_allocation(
+    v_vals: NDArray,
+    prices: NDArray,
+    f1_vals: NDArray,
+    budget: float,
+    num_outside: int = 1,
+) -> NDArray:
+    """Compute a single linear-MDCEV allocation according to the GAUSS ``forec`` routine.
+
+    For the linear outside-good specification, inside goods are ranked by the latent
+    utility term v_k and allocated only while v_k > lambda, where lambda is the
+    outside-good reservation value. The outside good then absorbs the residual budget:
+
+        fc_out = D - sum(fc_inside)
+
+    This matches the GAUSS procedure in ``Forecasting_LinMDCEV.gss``.
+    """
+    nc = v_vals.size
+    fc = np.zeros(nc, dtype=np.float64)
+    if num_outside <= 0 or num_outside >= nc:
+        fc[:num_outside] = float(budget)
+        return fc
+
+    outside_idx = np.arange(num_outside)
+    inside_idx = np.arange(num_outside, nc)
+    if inside_idx.size == 0:
+        fc[outside_idx] = float(budget)
+        return fc
+
+    sorted_inside = inside_idx[np.argsort(v_vals[inside_idx])[::-1]]
+    sorted_slots = np.concatenate([outside_idx, sorted_inside])
+    v_sorted = np.empty(nc, dtype=np.float64)
+    f_sorted = np.empty(nc, dtype=np.float64)
+
+    v_sorted[outside_idx] = v_vals[outside_idx]
+    f_sorted[outside_idx] = f1_vals[outside_idx]
+    v_sorted[inside_idx] = v_vals[sorted_inside]
+    f_sorted[inside_idx] = f1_vals[sorted_inside]
+
+    lambda_val = v_sorted[num_outside - 1]
+    if v_sorted[num_outside] < lambda_val:
+        fc[outside_idx] = float(budget)
+        return fc
+
+    for j in range(num_outside, nc):
+        if v_sorted[j] <= lambda_val:
+            break
+        fc[j] = (v_sorted[j] / lambda_val - 1.0) * f_sorted[j]
+
+    fc[outside_idx] = float(budget) - fc[num_outside:].sum()
+
+    fc_original = np.empty_like(fc)
+    fc_original[sorted_slots] = fc
+    return fc_original
+
+
 def mdcev_predict(
     results: MDCEVResults | np.ndarray | None = None,
     X_new: NDArray | None = None,
@@ -90,6 +162,8 @@ def mdcev_predict(
     b_reported: NDArray | None = None,
     sigma: float | None = None,
     outside_good_gamma: float | None = None,
+    utility: str | None = None,
+    budget: NDArray | float | None = None,
     **kwargs,
 ) -> NDArray:
     """Predict mean consumption shares for new observations.
@@ -130,6 +204,7 @@ def mdcev_predict(
     b, sigma, outside_good_gamma = _extract_mdcev_forecast_params(
         results, b_reported, sigma, outside_good_gamma
     )
+    utility = _resolve_mdcev_utility(results, utility)
     nc = X_new.shape[1]
     nvarm = X_new.shape[2]
     nvargam = X_gam_new.shape[2]
@@ -163,13 +238,41 @@ def mdcev_predict(
     shares = np.zeros((N, nc), dtype=np.float64)
     rng    = np.random.default_rng(seed)
 
+    budget_arr = np.asarray(budget, dtype=np.float64).reshape(-1) if budget is not None else np.ones(N, dtype=np.float64)
+    if budget_arr.size == 1 and N != 1:
+        budget_arr = np.full(N, float(budget_arr[0]), dtype=np.float64)
+    if budget_arr.shape[0] != N:
+        raise ValueError("budget must have the same number of rows as X_new")
+
     for q in range(N):
         v_q = X_new[q] @ beta                                  # (nc,)
 
-        u_q = X_gam_new[q] @ xgam                             # (nc,)
+        Xg_q = X_gam_new[q]
+        if Xg_q.shape[0] == nc:
+            Xg_q = Xg_q[1:, :]
+        u_inside_q = Xg_q @ xgam                               # (nc-1,)
+        u_q = np.empty(nc, dtype=np.float64)
         u_q[0] = outside_good_gamma
-        gamma_q  = np.exp(u_q[1:])                            # (nc-1,)
-        price_q  = price_new[q]                               # (nc,)
+        u_q[1:] = u_inside_q
+        f1_q = np.exp(u_q)                                     # (nc,)
+        price_q = price_new[q]                                  # (nc,)
+
+        if utility == "linear":
+            as_draw = rng.gumbel(loc=0.0, scale=sigma, size=(n_draws, nc))
+            v_draw = np.exp(v_q[np.newaxis, :] + as_draw) / price_q[np.newaxis, :]
+            allocations = np.empty((n_draws, nc), dtype=np.float64)
+            for d in range(n_draws):
+                allocations[d, :] = _mdcev_linear_forecast_allocation(
+                    v_draw[d, :],
+                    price_q,
+                    f1_q,
+                    budget=float(budget_arr[q]),
+                    num_outside=1,
+                )
+            shares[q, :] = (allocations > 0.0).mean(axis=0)
+            continue
+
+        gamma_q  = np.exp(u_q[1:])                              # (nc-1,)
 
         # vtilde_{k,1} = (v_1 - ln p_1) - (v_k - ln p_k)  for k = 1..nc-1
         v1       = v_q[0] - np.log(price_q[0])
@@ -177,7 +280,6 @@ def mdcev_predict(
         a_q      = (v1 - v_inside).reshape(-1, 1)             # (nc-1, 1)
 
         m_est = max(1, int((a_q > 0).sum()))
-
         _, draws = simtradmdcev(
             a=a_q,
             m=m_est,
@@ -224,7 +326,15 @@ def prepare_mdcev_forecast_data(
     for name, val in zip(changevar, changeval):
         if name not in df_mod.columns:
             raise KeyError(f"change variable '{name}' not found in forecast data")
-        df_mod[name] = val
+        if isinstance(val, str):
+            if val not in df_mod.columns:
+                raise ValueError(
+                    f"Forecast override for '{name}' references column '{val}', "
+                    "which is not present in data."
+                )
+            df_mod[name] = df_mod[val].to_numpy()
+        else:
+            df_mod[name] = float(val)
 
     _ensure_special_cols(df_mod)
 
@@ -238,7 +348,7 @@ def prepare_mdcev_forecast_data(
     nvargam = gamma_spec.shape[1]
 
     X_new = np.zeros((n_obs, nc, nvarm), dtype=np.float64)
-    X_gam_new = np.zeros((n_obs, nc, nvargam), dtype=np.float64)
+    X_gam_new = np.zeros((n_obs, nc - 1, nvargam), dtype=np.float64)
     price_new = np.ones((n_obs, nc), dtype=np.float64)
 
     for k in range(nc):
@@ -246,13 +356,15 @@ def prepare_mdcev_forecast_data(
             col = utility_spec[k, j]
             if col in df_mod.columns:
                 X_new[:, k, j] = df_mod[col].to_numpy(dtype=np.float64)
-        for j in range(nvargam):
-            colg = gamma_spec[k, j]
-            if colg in df_mod.columns:
-                X_gam_new[:, k, j] = df_mod[colg].to_numpy(dtype=np.float64)
         avail_var = availability[k]
         if avail_var in df_mod.columns:
             price_new[:, k] = df_mod[avail_var].to_numpy(dtype=np.float64)
+
+    for k_inside, k in enumerate(range(1, nc), start=0):
+        for j in range(nvargam):
+            colg = gamma_spec[k_inside, j]
+            if colg in df_mod.columns:
+                X_gam_new[:, k_inside, j] = df_mod[colg].to_numpy(dtype=np.float64)
 
     if budget_col in df_mod.columns:
         budget = df_mod[budget_col].to_numpy(dtype=np.float64)
@@ -308,6 +420,7 @@ def mdcev_forecast(
     b_reported: NDArray | None = None,
     sigma: float | None = None,
     outside_good_gamma: float | None = None,
+    utility: str | None = None,
 ) -> NDArray:
     """Simulate MDCEV allocation forecasts for new observations.
 
@@ -326,6 +439,7 @@ def mdcev_forecast(
     b, sigma, outside_good_gamma = _extract_mdcev_forecast_params(
         results, b_reported, sigma, outside_good_gamma
     )
+    utility = _resolve_mdcev_utility(results, utility)
     nc = X_new.shape[1]
     nvarm = X_new.shape[2]
     nvargam = X_gam_new.shape[2]
@@ -357,9 +471,13 @@ def mdcev_forecast(
 
     N = X_new.shape[0]
     v = X_new @ beta
-    u = X_gam_new @ xgam
-
+    Xg = X_gam_new
+    if Xg.shape[1] == nc:
+        Xg = Xg[:, 1:, :]
+    u_inside = Xg @ xgam
+    u = np.empty((N, nc), dtype=np.float64)
     u[:, 0] = outside_good_gamma
+    u[:, 1:] = u_inside
 
     f1 = np.exp(u)
     rng = default_rng(seed)
@@ -375,13 +493,22 @@ def mdcev_forecast(
 
         rep_fc = np.zeros((N, nc), dtype=np.float64)
         for i in range(N):
-            rep_fc[i, :] = _mdcev_forecast_allocation(
-                v_draw[i, :],
-                price_new[i, :],
-                f1[i, :],
-                budget_arr[i],
-                num_outside=num_outside,
-            )
+            if utility == "linear":
+                rep_fc[i, :] = _mdcev_linear_forecast_allocation(
+                    v_draw[i, :],
+                    price_new[i, :],
+                    f1[i, :],
+                    budget_arr[i],
+                    num_outside=num_outside,
+                )
+            else:
+                rep_fc[i, :] = _mdcev_forecast_allocation(
+                    v_draw[i, :],
+                    price_new[i, :],
+                    f1[i, :],
+                    budget_arr[i],
+                    num_outside=num_outside,
+                )
         forecasts.append(rep_fc)
 
     return np.vstack(forecasts)
