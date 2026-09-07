@@ -365,20 +365,6 @@ class MixMNLModel(BaseModel):
         if method == "L-BFGS-B":
             options["ftol"] = ctrl.tol
 
-        iter_count = [0]
-
-        def _iter_callback(theta_k: NDArray) -> None:
-            if ctrl.verbose < 2:
-                return
-            obj_val, grad = est.objective(theta_k)
-            grad_norm = float(np.linalg.norm(np.asarray(grad, dtype=np.float64)))
-            print(
-                f"  iter={iter_count[0]:4d}  f={float(obj_val):+.12f}  "
-                f"||g||={grad_norm:.3e}"
-            )
-            print(theta_k)
-            iter_count[0] += 1
-
         res = sopt.minimize(
             est.objective, theta0, jac=True, method=method, options=options,
         )
