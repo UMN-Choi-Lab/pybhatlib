@@ -133,6 +133,38 @@ class TestMixMNLControlRoundTrip:
         assert np.all(np.isfinite(loglik))
         assert score.shape == (len(synthetic_mnl_data), layout.n_theta)
 
+    def test_full_reporting_keeps_fixed_corr_and_yj_with_zero_se(
+        self, synthetic_mnl_data
+    ):
+        ctrl = MixMNLControl(
+            normvar=("X1", "X2"),
+            randdiag=True,
+            n_rep=8,
+            verbose=0,
+            maxiter=25,
+            tol=1e-8,
+        )
+        model = MixMNLModel(synthetic_mnl_data, _ALTS, spec=_SPEC, control=ctrl)
+
+        results = model.fit()
+        names = results.param_names
+
+        assert "corr[X1,X2]" in names
+        corr_idx = names.index("corr[X1,X2]")
+        assert results.params[corr_idx] == pytest.approx(0.0, abs=1e-12)
+        assert results.se[corr_idx] == pytest.approx(0.0, abs=1e-12)
+
+        assert "lam[X1]" in names
+        lam1_idx = names.index("lam[X1]")
+        assert results.params[lam1_idx] == pytest.approx(1.0, abs=1e-12)
+        assert results.se[lam1_idx] == pytest.approx(0.0, abs=1e-12)
+
+        assert "sd[X2]" in names
+        sd2_idx = names.index("sd[X2]")
+        assert results.params[sd2_idx] > 0.0
+        assert np.isfinite(results.se[sd2_idx])
+        assert results.se[sd2_idx] > 0.0
+
     def test_observation_weights_are_averaged_by_person(self, synthetic_mnl_data):
         data = synthetic_mnl_data.iloc[:6].copy()
         data["pid"] = [0, 0, 1, 1, 1, 2]
@@ -208,6 +240,12 @@ class TestMixMNLResultsInterface:
             assert r.n_iterations == r.n_iter
         with pytest.warns(DeprecationWarning):
             assert r.ll_total == pytest.approx(r.loglik * r.n_obs)
+
+    def test_summary_includes_gradient_column(self):
+        r = _minimal_results()
+        text = r.summary()
+        assert "Gradient" in text
+        assert "1.0000" in text
 
     def test_legacy_construction_warns(self):
         # build the kwargs without ``params`` and inject the legacy ``b=``

@@ -263,13 +263,19 @@ class MixMNLModel(BaseModel):
         the scale (std-dev) vector ``exp(xscalrand)``, and ``lam`` the
         Yeo-Johnson powers ``2 cdlogit(xlam)`` in ``(0, 2)``.  Kernel-only
         parameters pass through unchanged.
+
+        When a model fixes the correlation matrix to the identity, the full
+        reporting vector still includes the off-diagonal correlations at their
+        fixed zero values — their SEs are zeroed downstream, but the vector must
+        preserve the canonical ordering and length.
         """
         rc = space.unpack(theta, spec, want_grad=False)
         sl = layout.slices()
 
         beta_r = np.asarray(rc.xmu, dtype=np.float64).reshape(-1)
-        if layout.n_rcor > 0:
-            rcor_r = vecndup(np.asarray(rc.omegastar, dtype=np.float64))
+        if spec.nrndcoef > 1:
+            rcor_matrix = np.asarray(rc.omegastar, dtype=np.float64)
+            rcor_r = vecndup(rcor_matrix)
         else:
             rcor_r = np.zeros(0, dtype=np.float64)
         scal_r = np.asarray(rc.wscalrand, dtype=np.float64).reshape(-1)
@@ -310,7 +316,10 @@ class MixMNLModel(BaseModel):
         """Reporting-parameter names in ``[beta | rcor | scal | lam]`` order."""
         names = list(self.var_names)
         rc_names = [self.var_names[int(p)] for p in spec.mixpos]
-        # correlation names: row-based upper-triangular pairs
+        # Keep the full reporting vector even when a fixed identity correlation is
+        # imposed. The pairwise terms are still reported at their fixed value 0,
+        # and the scale / YJ blocks remain in their canonical order.  This keeps
+        # the second free scale aligned with its natural label.
         for i in range(spec.nrndcoef):
             for j in range(i + 1, spec.nrndcoef):
                 names.append(f"corr[{rc_names[i]},{rc_names[j]}]")
@@ -355,6 +364,20 @@ class MixMNLModel(BaseModel):
                          "disp": ctrl.verbose >= 2}
         if method == "L-BFGS-B":
             options["ftol"] = ctrl.tol
+
+        iter_count = [0]
+
+        def _iter_callback(theta_k: NDArray) -> None:
+            if ctrl.verbose < 2:
+                return
+            obj_val, grad = est.objective(theta_k)
+            grad_norm = float(np.linalg.norm(np.asarray(grad, dtype=np.float64)))
+            print(
+                f"  iter={iter_count[0]:4d}  f={float(obj_val):+.12f}  "
+                f"||g||={grad_norm:.3e}"
+            )
+            print(theta_k)
+            iter_count[0] += 1
 
         res = sopt.minimize(
             est.objective, theta0, jac=True, method=method, options=options,

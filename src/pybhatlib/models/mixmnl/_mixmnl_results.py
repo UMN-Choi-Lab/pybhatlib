@@ -211,19 +211,20 @@ class MixMNLResults:
 
         header = (
             f"  {'Parameters':<16s} {'Estimates':>10s} {'Std. err.':>10s}"
-            f" {'Est./s.e.':>10s} {'Prob.':>10s}"
+            f" {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
         )
         lines.append(header)
-        lines.append("  " + "-" * 60)
+        lines.append("  " + "-" * 78)
 
         for i, name in enumerate(self.param_names):
             est = self.params[i] if i < len(self.params) else 0.0
             se = self.se[i] if i < len(self.se) else 0.0
             t = self.t_stat[i] if i < len(self.t_stat) else 0.0
             p = self.p_value[i] if i < len(self.p_value) else 0.0
+            g = self.gradient[i] if i < len(self.gradient) else 0.0
             lines.append(
                 f"  {name:<16s} {est:>10.4f} {se:>10.4f}"
-                f" {t:>10.3f} {p:>10.4f}"
+                f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
 
         lines.append("")
