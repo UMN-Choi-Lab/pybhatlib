@@ -24,6 +24,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from pybhatlib.utils._safe_reparam import safe_cholesky
+
 
 def radial_to_corr(theta: NDArray, K: int) -> NDArray:
     """Convert unconstrained parameters to PD correlation matrix.
@@ -369,7 +371,7 @@ def gnewcholparmcorscaled(
     n_theta = K * (K - 1) // 2
 
     # Upper-triangular Cholesky (U.T @ U = capomega) and its radial params.
-    L_lower = np.linalg.cholesky(capomega)
+    L_lower = safe_cholesky(capomega)[0]
     U = L_lower.T
     theta = revnewcholparmscaled(U, scal)
     c, s = _newchol_cs(theta, scal)
