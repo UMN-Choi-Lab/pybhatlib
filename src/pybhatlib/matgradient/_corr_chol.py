@@ -29,13 +29,15 @@ from pybhatlib.backend._array_api import array_namespace
 # former under the Python name ``matdupdiagonefull``); import and re-expose them.
 from pybhatlib.vecup._vec_ops import matdupdiagonefull as matndupdiagonefull
 from pybhatlib.vecup._vec_ops import vecndup
+from pybhatlib.utils._safe_reparam import safe_cholesky
 
 __all__ = ["gcholeskycor", "ggradchol", "matndupdiagonefull", "vecndup"]
 
 
 def _upper_chol(capomega: NDArray) -> NDArray:
     """Upper-triangular Cholesky ``U`` with ``U.T @ U == capomega`` (GAUSS chol)."""
-    return np.linalg.cholesky(np.asarray(capomega, dtype=np.float64)).T
+    L_lower = safe_cholesky(capomega)[0]
+    return L_lower.T
 
 
 def _offdiag_index(p: int, q: int, K: int) -> int:

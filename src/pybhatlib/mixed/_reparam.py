@@ -723,13 +723,28 @@ class EstimationSpace(ParamSpace):
                 gker = np.zeros((0, 0), dtype=np.float64)
                 gtempstar = gker
         elif joint:
+            if spec.active_corr_pairs and xrand.size != k * (k - 1) // 2:
+                full_pairs = [(i, j) for i in range(spec.nrndtot)
+                              for j in range(i + 1, spec.nrndtot)]
+                embedded = np.zeros(len(full_pairs), dtype=np.float64)
+                active_pos = {pair: idx for idx, pair in enumerate(spec.active_corr_pairs)}
+                for pos, pair in enumerate(full_pairs):
+                    if pair in active_pos:
+                        embedded[pos] = xrand[active_pos[pair]]
+                xrand = embedded
             cholall = newcholparmscaled(xrand, self.scal)
             omegastar_joint = np.asarray(cholall).T @ np.asarray(cholall)
             omegastar = omegastar_joint[:k, :k].copy()
+            if spec.randdiag and k > 1:
+                omegastar = np.eye(k, dtype=np.float64)
             if k > 1:
                 x11chol = safe_cholesky(omegastar)[0].T
                 if want_grad:
-                    gker, gscal = gnewcholparmcorscaled(omegastar, self.scal)
+                    if spec.randdiag or xrand.size != k * (k - 1) // 2:
+                        gker = np.zeros((k * (k - 1) // 2, k * (k - 1) // 2))
+                        gscal = np.zeros(k * (k - 1) // 2)
+                    else:
+                        gker, gscal = gnewcholparmcorscaled(omegastar, self.scal)
                     gtempstar = gker
             else:
                 x11chol = np.array(1.0)
@@ -813,7 +828,20 @@ class ReportingSpace(ParamSpace):
 
         xrand = theta[sl["rcor"]]
         # --- correlation from direct entries (MIXMNL 657-663) ---------------
-        if self.layout.n_rcor == 0 and k > 1:
+        if spec.active_corr_pairs and self.layout.n_rcor != spec.nrndtot * (spec.nrndtot - 1) // 2:
+            full_pairs = [(i, j) for i in range(spec.nrndtot)
+                          for j in range(i + 1, spec.nrndtot)]
+            full_corr = np.zeros(len(full_pairs), dtype=np.float64)
+            active_pos = {pair: idx for idx, pair in enumerate(spec.active_corr_pairs)}
+            for pos, pair in enumerate(full_pairs):
+                if pair in active_pos:
+                    full_corr[pos] = xrand[active_pos[pair]]
+            full = nearest_pd_correlation(matndupdiagonefull(full_corr))
+            omegastar = full[:k, :k].copy()
+            if spec.randdiag:
+                omegastar = np.eye(k, dtype=np.float64)
+            x11chol = safe_cholesky(omegastar)[0].T if k > 1 else np.array(1.0)
+        elif self.layout.n_rcor == 0 and k > 1:
             omegastar = np.eye(k, dtype=np.float64)
             x11chol = np.eye(k, dtype=np.float64)
         elif k > 1:
