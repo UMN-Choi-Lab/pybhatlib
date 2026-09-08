@@ -36,12 +36,14 @@ class MDCEVATEResult(ATEResultMixin):
     n_obs : int
         Number of observations.
     predicted_shares : NDArray, shape (nc,)
-        Mean predicted consumption share for each alternative at the
-        observed data values.
+        Predicted participation rate for each alternative at the observed data
+        values: the share of simulated allocations (over observations and
+        Monte Carlo replications of :func:`mdcev_forecast`) with positive
+        consumption. The outside good is always consumed, so its entry is 1.
     base_shares : NDArray or None, shape (nc,)
-        Predicted shares at the base level of the treatment variable.
+        Participation rates at the base level of the treatment variable.
     treatment_shares : NDArray or None, shape (nc,)
-        Predicted shares at the treatment level.
+        Participation rates at the treatment level.
     pct_ate : NDArray or None, shape (nc,)
         Percentage ATE = (treatment_shares - base_shares) / base_shares * 100.
     alternative_names : list[str] or None
@@ -77,7 +79,13 @@ def mdcev_ate(
     scenarios: "ScenarioSpec | None" = None,
     budget_col: str = "tot",
 ) -> MDCEVATEResult:
-    """Compute predicted consumption shares and ATE for the MDCEV model.
+    """Compute predicted participation rates and ATE for the MDCEV model.
+
+    "Shares" throughout are participation rates -- the fraction of simulated
+    allocations with positive consumption of each alternative, as printed by
+    the GAUSS BHATLIB forecasting drivers -- computed with
+    :func:`mdcev_forecast` (traditional or linear outside-good utility,
+    following ``results.control.utility``).
 
     Supports two modes:
 
@@ -90,7 +98,7 @@ def mdcev_ate(
     ``data`` (DataFrame) plus a dict/DataFrame of ``{column: scalar}`` overrides
     per scenario.  Each scenario's design matrices are rebuilt via
     :func:`prepare_mdcev_forecast_data` (both the utility and satiation
-    matrices) and mean shares are returned in ``shares_per_scenario`` (with a
+    matrices) and participation rates are returned in ``shares_per_scenario`` (with a
     ``.comparison(base, treatment)`` helper), mirroring :func:`mnp_ate`.
 
     Parameters

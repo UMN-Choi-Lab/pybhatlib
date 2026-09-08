@@ -193,56 +193,43 @@ class TestMDCEVModel:
         assert forecasts.shape == (2 * len(df), 3)
         assert np.all(forecasts >= 0)
 
-    def test_linear_allocation_matches_gauss_forec_template(self):
-        rng = np.random.default_rng(0)
+    def test_linear_allocation_solves_the_kkt_conditions(self):
+        """Independent check of the linear-MDCEV allocation (GAUSS ``forec``).
 
-        def gauss_template(v, prices, f1, budget, num_outside=1):
-            v = np.asarray(v, dtype=np.float64)
-            prices = np.asarray(prices, dtype=np.float64)
-            f1 = np.asarray(f1, dtype=np.float64)
-            n = v.size
-            fc_sorted = np.zeros(n, dtype=np.float64)
+        For the linear outside-good utility the KKT conditions give, with the
+        outside good as numeraire (``lambda = v_out``),
+        ``x_k = gamma_k * (v_k / lambda - 1)`` for every inside good with
+        ``v_k > lambda`` and ``x_k = 0`` otherwise; the outside good takes the
+        budget residual. The expected allocation is computed here from that
+        closed form, not from the implementation under test.
+        """
+        v = np.array([2.0, 5.0, 1.0, 3.0, 2.0])      # outside good first
+        f1 = np.array([0.0, 0.5, 2.0, 1.5, 0.7])     # gamma_k = exp(u_k)
+        prices = np.ones(5)
+        budget = 40.0
 
-            if num_outside <= 0 or num_outside >= n:
-                fc_sorted[:num_outside] = float(budget)
-                return fc_sorted
+        lam = v[0]
+        expected = np.zeros(5)
+        for k in range(1, 5):
+            if v[k] > lam:
+                expected[k] = f1[k] * (v[k] / lam - 1.0)
+        expected[0] = budget - expected[1:].sum()
 
-            outside_idx = np.arange(num_outside)
-            inside_idx = np.arange(num_outside, n)
-            sorted_inside = inside_idx[np.argsort(v[inside_idx])[::-1]]
-            sorted_slots = np.concatenate([outside_idx, sorted_inside])
+        out = _mdcev_linear_forecast_allocation(v, prices, f1, budget=budget, num_outside=1)
+        np.testing.assert_allclose(out, expected, rtol=1e-12, atol=1e-12)
+        assert out[2] == 0.0 and out[4] == 0.0       # v_k <= lambda: not consumed
+        assert np.isclose(out.sum(), budget)
 
-            v_sorted = np.empty(n, dtype=np.float64)
-            f_sorted = np.empty(n, dtype=np.float64)
-            v_sorted[outside_idx] = v[outside_idx]
-            f_sorted[outside_idx] = f1[outside_idx]
-            v_sorted[inside_idx] = v[sorted_inside]
-            f_sorted[inside_idx] = f1[sorted_inside]
+        # No inside good beats the outside good -> the whole budget is outside.
+        out_none = _mdcev_linear_forecast_allocation(
+            np.array([9.0, 1.0, 2.0]), np.ones(3), np.array([0.0, 1.0, 1.0]), budget=7.0,
+        )
+        np.testing.assert_allclose(out_none, [7.0, 0.0, 0.0])
 
-            lambda_val = v_sorted[num_outside - 1]
-            if v_sorted[num_outside] < lambda_val:
-                fc_sorted[outside_idx] = float(budget)
-                return fc_sorted
-
-            for j in range(num_outside, n):
-                if v_sorted[j] <= lambda_val:
-                    break
-                fc_sorted[j] = (v_sorted[j] / lambda_val - 1.0) * f_sorted[j]
-
-            fc_sorted[outside_idx] = float(budget) - fc_sorted[num_outside:].sum()
-
-            fc_orig = np.empty_like(fc_sorted)
-            fc_orig[sorted_slots] = fc_sorted
-            return fc_orig
-
-        for _ in range(25):
-            v = rng.uniform(0.1, 4.0, size=5)
-            prices = rng.uniform(0.5, 2.0, size=5)
-            f1 = rng.uniform(0.1, 3.0, size=5)
-            budget = float(rng.uniform(1.0, 15.0))
-            out = _mdcev_linear_forecast_allocation(v, prices, f1, budget=budget, num_outside=1)
-            expected = gauss_template(v, prices, f1, budget, num_outside=1)
-            assert np.allclose(out, expected, rtol=1e-10, atol=1e-10)
+        # Output is in the original good order whatever the internal sort by v.
+        perm = np.array([0, 3, 1, 4, 2])
+        out_perm = _mdcev_linear_forecast_allocation(v[perm], prices[perm], f1[perm], budget=budget)
+        np.testing.assert_allclose(out_perm, expected[perm], rtol=1e-12, atol=1e-12)
 
     def test_linear_predict_uses_observation_budget(self):
         b_reported = np.array([0.2, -0.4, 0.3, 0.5, -0.2, 1.0], dtype=np.float64)

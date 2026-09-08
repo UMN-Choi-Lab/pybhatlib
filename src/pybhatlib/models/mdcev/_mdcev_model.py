@@ -77,7 +77,7 @@ class MDCEVModel(BaseModel):
     ...     alternatives=["alt_out", "Esc", "Ho", "Soc", "AR", "Eo"],
     ...     availability=None,
     ...     utility_spec={"ASC_Esc": {...}, ...},
-    ...     gamma_spec={"G_Out": {...}, ...},
+    ...     gamma_spec={"G_Esc": {...}, ...},   # inside goods only
     ...     control=ctrl,
     ... )
     >>> results = model.fit()
