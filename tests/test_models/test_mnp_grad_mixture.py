@@ -74,65 +74,59 @@ def _fd_gradient(
 
 
 class TestMixtureNLLConsistency:
-    """Analytic NLL matches mnp_loglik with method='me' for mixture models."""
+    """Analytic NLL matches mnp_loglik with method='me' for mixture models.
+
+    Shared-coefficients layout (docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md):
+    only the variables in ``ranvar_indices`` get a segment-specific coefficient;
+    every other beta is shared with segment 1. Each extra segment therefore adds
+    ``len(ranvar_indices)`` betas plus its own Omega block.
+    """
+
+    def _check(self, theta, X, y, avail, I, n_vars, control, ranvar_indices):
+        nll_analytic, _ = mnp_analytic_gradient(
+            theta, X, y, avail, I, n_vars, control, ranvar_indices,
+        )
+        nll_loglik = mnp_loglik(
+            theta, X, y, avail, I, n_vars, control, ranvar_indices,
+        )
+        np.testing.assert_allclose(nll_analytic, nll_loglik, atol=1e-12, rtol=1e-10)
 
     def test_nseg2_iid_nll(self):
-        """nseg=2, IID: NLL from analytic matches mnp_loglik."""
-        N, I, n_vars = 10, 3, 2
-        X, y, avail = _make_data(N, I, n_vars)
-        # Layout: beta_1(2) + seg_params(1) + beta_2(2) = 5
-        n_params = count_params(n_vars, I, MNPControl(iid=True, nseg=2))
-        assert n_params == 5
-        theta = np.array([0.3, -0.2, 0.5, 0.1, -0.3])
-        control = MNPControl(iid=True, nseg=2, method="me")
-
-        nll_analytic, _ = mnp_analytic_gradient(
-            theta, X, y, avail, I, n_vars, control,
-        )
-        nll_loglik = mnp_loglik(
-            theta, X, y, avail, I, n_vars, control,
-        )
-        np.testing.assert_allclose(nll_analytic, nll_loglik, atol=1e-12, rtol=1e-10)
-
-    def test_nseg2_flexible_nll(self):
-        """nseg=2, flexible covariance: NLL from analytic matches mnp_loglik."""
-        N, I, n_vars = 10, 3, 2
-        X, y, avail = _make_data(N, I, n_vars)
-        # GAUSS first-diff-var=1 kernel: dim=I-1=2, free scales = I-2 = 1
-        # (the first differenced variance is pinned to 1, not estimated).
-        # Layout: beta_1(2) + lambda(scale01 + corr01 = 2) + seg_params(1)
-        #         + beta_2(2) = 7
-        control = MNPControl(iid=False, heteronly=False, nseg=2, method="me")
-        n_params = count_params(n_vars, I, control)
-        assert n_params == 7
-        theta = np.array([0.3, -0.2, 0.1, 0.0, 0.5, 0.1, -0.3])
-
-        nll_analytic, _ = mnp_analytic_gradient(
-            theta, X, y, avail, I, n_vars, control,
-        )
-        nll_loglik = mnp_loglik(
-            theta, X, y, avail, I, n_vars, control,
-        )
-        np.testing.assert_allclose(nll_analytic, nll_loglik, atol=1e-12, rtol=1e-10)
-
-    def test_nseg2_mix_diag_nll(self):
-        """nseg=2, IID + diagonal random coeff: NLL consistency."""
+        """nseg=2, IID kernel, one diagonal random coefficient."""
         N, I, n_vars = 10, 3, 2
         X, y, avail = _make_data(N, I, n_vars)
         ranvar_indices = [0]
-        # Layout: beta_1(2) + omega_1(1) + seg_params(1) + beta_2(2) + omega_2(1) = 7
         control = MNPControl(iid=True, mix=True, randdiag=True, nseg=2, method="me")
-        n_params = count_params(n_vars, I, control, ranvar_indices)
-        assert n_params == 7
-        theta = np.array([0.3, -0.2, -0.5, 0.5, 0.1, -0.3, -0.4])
+        # Layout: beta_1(2) + omega_1(1) + seg_params(1) + beta_2[ranvar](1) + omega_2(1) = 6
+        assert count_params(n_vars, I, control, ranvar_indices) == 6
+        theta = np.array([0.3, -0.2, -0.5, 0.5, 0.1, -0.4])
+        self._check(theta, X, y, avail, I, n_vars, control, ranvar_indices)
 
-        nll_analytic, _ = mnp_analytic_gradient(
-            theta, X, y, avail, I, n_vars, control, ranvar_indices,
+    def test_nseg2_flexible_nll(self):
+        """nseg=2, flexible covariance, one diagonal random coefficient."""
+        N, I, n_vars = 10, 3, 2
+        X, y, avail = _make_data(N, I, n_vars)
+        ranvar_indices = [0]
+        control = MNPControl(
+            iid=False, heteronly=False, mix=True, randdiag=True, nseg=2, method="me",
         )
-        nll_loglik = mnp_loglik(
-            theta, X, y, avail, I, n_vars, control, ranvar_indices,
-        )
-        np.testing.assert_allclose(nll_analytic, nll_loglik, atol=1e-12, rtol=1e-10)
+        # GAUSS first-diff-var=1 kernel: dim=I-1=2, free scales = I-2 = 1, corr = 1.
+        # Layout: beta_1(2) + lambda(2) + omega_1(1) + seg_params(1)
+        #         + beta_2[ranvar](1) + omega_2(1) = 8
+        assert count_params(n_vars, I, control, ranvar_indices) == 8
+        theta = np.array([0.3, -0.2, 0.1, 0.0, -0.5, 0.5, 0.1, -0.4])
+        self._check(theta, X, y, avail, I, n_vars, control, ranvar_indices)
+
+    def test_nseg2_mix_full_nll(self):
+        """nseg=2, IID kernel, two random coefficients with a full Omega."""
+        N, I, n_vars = 10, 3, 2
+        X, y, avail = _make_data(N, I, n_vars)
+        ranvar_indices = [0, 1]
+        control = MNPControl(iid=True, mix=True, randdiag=False, nseg=2, method="me")
+        # Layout: beta_1(2) + omega_1(3) + seg_params(1) + beta_2[ranvars](2) + omega_2(3) = 11
+        assert count_params(n_vars, I, control, ranvar_indices) == 11
+        theta = np.array([0.3, -0.2, -0.5, 0.1, -0.4, 0.5, 0.1, -0.3, -0.6, 0.05, -0.3])
+        self._check(theta, X, y, avail, I, n_vars, control, ranvar_indices)
 
 
 # ---------------------------------------------------------------------------

@@ -110,39 +110,17 @@ def test_table2_model_c_random_coef(table2_targets, travelmode_path):
 
 
 # Current Python baseline for Model (d) mixture — pins refactor drift.
-# Paper target is -634.975 (±2); current Python gives ~-624.403 with the
-# MNP-006 (M1) ranvars auto-expansion (replicates each base ranvar across
-# segments) under the GAUSS first-diff-var=1 homogeneous kernel.
-#
-# The baseline moved from -627.885 to -624.403 when the kernel convention
-# changed to first-diff-var=1 (one fewer free scale per segment, scale01
-# pinned to 1.0). This is a local-optimum shift driven by the new
-# parameterization, NOT a regression: the analytic gradient matches finite
-# differences at the converged theta, and all five published-table LL anchors
-# (IID/flexible/+AGE45/random-coef) are preserved exactly. The rank-deficient
-# mixture (shared X duplicates the OVTT column across segments) has multiple
-# nearby optima, so the converged point depends on the kernel geometry. The
-# residual gap to the paper target remains structural — the GAUSS run has a
-# 1-D random coefficient per segment with segment-specific OVTT columns, while
-# pybhatlib's shared X forces a 2-D coefficient over duplicate columns. Closing
-# it requires the shared/varying refactor in
-# ``docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md`` (a separate phase).
-_MODEL_D_BASELINE_LL = -624.403
+# Paper target is -634.975 (±2); Python gives -634.938 under the
+# shared/varying coefficient layout (only ``ranvars`` get a per-segment
+# coefficient; every other beta is shared) with the GAUSS first-diff-var=1
+# homogeneous kernel. Before that refactor every beta was duplicated per
+# segment and the fit stalled at ~-624.4 with a degenerate segment weight.
+_MODEL_D_BASELINE_LL = -634.938
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason=(
-        "Mixture shared/varying coefficient refactor pending; current LL "
-        "~-627.9 vs paper -634.975. M1 ergonomic auto-expansion landed; "
-        "the residual gap is structural."
-    ),
-    strict=False,
-)
 def test_table2_model_d_mixture_paper_target(table2_targets, travelmode_path):
-    """Asserts BHATLIB paper Model (d) LL. Expected to fail until the
-    shared/varying coefficient refactor lands.
-    """
+    """Asserts the BHATLIB paper Model (d) LL (-634.975 ± tol)."""
     target = table2_targets["models"]["d_mixture"]
     tol = target.get("ll_tolerance", 2.0)
     results = _fit_model(
