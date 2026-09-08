@@ -228,6 +228,10 @@ class MixingSpec:
     normker: bool = True
     nvargam: int = 0
     fix_location_zero: tuple[str, ...] = ()
+    active_corr_pairs: tuple[tuple[int, int], ...] = ()
+    randdiag: bool = False
+    copula: bool = False
+    iid: bool = False
 
     @classmethod
     def from_var_names(
@@ -244,6 +248,8 @@ class MixingSpec:
         normker: bool = True,
         nvargam: int = 0,
         randdiag: bool = False,
+        copula: bool = False,
+        iid: bool = False,
         fix_location_zero: Sequence[str] = (),
     ) -> "MixingSpec":
         """Build a :class:`MixingSpec` from the GAUSS variable-name lists.
@@ -363,6 +369,16 @@ class MixingSpec:
         n_extra = kernel_dim + nord
         nrndtot = nrndcoef + n_extra
         nrndtcor = 0 if randdiag else nrndtot * (nrndtot - 1) // 2
+        active_corr_pairs = tuple(
+            (i, j)
+            for i in range(nrndtot)
+            for j in range(i + 1, nrndtot)
+            if (
+                (i < nrndcoef and j < nrndcoef and not randdiag)
+                or (i >= nrndcoef and j >= nrndcoef and not iid)
+                or ((i < nrndcoef) != (j < nrndcoef) and copula)
+            )
+        )
         # Free kernel-scale params (GAUSS MNP nc-2): one fewer than kernel_dim
         # because the sum-of-squares reparam normalizes wker to unit norm. MORP
         # fixes wker = ones (GAUSS line 617), so it declares no kernel-scale
@@ -521,6 +537,10 @@ class MixingSpec:
             normker=normker,
             nvargam=int(nvargam),
             fix_location_zero=fixed_names,
+            active_corr_pairs=active_corr_pairs,
+            randdiag=bool(randdiag),
+            copula=bool(copula),
+            iid=bool(iid),
         )
 
 

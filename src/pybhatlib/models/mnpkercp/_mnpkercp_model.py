@@ -57,6 +57,7 @@ from pybhatlib.models._base import BaseModel
 from pybhatlib.models.mnpkercp._mnpkercp_control import MNPKerCPControl
 from pybhatlib.models.mnpkercp._mnpkercp_kernel import MvncdKernel
 from pybhatlib.models.mnpkercp._mnpkercp_results import MNPKerCPResults
+from pybhatlib.utils._logistic import logitmod
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
 
@@ -198,11 +199,13 @@ class MNPKerCPModel(BaseModel):
             varpos=tuple(ctrl.varpos),
             kernel_dim=self.n_alts - 1,
             randdiag=ctrl.randdiag,
+            copula=ctrl.copula,
+            iid=ctrl.iid,
             fix_location_zero=tuple(ctrl.fix_location_zero),
         )
         layout = ParamLayout(
             n_beta=spec.n_beta,
-            n_rcor=spec.nrndtcor,     # joint rc + differenced-kernel correlation
+            n_rcor=len(spec.active_corr_pairs),
             n_scal=spec.nscale,
             n_lam=spec.numlam,
             n_kern=0 if ctrl.iid else spec.n_kern,
@@ -250,6 +253,7 @@ class MNPKerCPModel(BaseModel):
         kernel = MvncdKernel(
             self.n_alts, spec.nrndcoef, copula=ctrl.copula, scal=ctrl.scal,
             iid=ctrl.iid,
+            active_corr_pairs=spec.active_corr_pairs,
             method=ctrl.method,
         )
         cfg = MSLConfig(
@@ -291,33 +295,45 @@ class MNPKerCPModel(BaseModel):
 
         ``beta`` becomes the sign-reparameterized coefficients, ``rcor`` the
         joint correlation off-diagonal entries (row-based upper-triangular),
-        ``scal`` the scale (std-dev) vector ``exp(xscalrand)``, ``kern`` the raw
-        kernel-scale parameters (reported as-is, GAUSS ``xscalkerfinal``), and
+        ``scal`` the scale (std-dev) vector ``exp(xscalrand)``, ``kern`` the
+        natural free kernel-error scales ``sqrt(logitmod([0,xscalker]))[1:]``, and
         ``lam`` the Yeo-Johnson powers ``2 cdlogit(xlam)`` in ``(0, 2)``.
         """
         rc = space.unpack(theta, spec, want_grad=False)
         sl = layout.slices()
 
         beta_r = np.asarray(rc.xmu, dtype=np.float64).reshape(-1)
+        n_full_rcor = spec.nrndtot * (spec.nrndtot - 1) // 2
+        rcor_r = np.zeros(n_full_rcor, dtype=np.float64)
         if layout.n_rcor > 0:
-            # joint correlation over nrndtot: rebuild from the rcor block.
-            cholall = newcholparmscaled(theta[sl["rcor"]], space.scal)
+            # Active entries are reported in full vecndup order; fixed entries
+            # remain present at zero for a stable reporting contract.
+            full_pairs = [(i, j) for i in range(spec.nrndtot)
+                          for j in range(i + 1, spec.nrndtot)]
+            active_theta = np.asarray(theta[sl["rcor"]], dtype=np.float64)
+            full_theta = np.zeros(len(full_pairs), dtype=np.float64)
+            active_pos = {pair: idx for idx, pair in enumerate(spec.active_corr_pairs)}
+            for pos, pair in enumerate(full_pairs):
+                if pair in active_pos:
+                    full_theta[pos] = active_theta[active_pos[pair]]
+            cholall = newcholparmscaled(full_theta, space.scal)
             omega_joint = np.asarray(cholall).T @ np.asarray(cholall)
-            rcor_r = vecndup(omega_joint)
-        else:
-            rcor_r = np.zeros(0, dtype=np.float64)
+            omega_vec = vecndup(omega_joint)
+            for pos, pair in enumerate(full_pairs):
+                if pair in active_pos:
+                    rcor_r[pos] = omega_vec[pos]
         scal_r = np.asarray(rc.wscalrand, dtype=np.float64).reshape(-1)
-        kern_r = np.asarray(theta[sl["kern"]], dtype=np.float64).reshape(-1)
+        if layout.n_kern:
+            kernel_logits = np.concatenate([
+                np.zeros(1, dtype=np.float64),
+                np.asarray(theta[sl["kern"]], dtype=np.float64),
+            ])
+            kern_r = np.sqrt(logitmod(kernel_logits))[1:]
+        else:
+            kern_r = np.zeros(0, dtype=np.float64)
         lam_r = np.asarray(rc.xlamrnd, dtype=np.float64).reshape(-1)
 
-        out = np.zeros(layout.n_theta, dtype=np.float64)
-        blocks = {
-            "beta": beta_r, "rcor": rcor_r, "scal": scal_r,
-            "kern": kern_r, "lam": lam_r,
-        }
-        for name, s in sl.items():
-            out[s] = blocks[name]
-        return out
+        return np.concatenate([beta_r, rcor_r, scal_r, kern_r, lam_r])
 
     def _reporting_jacobian(
         self,
@@ -346,9 +362,13 @@ class MNPKerCPModel(BaseModel):
     def _param_names(self, spec: MixingSpec, layout: ParamLayout) -> list[str]:
         """Reporting-parameter names in the physical ``theta`` block order."""
         rc_names = [self.var_names[int(p)] for p in spec.mixpos]
-        # joint correlation labels: random-coef names then kernel-error dims.
+        # The kernel dimensions are latent errors relative to the first
+        # alternative, not alternative-specific coefficients. They need
+        # explicit labels because the joint correlation block includes
+        # RC-kernel and kernel-kernel pairs.
         joint_names = list(rc_names) + [
-            f"ker{d + 1}" for d in range(spec.kernel_dim)
+            f"ker[{self.alternatives[d + 1]}-{self.alternatives[0]}]"
+            for d in range(spec.kernel_dim)
         ]
         beta = list(self.var_names)
         rcor = [
@@ -356,13 +376,21 @@ class MNPKerCPModel(BaseModel):
             for i in range(spec.nrndtot)
             for j in range(i + 1, spec.nrndtot)
         ]
-        scal = [f"sd[{nm}]" for nm in rc_names]
-        kern = [f"kernscale{i + 1:02d}" for i in range(spec.n_kern)]
+        scal = [f"scal[{nm}]" for nm in rc_names]
+        # The first differenced kernel error is the normalized reference scale
+        # (xscalker_full[0]); free scales start at error coordinate 1.
+        kern = [
+            f"kerscal[{self.alternatives[i + 2]}-{self.alternatives[0]}]"
+            for i in range(spec.n_kern)
+        ]
         lam = [f"lam[{nm}]" for nm in rc_names]
-        blocks = {"beta": beta, "rcor": rcor, "scal": scal, "kern": kern, "lam": lam}
-        names: list[str] = [""] * layout.n_theta
-        for name, s in layout.slices().items():
-            names[s] = blocks[name]
+        names = beta + rcor + scal + kern + lam
+        n_full_rcor = spec.nrndtot * (spec.nrndtot - 1) // 2
+        expected = spec.n_beta + n_full_rcor + spec.nscale + spec.n_kern + spec.numlam
+        if len(names) != expected or any(not name for name in names):
+            raise RuntimeError(
+                "MNPKerCP reporting names do not cover the parameter layout"
+            )
         return names
 
     # ------------------------------------------------------------------
@@ -424,8 +452,23 @@ class MNPKerCPModel(BaseModel):
         if method == "L-BFGS-B":
             options["ftol"] = ctrl.tol
 
+        iter_count = [0]
+
+        def _iter_callback(theta_k: NDArray) -> None:
+            if ctrl.verbose < 2:
+                return
+            obj_val, grad = est.objective(theta_k)
+            grad_norm = float(np.linalg.norm(np.asarray(grad, dtype=np.float64)))
+            print(
+                f"  iter={iter_count[0]:4d}  f={float(obj_val):+.12f}  "
+                f"||g||={grad_norm:.3e}"
+            )
+            print(theta_k)
+            iter_count[0] += 1
+
+
         res = sopt.minimize(
-            est.objective, theta0, jac=True, method=method, options=options,
+            est.objective, theta0, jac=True, method=method, options=options, callback = _iter_callback if ctrl.verbose >= 2 else None,
         )
         theta_hat = np.asarray(res.x, dtype=np.float64)
 

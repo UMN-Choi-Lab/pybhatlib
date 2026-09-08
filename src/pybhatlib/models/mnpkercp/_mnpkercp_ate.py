@@ -145,11 +145,42 @@ def _prepare_at_params(
     est = model._build_estimator(spec, layout, panel, draws=draws, space=space)
 
     params_r = np.asarray(params, dtype=np.float64).ravel()
+    n_full_rcor = spec.nrndtot * (spec.nrndtot - 1) // 2
+    full_reporting_n = (
+        spec.n_beta + n_full_rcor + spec.nscale + spec.n_kern + spec.numlam
+    )
+    if params_r.shape[0] == full_reporting_n and n_full_rcor != layout.n_rcor:
+        # Results retain fixed correlation entries for reporting, while the
+        # estimator consumes only active pairs.
+        beta_end = spec.n_beta
+        corr_end = beta_end + n_full_rcor
+        full_pairs = [(i, j) for i in range(spec.nrndtot)
+                      for j in range(i + 1, spec.nrndtot)]
+        active_pos = {pair: idx for idx, pair in enumerate(spec.active_corr_pairs)}
+        compact_corr = np.zeros(layout.n_rcor, dtype=np.float64)
+        for pos, pair in enumerate(full_pairs):
+            if pair in active_pos:
+                compact_corr[active_pos[pair]] = params_r[beta_end + pos]
+        params_r = np.concatenate([
+            params_r[:beta_end], compact_corr, params_r[corr_end:]
+        ])
     if params_r.shape[0] != layout.n_theta:
         raise ValueError(
             f"params has length {params_r.shape[0]}, expected {layout.n_theta} "
             f"for the reporting-space [beta | rcor | scal | kern | lam] layout"
         )
+
+    if layout.n_kern:
+        # Fitted results report natural free scales w[1:]. The internal
+        # ReportingSpace/kernel path consumes the unconstrained logits, where
+        # softmax([0, logits]) == [1 - sum(w[1:]^2), w[1:]^2].
+        kern_sl = layout.slices()["kern"]
+        free_scales = params_r[kern_sl]
+        probabilities = np.square(free_scales)
+        reference = 1.0 - float(probabilities.sum())
+        if reference <= 0.0 or np.any(probabilities <= 0.0):
+            raise ValueError("reported kernel scales must have positive squared-sum reference")
+        params_r[kern_sl] = np.log(probabilities / reference)
 
     model._theta_hat = params_r
     model._est = est

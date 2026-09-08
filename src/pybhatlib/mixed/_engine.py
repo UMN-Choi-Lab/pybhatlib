@@ -522,7 +522,41 @@ class MixedMSLEstimator:
         nrndtot = omega_full.shape[0]
         n_free = nrndtot * (nrndtot - 1) // 2
 
-        if n_free != layout.n_rcor:  # defensive: layout must match the joint size
+        active_pairs = tuple(self.spec.active_corr_pairs)
+        if (not self.spec.copula and active_pairs
+            and len(active_pairs) != layout.n_rcor
+            and layout.n_rcor != n_free):
+            return np.zeros((Q, layout.n_rcor), dtype=np.float64)
+
+        if (not self.spec.copula and active_pairs
+            and len(active_pairs) == layout.n_rcor):
+            direct = np.asarray(kev.dlogp_domega, dtype=np.float64)
+            full_pairs = [(p, q) for p in range(nrndtot)
+                          for q in range(p + 1, nrndtot)]
+            full_pos = {pair: idx for idx, pair in enumerate(full_pairs)}
+            out = np.zeros((Q, layout.n_rcor), dtype=np.float64)
+            # Kernel block: direct covariance score chained through its own
+            # radial correlation parameterization.
+            kernel_pairs = [pair for pair in active_pairs if pair[0] >= k]
+            if kernel_pairs:
+                kd = nrndtot - k
+                omega_kernel = omega_full[k:, k:]
+                gk, _ = gnewcholparmcorscaled(omega_kernel, scal)
+                direct_kernel = direct[:, [full_pos[pair] for pair in kernel_pairs]]
+                # active kernel pairs are row-ordered and occupy the kernel map
+                kcols = [active_pairs.index(pair) for pair in kernel_pairs]
+                out[:, kcols] = direct_kernel @ gk.T
+            # Random-coefficient utility path, when that block is active.
+            rc_pairs = [pair for pair in active_pairs if pair[1] < k]
+            if rc_pairs and jac.df1randdx11chol.shape[1] > 0:
+                omega_rc = omega_full[:k, :k]
+                grc, _ = gnewcholparmcorscaled(omega_rc, scal)
+                chol_cot = np.einsum("qkr,qr->qk", jac.df1randdx11chol, df1_A)
+                rc_corr = chol_cot @ np.linalg.inv(gcholeskycor(omega_rc)).T
+                out[:, [active_pairs.index(pair) for pair in rc_pairs]] = rc_corr @ grc.T
+            return out
+
+        if n_free != layout.n_rcor:  # defensive: full-correlation layout
             return np.zeros((Q, layout.n_rcor), dtype=np.float64)
 
         # (1) kernel's direct joint-correlation gradient (errbeta3 fixed).

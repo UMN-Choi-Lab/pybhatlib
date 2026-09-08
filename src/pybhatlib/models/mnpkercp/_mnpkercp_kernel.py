@@ -163,7 +163,7 @@ class MvncdKernel:
 
     def __init__(
         self, nc: int, nrndcoef: int, *, copula: bool = False, scal: float = 1.0,
-        iid: bool = False,
+        iid: bool = False, active_corr_pairs: tuple[tuple[int, int], ...] | None = None,
         method: str = "ovus",
     ) -> None:
         if nc < 2:
@@ -180,6 +180,7 @@ class MvncdKernel:
         self.copula: bool = bool(copula)
         self.scal: float = float(scal)
         self.iid: bool = bool(iid)
+        self.active_corr_pairs = active_corr_pairs
         self.method: str = str(method).lower()
 
     # ------------------------------------------------------------------
@@ -224,6 +225,16 @@ class MvncdKernel:
         if layout.n_rcor == 0 and nrndtot > 1:
             omegastar = np.eye(nrndtot, dtype=np.float64)
         elif nrndtot > 1:
+            pairs = self.active_corr_pairs
+            if pairs is not None and len(xrand) != nrndtot * (nrndtot - 1) // 2:
+                full_pairs = [(i, j) for i in range(nrndtot)
+                              for j in range(i + 1, nrndtot)]
+                embedded = np.zeros(len(full_pairs), dtype=np.float64)
+                active_pos = {pair: idx for idx, pair in enumerate(pairs)}
+                for pos, pair in enumerate(full_pairs):
+                    if pair in active_pos:
+                        embedded[pos] = xrand[active_pos[pair]]
+                xrand = embedded
             cholall = newcholparmscaled(xrand, self.scal)
             omegastar = np.asarray(cholall).T @ np.asarray(cholall)
         else:  # single random element -> unit correlation
@@ -389,7 +400,7 @@ class MvncdKernel:
         # Joint-correlation gradient: only emitted for an active copula.
         dlogp_domega = (
             np.zeros((n_obs, n_free), dtype=np.float64)
-            if (self.copula and want_grad)
+            if (want_grad and (self.copula or (not self.iid and kd > 1)))
             else None
         )
 
@@ -465,6 +476,19 @@ class MvncdKernel:
                 dPdwker = 2.0 * np.diag(YW @ Gxi3)           # (nc-1,)
                 dlnPdwker = dPdwker / P
                 dlogp_dkparams[i] = kstate.dwker_dxscal @ dlnPdwker  # (n_kern,)
+
+            # Unconditional kernel covariance path.  With copula disabled,
+            # kernel-kernel correlations remain estimable whenever iid=False.
+            if dlogp_domega is not None and not self.copula and not self.iid:
+                Gcov = Msubq.T @ (GxiP / P) @ Msubq
+                Gxi3 = N.T @ Gcov @ N
+                Ginner = kstate.wdiagker @ Gxi3 @ kstate.wdiagker
+                pairs = [(a, b) for a in range(nrndtot)
+                         for b in range(a + 1, nrndtot)]
+                for a in range(kd):
+                    for b in range(a + 1, kd):
+                        pair = (k + a, k + b)
+                        dlogp_domega[i, pairs.index(pair)] = 2.0 * Ginner[a, b]
 
             # --- joint-correlation path (copula): d lnP / d omegastar ---
             # Two contributions funnel through ``omegastar`` while ``errbeta3``
