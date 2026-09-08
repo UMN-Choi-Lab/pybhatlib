@@ -39,6 +39,7 @@ _FIXTURE = os.path.join(
     _REPO, "tests", "fixtures", "mixed", "mdcev", "scag_converged"
 )
 _DATA_CANDIDATES = [
+    os.path.join(_REPO, "examples", "data", "Workshop_SCAG_Est.csv"),   # shipped
     os.path.join(_REPO, "0714_UTA_request", "Workshop_SCAG_Est.csv"),
     os.path.join(_FIXTURE, "Workshop_SCAG_Est.csv"),
 ]
