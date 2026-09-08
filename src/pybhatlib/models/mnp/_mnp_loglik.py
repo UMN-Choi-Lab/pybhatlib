@@ -17,8 +17,6 @@ reused across observations.
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 from numpy.typing import NDArray
 
@@ -27,6 +25,7 @@ from pybhatlib.gradmvn._mvncd import mvncd, mvncd_log_batch
 from pybhatlib.matgradient._spherical import theta_to_corr
 from pybhatlib.models.mnp._mnp_control import MNPControl
 from pybhatlib.models.mnp._mnp_grad_analytic import mnp_analytic_gradient
+from pybhatlib.utils._safe_reparam import safe_cholesky, safe_exp
 
 
 def mnp_loglik(
@@ -578,12 +577,12 @@ def _build_lambda(
 
     if control.heteronly:
         # Heteroscedastic only: xscal = [1, exp(free_1), ...]; corr = I.
-        free = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+        free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
         xscal = np.concatenate([[1.0], free])
         return np.diag(xscal ** 2)
 
     # Full covariance: free scales + correlations via spherical parameterization.
-    free = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+    free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
     xscal = np.concatenate([[1.0], free])
 
     n_corr = dim * (dim - 1) // 2
@@ -608,7 +607,7 @@ def _build_omega_cholesky(
 
     if control.randdiag:
         # Diagonal: L = diag(exp(params))
-        return np.diag(np.exp(omega_params[:n_rand]))
+        return np.diag(safe_exp(omega_params[:n_rand]))
 
     # Full lower triangular Cholesky
     L = np.zeros((n_rand, n_rand), dtype=np.float64)
@@ -896,11 +895,11 @@ def _lambda_par_to_unpar(
     n_scale = max(dim - 1, 0)  # I-2 free scales
 
     if control.heteronly:
-        scales = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+        scales = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
         return scales
 
     # Full: log free-scales + angle-thetas -> free-scales + corrs.
-    scales = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+    scales = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params) > n_scale:
@@ -922,7 +921,7 @@ def _omega_par_to_unpar(
     n_rand = len(ranvar_indices)
     if control.randdiag:
         # Diagonal: par stores log(stddev), unpar stores variance.
-        return np.exp(2.0 * omega_params[:n_rand])
+        return safe_exp(2.0 * omega_params[:n_rand])
 
     L = _build_omega_cholesky(omega_params, ranvar_indices, control)
     Omega = L @ L.T
@@ -1271,7 +1270,7 @@ def mnp_loglik_unpar(
         Omega = _build_omega_direct(
             params["omega_params"], ranvar_indices, control,
         )
-        Omega_L = _safe_cholesky(Omega)
+        Omega_L = safe_cholesky(Omega)[0]
 
     if control.nseg <= 1:
         total_ll = _sequential_loglik_single_segment(
@@ -1329,7 +1328,7 @@ def _per_obs_loglik_unpar(
         Omega = _build_omega_direct(
             params["omega_params"], ranvar_indices, control,
         )
-        Omega_L = _safe_cholesky(Omega)
+        Omega_L = safe_cholesky(Omega)[0]
 
     # For mixture models, pre-compute per-segment Cholesky factors once here
     # (they depend only on theta, not on per-observation X_q).  Avoids
@@ -1342,7 +1341,7 @@ def _per_obs_loglik_unpar(
             Omega_1 = _build_omega_direct(
                 params["omega_params"], ranvar_indices, control,
             )
-            precomputed_omega_L.append(_safe_cholesky(Omega_1))
+            precomputed_omega_L.append(safe_cholesky(Omega_1)[0])
         else:
             precomputed_omega_L.append(None)
         # Segments 2..nseg
@@ -1352,7 +1351,7 @@ def _per_obs_loglik_unpar(
                 Omega_h = _build_omega_direct(
                     seg_omegas[h - 1], ranvar_indices, control,
                 )
-                precomputed_omega_L.append(_safe_cholesky(Omega_h))
+                precomputed_omega_L.append(safe_cholesky(Omega_h)[0])
             else:
                 precomputed_omega_L.append(None)
 
@@ -1440,56 +1439,6 @@ def _unpack_params_unpar(
     return params
 
 
-def _safe_cholesky(M: np.ndarray, jitter: float = 1e-12) -> np.ndarray:
-    """Cholesky with jitter fallback for near-PSD matrices.
-
-    The unparameterized form may produce slightly non-PD covariance matrices
-    during finite differencing (perturbing direct entries can violate PD
-    constraints that the parameterization enforces by construction). Adds a
-    small diagonal jitter on failure.
-
-    A ``RuntimeWarning`` is emitted when the successful jitter level exceeds
-    ``1e-8`` because at that magnitude the decomposition perturbs the input
-    matrix non-trivially and the resulting score may be biased.  The warning
-    includes the actual jitter level used and indicates that the matrix is
-    near-singular.
-    """
-    M = 0.5 * (M + M.T)
-    try:
-        return np.linalg.cholesky(M)
-    except np.linalg.LinAlgError:
-        n = M.shape[0]
-        for k in range(8):
-            j_level = jitter * 10 ** k
-            try:
-                L = np.linalg.cholesky(M + j_level * np.eye(n))
-                if j_level > 1e-8:
-                    warnings.warn(
-                        f"_safe_cholesky: matrix is near-singular; "
-                        f"Cholesky succeeded only with jitter={j_level:.2e}. "
-                        f"The resulting decomposition perturbs the covariance "
-                        f"matrix non-trivially — consider checking for "
-                        f"identification issues or near-zero eigenvalues.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                return L
-            except np.linalg.LinAlgError:
-                continue
-        # Last resort: eigendecomposition with floor.
-        w, V = np.linalg.eigh(M)
-        w_floor = np.maximum(w, 1e-10)
-        warnings.warn(
-            f"_safe_cholesky: all jitter levels up to "
-            f"{jitter * 10 ** 7:.2e} failed; falling back to "
-            f"eigendecomposition with eigenvalue floor=1e-10. "
-            f"Matrix is severely near-singular.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return np.linalg.cholesky(V @ np.diag(w_floor) @ V.T)
-
-
 def _sequential_loglik_mixture_unpar(
     X_np: np.ndarray,
     y_np: np.ndarray,
@@ -1515,7 +1464,7 @@ def _sequential_loglik_mixture_unpar(
             Omega_1 = _build_omega_direct(
                 params["omega_params"], ranvar_indices, control,
             )
-            precomputed_omega_L.append(_safe_cholesky(Omega_1))
+            precomputed_omega_L.append(safe_cholesky(Omega_1)[0])
         else:
             precomputed_omega_L.append(None)
         for h in range(1, control.nseg):
@@ -1524,7 +1473,7 @@ def _sequential_loglik_mixture_unpar(
                 Omega_h = _build_omega_direct(
                     seg_omegas[h - 1], ranvar_indices, control,
                 )
-                precomputed_omega_L.append(_safe_cholesky(Omega_h))
+                precomputed_omega_L.append(safe_cholesky(Omega_h)[0])
             else:
                 precomputed_omega_L.append(None)
 
@@ -1587,7 +1536,7 @@ def _compute_mixture_prob_unpar(
             Omega_1 = _build_omega_direct(
                 params["omega_params"], ranvar_indices, control,
             )
-            Omega_L_1 = _safe_cholesky(Omega_1)
+            Omega_L_1 = safe_cholesky(Omega_1)[0]
 
     if control.mix and Omega_L_1 is not None:
         V_1 = X_q @ beta_1
@@ -1616,7 +1565,7 @@ def _compute_mixture_prob_unpar(
                     ranvar_indices,
                     control,
                 )
-                Omega_L_h = _safe_cholesky(Omega_h)
+                Omega_L_h = safe_cholesky(Omega_h)[0]
 
         if h < len(pi_h):
             V_h = X_q @ beta_h

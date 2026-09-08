@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+from pybhatlib.utils._safe_reparam import safe_exp
 
 from pybhatlib.gradmvn._mvncd_grad_analytic import (
     mvncd_grad_me_analytic,
@@ -1326,7 +1327,7 @@ def _build_lambda_components(
         return K, None, None
 
     n_scale = max(dim - 1, 0)  # I-2 FREE scales (first diff variance pinned)
-    free = np.exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+    free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
     scales = np.concatenate([[1.0], free])  # length dim, scales[0] == 1.0
 
     if control.heteronly:
@@ -1352,7 +1353,7 @@ def _build_omega_components(
 ) -> tuple[NDArray, NDArray]:
     """Build Cholesky factor L and Omega = L @ L.T."""
     if control.randdiag:
-        L = np.diag(np.exp(omega_params[:n_rand]))
+        L = np.diag(safe_exp(omega_params[:n_rand]))
     else:
         L = np.zeros((n_rand, n_rand), dtype=np.float64)
         idx = 0
@@ -1470,7 +1471,7 @@ def _adj_omega_to_params(
     if control.randdiag:
         adj = np.zeros(n_rand, dtype=np.float64)
         for k in range(n_rand):
-            exp_val = np.exp(omega_params[k])
+            exp_val = safe_exp(omega_params[k])
             adj[k] = adj_Omega[k, k] * 2.0 * exp_val ** 2
         return adj
 

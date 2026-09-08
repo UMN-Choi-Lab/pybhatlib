@@ -23,6 +23,7 @@ from pybhatlib.gradmvn._mvncd import mvncd_rect
 from pybhatlib.matgradient._spherical import theta_to_corr
 from pybhatlib.models.morp._morp_control import MORPControl
 from pybhatlib.models.morp._morp_grad_analytic import morp_analytic_gradient
+from pybhatlib.utils._safe_reparam import safe_exp
 
 
 def morp_loglik(
@@ -202,7 +203,7 @@ def _unpack_morp_params(
         tau_d[0] = theta[idx]
         idx += 1
         for j in range(1, n_thresh):
-            tau_d[j] = tau_d[j - 1] + np.exp(theta[idx])
+            tau_d[j] = tau_d[j - 1] + safe_exp(theta[idx])
             idx += 1
         thresholds.append(tau_d)
 
@@ -213,7 +214,7 @@ def _unpack_morp_params(
         # Diagonal: D scale parameters (first dimension is reference)
         scales = np.ones(n_dims, dtype=np.float64)
         for d in range(1, n_dims):
-            scales[d] = np.exp(theta[idx])
+            scales[d] = safe_exp(theta[idx])
             idx += 1
         sigma = np.diag(scales**2)
     else:
@@ -223,7 +224,7 @@ def _unpack_morp_params(
         scales = np.ones(n_dims, dtype=np.float64)
         if not getattr(control, "fix_scales", False):
             for d in range(1, n_dims):
-                scales[d] = np.exp(theta[idx])
+                scales[d] = safe_exp(theta[idx])
                 idx += 1
 
         n_corr = n_dims * (n_dims - 1) // 2

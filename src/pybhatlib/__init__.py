@@ -26,6 +26,7 @@ from pybhatlib.models.morp import (
     morp_predict,
     morp_predict_category,
 )
+from pybhatlib.models.mixmnl import MixMNLControl, MixMNLModel, MixMNLResults
 
 __all__ = [
     "__version__",
@@ -51,4 +52,8 @@ __all__ = [
     "morp_ate",
     "morp_predict",
     "morp_predict_category",
+    # Mixed / panel families (random coefficients, MSL over Halton draws)
+    "MixMNLControl",
+    "MixMNLModel",
+    "MixMNLResults",
 ]
