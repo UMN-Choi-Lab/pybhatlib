@@ -128,6 +128,37 @@ def _compute_utility_terms(
     )
 
 
+def _gamma_rows_per_param(ivg: NDArray, nvargam: int, nc: int) -> int:
+    """Rows per gamma parameter in the column-major ``ivg`` index vector.
+
+    Two layouts are accepted:
+
+    * ``nc - 1`` rows per parameter -- inside goods only. This is what
+      :func:`~pybhatlib.models.mdcev._mdcev_model._build_data_arrays` emits for
+      the fixed-coefficient model: the outside good has no gamma parameter (its
+      satiation is pinned to ``MDCEVControl.outside_good_gamma``).
+    * ``nc`` rows per parameter -- the full GAUSS ``ivgt`` layout with the
+      outside good first. The mixed MDCEV kernel keeps this layout (its
+      outside-good slot is a pinned placeholder, as under GAUSS ``_max_active``);
+      callers skip the outside row.
+
+    Any other length is a caller bug and raises instead of silently reading the
+    wrong columns.
+    """
+    n = int(np.asarray(ivg).size)
+    if nvargam == 0 or n == 0:
+        return max(nc - 1, 0)
+    if n == nvargam * (nc - 1):
+        return nc - 1
+    if n == nvargam * nc:
+        return nc
+    raise ValueError(
+        f"ivg has {n} entries for nvargam={nvargam}, nc={nc}; expected "
+        f"{nvargam * (nc - 1)} (inside-goods layout) or {nvargam * nc} "
+        "(full GAUSS layout with the outside good first)."
+    )
+
+
 def _compute_satiation_block(
     x: NDArray,
     dta: NDArray,
@@ -163,15 +194,23 @@ def _compute_satiation_block(
     xgam  = eqmatgam.T @ x[nvarm: nvarm + nvargam]             # (nvargam,)
     xsigm = np.exp(x[nvarm + nvargam])                         # scalar
 
-    # Satiation utility u[q, k] = X_gam_{qk} @ xgam, shape (e1, nc)
-    # ivg is column-major: [cols for param 0 all alts, cols for param 1 all alts, ...]
+    # Satiation utility u[q, k] = X_gam_{qk} @ xgam, shape (e1, nc).
+    # ``ivg`` is column-major per gamma parameter and comes in one of two
+    # layouts (see ``_gamma_rows_per_param``): inside-goods-only (nc-1 rows per
+    # parameter -- the fixed-coefficient model) or the full GAUSS ``ivgt``
+    # layout (nc rows per parameter, outside good first -- the mixed MDCEV
+    # kernel). The outside good never takes a data-driven gamma (its slot is
+    # pinned below), so the full layout's outside row is skipped.
+    rows_per_param = _gamma_rows_per_param(ivg, nvargam, nc)
     u = np.zeros((e1, nc), dtype=np.float64)
     for j in range(nvargam):
-        cols_j = ivg[j * nc: (j + 1) * nc]
-        u[:, :] += dta[:, cols_j] * xgam[j]
+        cols_j = ivg[j * rows_per_param: (j + 1) * rows_per_param]
+        if rows_per_param == nc:
+            cols_j = cols_j[1:]
+        u[:, 1:] += dta[:, cols_j] * xgam[j]
 
-    # Outside good gamma forced to large negative value.
-    # GAUSS: u[.,1] = -1000*ones(e1,1)
+    # Outside good gamma is fixed at the control value (GAUSS ``u[.,1] = -1000``)
+    # and is never part of the user-supplied gamma_spec.
     u[:, 0] = control.outside_good_gamma
 
     # gamma_k = exp(u_k) for inside goods, shape (e1, nc-1)
@@ -638,13 +677,18 @@ def _gradient_from_terms(
     # Map back to gamma parameter space; apply eqmatgam chain rule
     # GAUSS: g2g = ones(1,nvargam) .*. ggam'; gg = reshape(sumc(...))'
     #        return ... gg*eqmatgam' ...
-    # ivg is column-major: [cols for param 0 all alts, cols for param 1 all alts, ...]
+    # ``ivg`` layout as in ``_compute_satiation_block``: inside-goods-only or the
+    # full GAUSS layout (outside row skipped -- the outside-good gamma is pinned
+    # and carries no gradient).
+    rows_per_param = _gamma_rows_per_param(ivg, nvargam, nc)
     gg_raw = np.zeros((e1, nvargam), dtype=np.float64)
     for j in range(nvargam):
-        cols_j = ivg[j * nc: (j + 1) * nc]
-        # For each parameter j, sum contribution from all alternatives
-        for k in range(nc):
-            gg_raw[:, j] += ggam[:, k] * dta[:, cols_j[k]]
+        cols_j = ivg[j * rows_per_param: (j + 1) * rows_per_param]
+        if rows_per_param == nc:
+            cols_j = cols_j[1:]
+        # For each parameter j, sum contribution from all inside goods
+        for k in range(nc - 1):
+            gg_raw[:, j] += ggam[:, k + 1] * dta[:, cols_j[k]]
     gg = gg_raw @ eqmatgam.T                                    # (e1, nvargam)
 
     z = pdisc * pcont

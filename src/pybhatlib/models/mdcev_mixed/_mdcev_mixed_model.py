@@ -732,7 +732,10 @@ class MDCEVMixedModel(BaseModel):
         xp : backend, optional
             Array backend used to wrap the result arrays. Defaults to NumPy.
         **kwargs
-            Reserved for cross-family signature compatibility; unused.
+            ``n_draws`` / ``seed`` / ``budget_col`` are forwarded to
+            :func:`mdcev_mixed_ate` (as :meth:`MDCEVModel.ate` forwards them to
+            ``mdcev_ate``); anything else is reserved for cross-family
+            signature compatibility and ignored.
 
         Returns
         -------
@@ -744,7 +747,8 @@ class MDCEVMixedModel(BaseModel):
         if scenarios is None:
             raise ValueError("MDCEVMixedModel.ate() requires scenarios=")
         names = alternative_names or list(self.alternatives)
+        forwarded = {k: kwargs[k] for k in ("n_draws", "seed", "budget_col") if k in kwargs}
         return mdcev_mixed_ate(
             self, data, scenarios=scenarios,
-            alternative_names=names, draws=draws, xp=xp,
+            alternative_names=names, draws=draws, xp=xp, **forwarded,
         )
