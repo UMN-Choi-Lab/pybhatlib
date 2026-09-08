@@ -242,7 +242,7 @@ class TestMixMNLResultsInterface:
             assert r.ll_total == pytest.approx(r.loglik * r.n_obs)
 
     def test_summary_includes_gradient_column(self):
-        r = _minimal_results()
+        r = _minimal_results(gradient=np.array([1.0, -1e-7]))
         text = r.summary()
         assert "Gradient" in text
         assert "1.0000" in text

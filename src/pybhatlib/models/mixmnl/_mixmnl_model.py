@@ -376,7 +376,8 @@ class MixMNLModel(BaseModel):
                 f"  iter={iter_count[0]:4d}  f={float(obj_val):+.12f}  "
                 f"||g||={grad_norm:.3e}"
             )
-            print(theta_k)
+            if ctrl.verbose >= 3:
+                print(theta_k)
             iter_count[0] += 1
 
         res = sopt.minimize(
@@ -387,7 +388,6 @@ class MixMNLModel(BaseModel):
             callback=_iter_callback if ctrl.verbose >= 2 else None,
             options=options,
         )
-
 
         theta_hat = np.asarray(res.x, dtype=np.float64)
         # Retain the estimation-space optimum for post-estimation predict / ate

@@ -266,7 +266,8 @@ class ScipyHaltonDrawSource:
         u = sampler.random(n_rep * n_ind)                     # (n_rep*n_ind, n_rnd)
         u = np.clip(u, 1e-10, 1.0 - 1e-10)
         z = ndtri(u).reshape(n_ind, n_rep, n_rnd)        # z[i, r] = u[i*n_rep + r] -> contiguous per individual
-        z = np.transpose(z, (1, 0, 2))                   # -> (n_rep, n_ind, n_rnd)z = np.ascontiguousarray(z, dtype=np.float64)
+        z = np.transpose(z, (1, 0, 2))                   # -> (n_rep, n_ind, n_rnd)
+        z = np.ascontiguousarray(z, dtype=np.float64)
         if self._xp is not None:
             z = self._xp.array(z, dtype=self._xp.float64)
         return z
