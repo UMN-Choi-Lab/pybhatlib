@@ -320,6 +320,7 @@ model_d = MNPModel(
     alternatives=alternatives,
     spec=spec_7var,
     control=MNPControl(iid=False, nseg=2, maxiter=200, verbose=0, seed=42),
+    ranvars=["OVTT"],   # paper Model (d): OVTT varies by segment
 )
 res_d = model_d.fit()
 t_d = time.perf_counter() - t0

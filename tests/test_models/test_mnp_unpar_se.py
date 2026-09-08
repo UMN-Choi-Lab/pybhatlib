@@ -32,6 +32,16 @@ from pybhatlib.models.mnp._mnp_loglik import (
     mnp_loglik_unpar,
 )
 
+
+def test_parameterized_mnp_scale_blocks_remain_finite_in_extreme_tail() -> None:
+    heter = MNPControl(iid=False, heteronly=True)
+    lambda_matrix = _build_lambda(np.array([50.0, 50.0]), 4, heter)
+    assert np.all(np.isfinite(lambda_matrix))
+
+    mixed = MNPControl(iid=True, mix=True, randdiag=True)
+    omega_chol = _build_omega_cholesky(np.array([50.0, 50.0]), [0, 1], mixed)
+    assert np.all(np.isfinite(omega_chol))
+
 FIXTURE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "fixtures",

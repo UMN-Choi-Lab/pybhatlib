@@ -70,3 +70,12 @@ PESOSE-related
 .env
 .claude
 
+pesose*
+
+# Local scratch / harness output (mixed-model work)
+issue*
+PR32*
+0714*
+0717*
+gauss_harness/
+bench/*_log.csv

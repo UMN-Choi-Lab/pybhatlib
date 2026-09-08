@@ -26,6 +26,22 @@ from pybhatlib.models.morp import (
     morp_predict,
     morp_predict_category,
 )
+from pybhatlib.models.mixmnl import MixMNLControl, MixMNLModel, MixMNLResults
+from pybhatlib.models.mnpkercp import (
+    MNPKerCPControl,
+    MNPKerCPModel,
+    MNPKerCPResults,
+)
+from pybhatlib.models.morp_flex import (
+    MORPFlexControl,
+    MORPFlexModel,
+    MORPFlexResults,
+)
+from pybhatlib.models.mdcev_mixed import (
+    MDCEVMixedControl,
+    MDCEVMixedModel,
+    MDCEVMixedResults,
+)
 
 __all__ = [
     "__version__",
@@ -51,4 +67,17 @@ __all__ = [
     "morp_ate",
     "morp_predict",
     "morp_predict_category",
+    # Mixed / panel families (random coefficients, MSL over Halton draws)
+    "MixMNLControl",
+    "MixMNLModel",
+    "MixMNLResults",
+    "MNPKerCPControl",
+    "MNPKerCPModel",
+    "MNPKerCPResults",
+    "MORPFlexControl",
+    "MORPFlexModel",
+    "MORPFlexResults",
+    "MDCEVMixedControl",
+    "MDCEVMixedModel",
+    "MDCEVMixedResults",
 ]

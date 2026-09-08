@@ -111,6 +111,14 @@ class TestUnpackMORPParams:
         assert thresholds[0][1] > thresholds[0][0]
         assert thresholds[1][1] > thresholds[1][0]
 
+    def test_extreme_threshold_spacing_remains_finite(self):
+        ctrl = MORPControl(iid=True)
+        theta = np.array([0.0, 0.0, -0.5, 1e6, -0.5, 1e6])
+        _, thresholds, sigma = _unpack_morp_params(theta, 2, 2, [3, 3], ctrl)
+
+        assert all(np.all(np.isfinite(block)) for block in thresholds)
+        assert np.all(np.isfinite(sigma))
+
     def test_sigma_identity_for_indep(self):
         ctrl = MORPControl(iid=True)
         theta = np.zeros(7)
