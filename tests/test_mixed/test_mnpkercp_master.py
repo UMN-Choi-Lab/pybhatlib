@@ -57,6 +57,7 @@ def _build_estimator(seed: int):
     var_names = [f"x{i}" for i in range(nvar)]
     spec = MixingSpec.from_var_names(
         var_names=var_names, normvar=("x0",), yjvar=("x1",), kernel_dim=nc - 1,
+        copula=True,   # declare the copula: all joint rc<->kernel pairs are active
     )
     layout = ParamLayout(
         n_beta=spec.n_beta, n_rcor=spec.nrndtcor, n_scal=spec.nscale,

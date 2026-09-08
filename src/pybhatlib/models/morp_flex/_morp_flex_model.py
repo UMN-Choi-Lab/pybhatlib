@@ -191,6 +191,11 @@ class MORPFlexModel(BaseModel):
             n_categories=self.n_categories,
             normker=not ctrl.yj_kernel,
             randdiag=ctrl.randdiag,
+            # Declare which joint-correlation pairs are estimated so the engine
+            # holds the others at zero (GAUSS ``_max_active``): rc<->kernel pairs
+            # only with the copula, kernel pairs only when not iid.
+            copula=ctrl.copula,
+            iid=ctrl.iid,
             fix_location_zero=tuple(ctrl.fix_location_zero),
         )
         layout = ParamLayout(
