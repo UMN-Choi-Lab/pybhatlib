@@ -28,6 +28,7 @@ from scipy.special import ndtr as _ndtr
 
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.models._base import BaseModel
+from pybhatlib.utils._safe_reparam import safe_exp
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 from pybhatlib.models.mdcev._mdcev_loglik import (
     mdcev_loglik, mdcev_gradient, mdcev_loglik_unpar, mdcev_gradient_unpar, numerical_hessian
@@ -278,7 +279,7 @@ class MDCEVModel(BaseModel):
         # ---- Recover natural sigma -----------------------------------
         # GAUSS second phase: b = x[1:end-1] | exp(x[end])
         x_reported = x_opt.copy()
-        x_reported[nvarm + nvargam] = np.exp(x_opt[nvarm + nvargam])
+        x_reported[nvarm + nvargam] = safe_exp(x_opt[nvarm + nvargam])
         sigma_hat = float(x_reported[nvarm + nvargam])
 
         # ---- Covariance computation -------------------------------
