@@ -6,7 +6,12 @@ import pytest
 
 from pybhatlib.models.mdcev._mdcev_model import MDCEVModel
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
-from pybhatlib.models.mdcev import mdcev_forecast, mdcev_predict_choice
+from pybhatlib.models.mdcev._mdcev_forecast import (
+    _mdcev_linear_forecast_allocation,
+    mdcev_forecast,
+    mdcev_predict,
+    mdcev_predict_choice,
+)
 
 @pytest.fixture
 def synthetic_mdcev_data():
@@ -42,9 +47,8 @@ class TestMDCEVModel:
             "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
         }
         gamma_spec = {
-            "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-            "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-            "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+            "g1": {"alt1": "uno", "alt2": "sero"},
+            "g2": {"alt1": "sero", "alt2": "uno"},
         }
         model = MDCEVModel(
             data=df,
@@ -55,7 +59,7 @@ class TestMDCEVModel:
         )
         assert model.n_alts == 3
         assert model.utility_spec.shape[1] == 3
-        assert model.gamma_spec.shape[1] == 3
+        assert model.gamma_spec.shape == (2, 2)
 
     def test_model_fit_smoke(self, synthetic_mdcev_data):
         df = synthetic_mdcev_data
@@ -66,9 +70,8 @@ class TestMDCEVModel:
             "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
         }
         gamma_spec = {
-            "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-            "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-            "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+            "g1": {"alt1": "uno", "alt2": "sero"},
+            "g2": {"alt1": "sero", "alt2": "uno"},
         }
         model = MDCEVModel(
             data=df,
@@ -163,7 +166,7 @@ class TestMDCEVModel:
         forecasts = mdcev_forecast(
             results=None,
             b_reported=raw_params,
-            sigma=None,
+            sigma=results.sigma,
             X_new=X_new,
             X_gam_new=X_gam_new,
             price_new=price_new,
@@ -175,6 +178,116 @@ class TestMDCEVModel:
         assert forecasts.shape == (2 * len(df), 3)
         assert np.all(forecasts >= 0)
 
+    def test_linear_allocation_matches_gauss_forec_template(self):
+        rng = np.random.default_rng(0)
+
+        def gauss_template(v, prices, f1, budget, num_outside=1):
+            v = np.asarray(v, dtype=np.float64)
+            prices = np.asarray(prices, dtype=np.float64)
+            f1 = np.asarray(f1, dtype=np.float64)
+            n = v.size
+            fc_sorted = np.zeros(n, dtype=np.float64)
+
+            if num_outside <= 0 or num_outside >= n:
+                fc_sorted[:num_outside] = float(budget)
+                return fc_sorted
+
+            outside_idx = np.arange(num_outside)
+            inside_idx = np.arange(num_outside, n)
+            sorted_inside = inside_idx[np.argsort(v[inside_idx])[::-1]]
+            sorted_slots = np.concatenate([outside_idx, sorted_inside])
+
+            v_sorted = np.empty(n, dtype=np.float64)
+            f_sorted = np.empty(n, dtype=np.float64)
+            v_sorted[outside_idx] = v[outside_idx]
+            f_sorted[outside_idx] = f1[outside_idx]
+            v_sorted[inside_idx] = v[sorted_inside]
+            f_sorted[inside_idx] = f1[sorted_inside]
+
+            lambda_val = v_sorted[num_outside - 1]
+            if v_sorted[num_outside] < lambda_val:
+                fc_sorted[outside_idx] = float(budget)
+                return fc_sorted
+
+            for j in range(num_outside, n):
+                if v_sorted[j] <= lambda_val:
+                    break
+                fc_sorted[j] = (v_sorted[j] / lambda_val - 1.0) * f_sorted[j]
+
+            fc_sorted[outside_idx] = float(budget) - fc_sorted[num_outside:].sum()
+
+            fc_orig = np.empty_like(fc_sorted)
+            fc_orig[sorted_slots] = fc_sorted
+            return fc_orig
+
+        for _ in range(25):
+            v = rng.uniform(0.1, 4.0, size=5)
+            prices = rng.uniform(0.5, 2.0, size=5)
+            f1 = rng.uniform(0.1, 3.0, size=5)
+            budget = float(rng.uniform(1.0, 15.0))
+            out = _mdcev_linear_forecast_allocation(v, prices, f1, budget=budget, num_outside=1)
+            expected = gauss_template(v, prices, f1, budget, num_outside=1)
+            assert np.allclose(out, expected, rtol=1e-10, atol=1e-10)
+
+    def test_linear_predict_uses_observation_budget(self):
+        b_reported = np.array([0.2, -0.4, 0.3, 0.5, -0.2, 1.0], dtype=np.float64)
+        X_new = np.array(
+            [[[1.0, 0.2, 0.1], [0.8, -0.1, 0.4], [0.7, 0.3, -0.2]]],
+            dtype=np.float64,
+        )
+        X_gam_new = np.array(
+            [[[0.1, 0.2], [0.5, -0.1], [0.4, 0.2]]],
+            dtype=np.float64,
+        )
+        price_new = np.ones((1, 3), dtype=np.float64)
+
+        results_lin = __import__("pybhatlib.models.mdcev._mdcev_results", fromlist=["MDCEVResults"]).MDCEVResults.from_estimates(
+            b_reported=b_reported,
+            sigma=1.0,
+            control=MDCEVControl(utility="linear"),
+            param_names=["b0", "b1", "b2", "g1", "g2", "sigma"],
+        )
+
+        pred_low = mdcev_predict(results_lin, X_new, X_gam_new, price_new, n_draws=200, seed=7, budget=np.array([10.0]))
+        pred_high = mdcev_predict(results_lin, X_new, X_gam_new, price_new, n_draws=200, seed=7, budget=np.array([20.0]))
+
+        assert pred_low.shape == (1, 3)
+        assert np.all((pred_low >= 0.0) & (pred_low <= 1.0))
+        assert np.all((pred_high >= 0.0) & (pred_high <= 1.0))
+        assert np.any(pred_low < 1.0)
+        assert not np.allclose(pred_low, pred_high)
+
+    def test_linear_and_traditional_predict_paths_diverge(self):
+        b_reported = np.array([0.2, -0.4, 0.3, 0.2, -0.1, 1.0], dtype=np.float64)
+        X_new = np.array(
+            [[[1.0, 0.2, 0.1], [0.8, -0.1, 0.4], [0.7, 0.3, -0.2]]],
+            dtype=np.float64,
+        )
+        X_gam_new = np.array(
+            [[[0.1, 0.2], [0.5, -0.1], [0.4, 0.2]]],
+            dtype=np.float64,
+        )
+        price_new = np.ones((1, 3), dtype=np.float64)
+
+        results_trad = __import__("pybhatlib.models.mdcev._mdcev_results", fromlist=["MDCEVResults"]).MDCEVResults.from_estimates(
+            b_reported=b_reported,
+            sigma=1.0,
+            control=MDCEVControl(utility="trad"),
+            param_names=["b0", "b1", "b2", "g1", "g2", "sigma"],
+        )
+        results_lin = __import__("pybhatlib.models.mdcev._mdcev_results", fromlist=["MDCEVResults"]).MDCEVResults.from_estimates(
+            b_reported=b_reported,
+            sigma=1.0,
+            control=MDCEVControl(utility="linear"),
+            param_names=["b0", "b1", "b2", "g1", "g2", "sigma"],
+        )
+
+        trad_pred = mdcev_predict(results_trad, X_new, X_gam_new, price_new, n_draws=500, seed=7)
+        lin_pred = mdcev_predict(results_lin, X_new, X_gam_new, price_new, n_draws=500, seed=7)
+
+        assert np.isfinite(lin_pred).all()
+        assert not np.allclose(trad_pred.mean(axis=0), lin_pred.mean(axis=0), atol=1e-10)
+
 
 _ALTS = ["alt_out", "alt1", "alt2"]
 _USPEC = {
@@ -183,9 +296,8 @@ _USPEC = {
     "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
 }
 _GSPEC = {
-    "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-    "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-    "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+    "g1": {"alt1": "uno", "alt2": "sero"},
+    "g2": {"alt1": "sero", "alt2": "uno"},
 }
 
 

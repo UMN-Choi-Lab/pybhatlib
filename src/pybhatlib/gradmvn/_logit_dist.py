@@ -662,7 +662,8 @@ def simmdcev(
     while rfinal.shape[0] < n:
         batch = 4 * n
         draws_used += batch
-        err1 = rng.uniform(0.0, 1.0, size=(batch, arows + 1))  # (batch, K)
+        tiny = np.finfo(np.float64).tiny
+        err1 = np.clip(rng.uniform(0.0, 1.0, size=(batch, arows + 1)), tiny, 1.0 - tiny)
         r    = (-np.log(-np.log(err1))) * sig                   # (batch, K)
         r1   = r[:, :arows] - a_flat[np.newaxis, :]            # (batch, K-1)
         r1min = r1[:, :m].min(axis=1)                           # (batch,)
@@ -679,6 +680,7 @@ def simmdcev(
                     (1.0 - rout1) * np.exp(-np.exp(-r1max_k / sig))
                     + rout1       * np.exp(-np.exp(-r1min_k / sig))
                 )
+                routside = np.clip(routside, tiny, 1.0 - tiny)
                 routside = (-np.log(-np.log(routside))) * sig
                 riter    = np.column_stack([rinside, routside])
                 rfinal   = np.vstack([rfinal, riter])
@@ -686,6 +688,7 @@ def simmdcev(
             rinside  = r[:, :arows]
             rout1    = err1[:, arows]
             routside = rout1 * np.exp(-np.exp(-r1min / sig))
+            routside = np.clip(routside, tiny, 1.0 - tiny)
             routside = (-np.log(-np.log(routside))) * sig
             riter    = np.column_stack([rinside, routside])
             rfinal   = np.vstack([rfinal, riter])
@@ -754,7 +757,8 @@ def simtradmdcev(
     while rfinal.shape[0] < n:
         batch = 4 * n
         draws_used += batch
-        err1 = rng.uniform(0.0, 1.0, size=(batch, arows + 1))
+        tiny = np.finfo(np.float64).tiny
+        err1 = np.clip(rng.uniform(0.0, 1.0, size=(batch, arows + 1)), tiny, 1.0 - tiny)
         r    = (-np.log(-np.log(err1))) * sig
         r1   = r[:, :arows] - a_flat[np.newaxis, :]
         r1min = r1[:, :m].min(axis=1)
@@ -771,6 +775,7 @@ def simtradmdcev(
                     (1.0 - rout1) * np.exp(-np.exp(-r1max_k / sig))
                     + rout1       * np.exp(-np.exp(-r1min_k / sig))
                 )
+                routside = np.clip(routside, tiny, 1.0 - tiny)
                 routside = (-np.log(-np.log(routside))) * sig
                 riter    = np.column_stack([rinside, routside])
                 rfinal   = np.vstack([rfinal, riter])
@@ -778,6 +783,7 @@ def simtradmdcev(
             rinside  = r[:, :arows]
             rout1    = err1[:, arows]
             routside = rout1 * np.exp(-np.exp(-r1min / sig))
+            routside = np.clip(routside, tiny, 1.0 - tiny)
             routside = (-np.log(-np.log(routside))) * sig
             riter    = np.column_stack([rinside, routside])
             rfinal   = np.vstack([rfinal, riter])
