@@ -49,6 +49,7 @@ from pybhatlib.models.mdcev_mixed import (
 
 __all__ = [
     "__version__",
+    # Linear regression
     "LRControl",
     "LRModel",
     "LRResults",

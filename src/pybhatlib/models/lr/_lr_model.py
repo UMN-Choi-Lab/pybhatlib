@@ -1,22 +1,38 @@
 """Single-outcome analytical ordinary least squares workflow."""
 
+from __future__ import annotations
+
 from copy import deepcopy
 from os import PathLike
 from time import perf_counter
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from numpy.typing import ArrayLike, NDArray
 from scipy.stats import norm, t
 
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
+from pybhatlib.models._ate_common import ScenarioSpec
 from pybhatlib.models._base import BaseModel
-from ._lr_control import LRControl
-from ._lr_loglik import lr_gradient, lr_loglik
-from ._lr_results import LRResults
+from pybhatlib.models.lr._lr_control import LRControl
+from pybhatlib.models.lr._lr_forecast import lr_predict
+from pybhatlib.models.lr._lr_loglik import lr_gradient, lr_loglik
+from pybhatlib.models.lr._lr_results import LRResults
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle guard for annotations only
+    from pybhatlib.models.lr._lr_ate import LRATEResult
 
 
-def _build_design(data, spec, dep_var):
+def _build_design(
+    data: pd.DataFrame, spec: dict, dep_var: str
+) -> tuple[NDArray, list[str]]:
+    """Build the ``(N, K)`` design matrix for *dep_var* from a coefficient spec.
+
+    Reuses :func:`parse_spec` with the outcome as the single "alternative", so
+    the same ``uno`` / column-name / numeric-constant grammar applies.
+    """
     if not isinstance(spec, dict) or not spec:
         raise ValueError("spec must be a nonempty coefficient mapping")
     normalized = {}
@@ -27,6 +43,10 @@ def _build_design(data, spec, dep_var):
             value = value[dep_var]
         if not isinstance(value, (str, int, float)):
             raise ValueError(f"Invalid spec value for '{name}'")
+        if isinstance(value, str) and value == dep_var:
+            raise ValueError(
+                f"spec entry '{name}' uses the outcome column '{dep_var}' as a regressor"
+            )
         normalized[name] = {dep_var: value}
     X, names = parse_spec(normalized, data, [dep_var])
     X = X[:, 0, :]
@@ -36,16 +56,52 @@ def _build_design(data, spec, dep_var):
 
 
 class LRModel(BaseModel):
-    """Linear regression with one continuous ``dep_var`` column.
+    """Linear regression with one continuous outcome, solved in closed form.
 
-    ``data`` accepts a DataFrame or supported data-file path. ``spec`` maps
-    coefficient names to columns, ``uno`` (constant), or numeric constants.
-    Outcome-keyed entries such as ``{"B_X": {"y": "x"}}`` also work, matching
-    other model specifications. No intercept is added implicitly.
-    Rank-deficient designs and N <= K are rejected to keep inference identified.
+    Parameters
+    ----------
+    data : str, PathLike, or pd.DataFrame
+        Path to a data file (CSV / DAT / XLSX) or a DataFrame.
+    dep_var : str
+        Name of the continuous outcome column.
+    spec : dict
+        Maps coefficient names to a data column, ``"uno"`` (constant), or a
+        numeric constant.  Outcome-keyed entries such as
+        ``{"B_X": {"y": "x"}}`` also work, matching the other models'
+        specifications.  No intercept is added implicitly.
+    var_names : list of str or None
+        Display names for the coefficients.  Defaults to the spec keys.
+    control : LRControl or None
+        Covariance / verbosity options.
+
+    Notes
+    -----
+    Rank-deficient designs and ``N <= K`` are rejected so that inference is
+    identified.  Coefficients come from the SVD of the design matrix (which
+    avoids squaring its condition number).  The residual variance is the
+    Gaussian MLE ``SSE / N`` (``results.sigma2``); ``SSE / (N - K)`` is
+    reported as ``results.residual_variance``.
+
+    Examples
+    --------
+    >>> model = LRModel(
+    ...     data=df,
+    ...     dep_var="ln_exp",
+    ...     spec={"CON": "uno", "B_HINC": "hinc20k", "B_RURAL": "rural"},
+    ...     control=LRControl(se_method="sandwich"),
+    ... )
+    >>> results = model.fit()
+    >>> results.summary()
     """
 
-    def __init__(self, data, dep_var, spec=None, var_names=None, control=None):
+    def __init__(
+        self,
+        data: str | PathLike | pd.DataFrame,
+        dep_var: str,
+        spec: dict | None = None,
+        var_names: list[str] | None = None,
+        control: LRControl | None = None,
+    ) -> None:
         self.control = control or LRControl()
         if not isinstance(dep_var, str):
             raise ValueError("dep_var must name a single continuous outcome column")
@@ -67,10 +123,11 @@ class LRModel(BaseModel):
         if self.N <= self.n_beta:
             raise ValueError("Linear regression requires n_obs > n_beta")
 
-    def _fit(self):
+    def _fit(self) -> LRResults:
+        """Solve the least-squares problem and assemble :class:`LRResults`."""
         start = perf_counter()
         ctrl = deepcopy(self.control)
-        ctrl.__post_init__()
+        ctrl.__post_init__()  # re-validate: control may have been mutated after construction
         if ctrl.verbose >= 1:
             print(f"  LR estimation: {self.N} obs, {self.n_beta} parameters")
         # SVD avoids squaring the design's condition number in the solve.
@@ -109,7 +166,8 @@ class LRModel(BaseModel):
             corr = cov / np.outer(se, se)
         p = 2 * (t.sf(np.abs(stat), df) if ctrl.se_method == "hessian"
                  else norm.sf(np.abs(stat)))
-        constant = np.linalg.norm(np.ones(self.N) - u @ (u.T @ np.ones(self.N))) < 1e-10 * np.sqrt(self.N)
+        ones = np.ones(self.N)
+        constant = np.linalg.norm(ones - u @ (u.T @ ones)) < 1e-10 * np.sqrt(self.N)
         centered = self.y - self.y.mean() if constant else self.y
         tss = float(centered @ centered)
         r2 = 1 - sse / tss if tss > 0 else np.nan
@@ -143,17 +201,36 @@ class LRModel(BaseModel):
             )
         return result
 
-    def predict(self, X_new=None):
-        """Predict from training data, an (N, K) matrix, or a new DataFrame."""
-        from ._lr_forecast import lr_predict
+    # ------------------------------------------------------------------
+    # Post-estimation convenience API (delegates to the free functions;
+    # shared method surface across MNP / MORP / MDCEV / MNL / LR)
+    # ------------------------------------------------------------------
+    def predict(self, X_new: ArrayLike | pd.DataFrame | None = None) -> NDArray:
+        """Predicted conditional means (see :func:`lr_predict`).
+
+        Parameters
+        ----------
+        X_new : ndarray (N, K), pd.DataFrame, or None
+            ``None`` uses the training design; a DataFrame is rebuilt through
+            the model's ``spec``; an array is used as the design directly.
+
+        Returns
+        -------
+        y_hat : ndarray, shape (N,)
+        """
         results = self._require_results()
         if isinstance(X_new, pd.DataFrame):
             X_new, _ = _build_design(X_new, self.spec_dict, self.dep_var)
         return lr_predict(results, self.X if X_new is None else X_new)
 
-    def ate(self, *, scenarios=None, **kwargs):
-        """Compare predicted outcome means under column-override scenarios."""
-        from ._lr_ate import lr_ate
+    def ate(self, *, scenarios: ScenarioSpec | None = None, **kwargs) -> LRATEResult:
+        """Mean predicted outcome, optionally under counterfactual scenarios.
+
+        ``data`` / ``spec`` / ``dep_var`` are supplied from the model; pass
+        ``scenarios=`` for counterfactuals (see :func:`lr_ate`).
+        """
+        from pybhatlib.models.lr._lr_ate import lr_ate
+
         return lr_ate(self._require_results(), data=self.data,
                       spec=self.spec_dict, dep_var=self.dep_var,
                       scenarios=scenarios, **kwargs)

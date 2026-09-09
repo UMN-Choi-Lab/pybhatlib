@@ -1,30 +1,78 @@
-"""Analytical scenario effects on a continuous outcome's predicted mean."""
+"""Analytical scenario effects on a continuous outcome's predicted mean.
+
+``LRATEResult`` deliberately does **not** use :class:`ATEResultMixin`: the
+outcome is a continuous mean in outcome units rather than a vector of
+alternative shares, so ``comparison()`` returns a scalar (in outcome units
+or as a percentage) and the per-scenario field is ``means_per_scenario``.
+The scenario grammar itself (``scenarios_to_dict`` /
+``apply_scenario_overrides``) is shared with the other models.
+"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from numpy.typing import ArrayLike, NDArray
 
-from pybhatlib.models._ate_common import apply_scenario_overrides, scenarios_to_dict
-from ._lr_forecast import lr_predict
-from ._lr_model import _build_design
-from ._lr_results import LRResults
+from pybhatlib.models._ate_common import (
+    ScenarioSpec,
+    apply_scenario_overrides,
+    scenarios_to_dict,
+)
+from pybhatlib.models.lr._lr_control import LRControl
+from pybhatlib.models.lr._lr_forecast import lr_predict
+from pybhatlib.models.lr._lr_model import _build_design
+from pybhatlib.models.lr._lr_results import LRResults
 
 
 @dataclass
 class LRATEResult:
-    """Predicted means, in outcome units (not probability shares)."""
+    """Predicted outcome means, in outcome units (not probability shares).
+
+    Attributes
+    ----------
+    n_obs : int
+        Number of observations.
+    predicted_mean : float
+        Mean predicted outcome at observed covariate values.
+    means_per_scenario : dict[str, float] or None
+        Mean predicted outcome under each named scenario (``scenarios=`` path
+        only).
+    dep_var : str or None
+        Outcome column name, for labelling.
+    """
 
     n_obs: int
     predicted_mean: float
     means_per_scenario: dict[str, float] | None = None
     dep_var: str | None = None
 
-    def comparison(self, base, treatment, *, percent=True):
-        """Compare scenarios; percent defaults to True as in other models.
+    def comparison(self, base: str, treatment: str, *, percent: bool = True) -> float:
+        """Change in the mean predicted outcome between two scenarios.
 
-        Use ``percent=False`` for an effect in outcome units. Percentage change
-        uses the signed baseline denominator and is NaN for a zero baseline.
+        Parameters
+        ----------
+        base : str
+            Scenario name used as the reference.
+        treatment : str
+            Scenario name compared against *base*.
+        percent : bool
+            ``True`` (default, as in the other models) returns the percentage
+            change ``100 * (treatment - base) / base`` using the signed
+            baseline, NaN for a zero baseline.  ``False`` returns the effect
+            in outcome units, which for a linear model equals the coefficient
+            times the covariate change.
+
+        Returns
+        -------
+        float
+
+        Raises
+        ------
+        ValueError
+            If ``means_per_scenario`` is None or a scenario name is unknown.
         """
         if self.means_per_scenario is None:
             raise ValueError("comparison() requires lr_ate with scenarios")
@@ -33,8 +81,15 @@ class LRATEResult:
         b, v = self.means_per_scenario[base], self.means_per_scenario[treatment]
         return (100 * (v - b) / b if b != 0 else np.nan) if percent else v - b
 
-    def to_dataframe(self):
-        """Return scenario means and absolute changes from observed predictions."""
+    def to_dataframe(self) -> pd.DataFrame:
+        """Scenario means and absolute changes from the observed prediction.
+
+        Returns
+        -------
+        df : pd.DataFrame
+            Index = scenario name (``"observed"`` when no scenarios were
+            given); columns ``Predicted Mean``, ``Change from Observed``.
+        """
         means = self.means_per_scenario
         if means is None:
             means = {"observed": self.predicted_mean}
@@ -42,7 +97,7 @@ class LRATEResult:
         frame["Change from Observed"] = frame["Predicted Mean"] - self.predicted_mean
         return frame
 
-    def summary(self):
+    def summary(self) -> str:
         """Print a formatted ATE summary table.
 
         Returns
@@ -76,13 +131,46 @@ class LRATEResult:
         return text
 
 
-def lr_ate(results, *, data=None, spec=None, dep_var=None, scenarios=None, X=None):
-    """Compute mean forecasts and optional named counterfactuals analytically.
+def lr_ate(
+    results: LRResults,
+    *,
+    data: pd.DataFrame | None = None,
+    spec: dict | None = None,
+    dep_var: str | None = None,
+    scenarios: ScenarioSpec | None = None,
+    X: NDArray | None = None,
+) -> LRATEResult:
+    """Mean predicted outcome and optional named counterfactuals, analytically.
 
-    Accepts an (N, K) ``X`` or ``data``/``spec``/``dep_var``. Scenarios require
-    the latter and follow the shared dict or DataFrame convention: override
-    data columns with scalar values or values from another named column.
-    Data are copied before overrides. Regressor order must match coefficients.
+    Parameters
+    ----------
+    results : LRResults
+        Fitted results, or :meth:`LRResults.from_estimates` output.
+    data : pd.DataFrame, optional
+        Dataset.  Required when ``X`` is not provided or ``scenarios`` is used.
+    spec : dict, optional
+        Coefficient specification (as passed to :class:`LRModel`).  Required
+        with ``data``.
+    dep_var : str, optional
+        Outcome column name.  Required with ``data``.
+    scenarios : dict or pd.DataFrame, optional
+        Shared scenario grammar: ``{name: {column: scalar | source_column}}``
+        or a DataFrame with one row per scenario.  Overrides are applied to a
+        copy of *data* and the design is rebuilt through *spec*.
+    X : ndarray, shape (N, K), optional
+        Pre-built design matrix for the baseline prediction.  Regressor order
+        must match ``results.params``.
+
+    Returns
+    -------
+    LRATEResult
+
+    Raises
+    ------
+    ValueError
+        If neither ``X`` nor ``data`` / ``spec`` / ``dep_var`` are given, if
+        ``scenarios`` is used without them, or if the scenario data row count
+        differs from the baseline design.
     """
     if X is None or scenarios is not None:
         if data is None or spec is None or dep_var is None:
@@ -104,8 +192,35 @@ def lr_ate(results, *, data=None, spec=None, dep_var=None, scenarios=None, X=Non
     return LRATEResult(len(predicted), float(predicted.mean()), means, dep_var)
 
 
-def lr_ate_from_params(beta, *, param_names=None, control=None, **kwargs):
-    """Run scenario analysis from externally supplied regression coefficients."""
+def lr_ate_from_params(
+    beta: ArrayLike,
+    *,
+    param_names: list[str] | None = None,
+    control: LRControl | None = None,
+    **kwargs,
+) -> LRATEResult:
+    """Scenario analysis from externally supplied regression coefficients.
+
+    Convenience wrapper mirroring :func:`mnl_ate_from_params`: builds a
+    results object via :meth:`LRResults.from_estimates` and dispatches to
+    :func:`lr_ate`.
+
+    Parameters
+    ----------
+    beta : array_like, shape (K,)
+        Regression coefficients in the order of the spec.
+    param_names : list[str] or None
+        Forwarded to :meth:`LRResults.from_estimates`.
+    control : LRControl or None
+        Forwarded to :meth:`LRResults.from_estimates`.
+    **kwargs
+        ``data`` / ``spec`` / ``dep_var`` / ``scenarios`` / ``X``, forwarded
+        to :func:`lr_ate`.
+
+    Returns
+    -------
+    LRATEResult
+    """
     return lr_ate(LRResults.from_estimates(
         beta, param_names=param_names, control=control,
     ), **kwargs)
