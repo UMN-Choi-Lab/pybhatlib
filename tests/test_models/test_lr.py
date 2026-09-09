@@ -57,6 +57,8 @@ def test_covariances(data, method):
                 "sandwich": bread @ xr.T @ xr @ bread,
                 "bhhh": np.linalg.inv(xr.T @ xr) * r.sigma2**2}[method]
     assert_allclose(r.cov_matrix, expected)
+    # Student-t p-values with N - K df for every se_method.
+    assert_allclose(r.p_value, 2 * t.sf(np.abs(r.t_stat), 78))
     corrected = model(data, se_method=method).fit()
     assert_allclose(corrected.cov_matrix, expected * 80 / 78)
 
@@ -79,8 +81,9 @@ def test_scenarios_external_and_csv(data, tmp_path):
         m.predict()
     r = m.fit()
     a = m.ate(scenarios=scenarios)
-    assert_allclose(a.comparison("base", "treatment", percent=False), 2 * r.params[1])
-    assert_allclose(a.comparison("base", "treatment"), 200 * r.params[1] / r.params[0])
+    assert_allclose(a.comparison("base", "treatment"), 2 * r.params[1])
+    assert_allclose(a.comparison("base", "treatment", percent=True),
+                    200 * r.params[1] / r.params[0])
     assert_allclose(a.means_per_scenario["observed"], a.predicted_mean)
     external = lr_ate_from_params(r.params, data=data, spec=m.spec_dict, dep_var="y",
                                   scenarios=pd.DataFrame.from_dict(scenarios, orient="index"))

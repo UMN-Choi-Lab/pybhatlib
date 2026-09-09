@@ -32,8 +32,9 @@ class LRControl:
 
     Notes
     -----
-    Classical (``"hessian"``) inference uses Student's t with ``N - K``
-    degrees of freedom; robust and BHHH inference use normal asymptotics.
+    p-values use Student's t with ``N - K`` degrees of freedom for every
+    ``se_method`` (the OLS convention of statsmodels / Stata, also with robust
+    errors).
     """
 
     se_method: Literal["hessian", "sandwich", "bhhh"] = "hessian"

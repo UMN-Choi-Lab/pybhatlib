@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 from numpy.typing import ArrayLike, NDArray
-from scipy.stats import norm, t
+from scipy.stats import t
 
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
@@ -164,8 +164,7 @@ class LRModel(BaseModel):
         with np.errstate(divide="ignore", invalid="ignore"):
             stat = beta / se
             corr = cov / np.outer(se, se)
-        p = 2 * (t.sf(np.abs(stat), df) if ctrl.se_method == "hessian"
-                 else norm.sf(np.abs(stat)))
+        p = 2 * t.sf(np.abs(stat), df)  # Student's t with N - K df for every se_method
         ones = np.ones(self.N)
         constant = np.linalg.norm(ones - u @ (u.T @ ones)) < 1e-10 * np.sqrt(self.N)
         centered = self.y - self.y.mean() if constant else self.y

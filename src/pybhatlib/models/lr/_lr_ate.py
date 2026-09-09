@@ -2,8 +2,9 @@
 
 ``LRATEResult`` deliberately does **not** use :class:`ATEResultMixin`: the
 outcome is a continuous mean in outcome units rather than a vector of
-alternative shares, so ``comparison()`` returns a scalar (in outcome units
-or as a percentage) and the per-scenario field is ``means_per_scenario``.
+alternative shares, so ``comparison()`` returns a scalar in outcome units
+(percentage change on request) and the per-scenario field is
+``means_per_scenario``.
 The scenario grammar itself (``scenarios_to_dict`` /
 ``apply_scenario_overrides``) is shared with the other models.
 """
@@ -49,7 +50,7 @@ class LRATEResult:
     means_per_scenario: dict[str, float] | None = None
     dep_var: str | None = None
 
-    def comparison(self, base: str, treatment: str, *, percent: bool = True) -> float:
+    def comparison(self, base: str, treatment: str, *, percent: bool = False) -> float:
         """Change in the mean predicted outcome between two scenarios.
 
         Parameters
@@ -59,11 +60,13 @@ class LRATEResult:
         treatment : str
             Scenario name compared against *base*.
         percent : bool
-            ``True`` (default, as in the other models) returns the percentage
-            change ``100 * (treatment - base) / base`` using the signed
-            baseline, NaN for a zero baseline.  ``False`` returns the effect
-            in outcome units, which for a linear model equals the coefficient
-            times the covariate change.
+            ``False`` (default) returns the effect in outcome units, which for
+            a linear model equals the coefficient times the covariate change.
+            ``True`` returns the percentage change
+            ``100 * (treatment - base) / base`` of the predicted mean (the
+            share-model convention) using the signed baseline, NaN for a zero
+            baseline.  For a log outcome this is *not* the percentage change
+            of the underlying quantity; use ``exp(effect) - 1``.
 
         Returns
         -------

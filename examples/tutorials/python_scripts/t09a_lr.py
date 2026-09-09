@@ -104,7 +104,8 @@ print("""
     - Residual variance is the unbiased SSE / (N - K)
       (results.residual_variance); the default se_method="hessian" with
       df_correction=True gives the textbook OLS covariance
-      SSE / (N - K) * (X'X)^-1 and Student-t p-values.
+      SSE / (N - K) * (X'X)^-1. p-values use Student's t with N - K
+      degrees of freedom for every se_method.
     - F(df_model, df_resid) jointly tests all non-constant slopes.
     - R-squared is centered because the design spans a constant.
 """)
@@ -201,16 +202,17 @@ ate = model.ate(scenarios={
 })
 ate.summary()
 
-effect_units = ate.comparison("urban", "rural", percent=False)
+effect_units = ate.comparison("urban", "rural")
 print(f"\n  ATE rural vs urban, in ln_exp units:  {effect_units:+.4f}")
 print(f"  B_RURAL coefficient:                  {results.params[1]:+.4f}")
 print(f"  Implied expenditure ratio exp(B):     {np.exp(results.params[1]):.3f}")
 
 print("""
-  comparison() defaults to percent=True (the convention of the other
-  models), i.e. the percentage change of the *predicted mean of ln_exp*.
-  For a log outcome that is not the percentage change in expenditure;
-  use percent=False and exp(effect) - 1 for that, as shown above.
+  comparison() reports the effect in outcome units (here ln_exp).
+  percent=True gives the percentage change of the *predicted mean of
+  ln_exp*, the share-model convention; for a log outcome that is not the
+  percentage change in expenditure. Use exp(effect) - 1 for that, as
+  shown above.
 """)
 
 print("  Scenario table:")
@@ -225,4 +227,4 @@ external = lr_ate_from_params(
     scenarios={"urban": {"rural": 0}, "rural": {"rural": 1}},
 )
 print(f"\n  lr_ate_from_params reproduces the fitted ATE: "
-      f"{external.comparison('urban', 'rural', percent=False):+.4f}")
+      f"{external.comparison('urban', 'rural'):+.4f}")

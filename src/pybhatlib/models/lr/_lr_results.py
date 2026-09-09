@@ -25,8 +25,8 @@ class LRResults:
     t_stat : NDArray
         ``params / se``.
     p_value : NDArray
-        Two-sided p-values: Student's t with ``df_resid`` degrees of freedom
-        for ``se_method="hessian"``, normal otherwise.
+        Two-sided p-values from Student's t with ``df_resid`` degrees of
+        freedom, for every ``se_method``.
     gradient : NDArray
         Mean per-observation score at the solution (zero up to round-off).
     loglik : float

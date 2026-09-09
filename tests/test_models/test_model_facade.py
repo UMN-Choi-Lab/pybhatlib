@@ -258,6 +258,6 @@ def test_lr_facade_scenarios_matches_free_function(lr_model):
         )
     # Linear model: the unit effect of x1 going 0 -> 1 is exactly the x1 coefficient.
     np.testing.assert_allclose(
-        via_facade.comparison("base", "treatment", percent=False),
+        via_facade.comparison("base", "treatment"),
         lr_model.results_.params[1],
     )
