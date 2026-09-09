@@ -4,6 +4,23 @@ All notable changes to pybhatlib are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Mixed MORP (`MORPFlexModel`) with `copula=False` could not estimate its
+  correlation parameters.** The rectangle-MVNCD kernel emitted no
+  joint-correlation gradient without the copula, and the shared MSL engine then
+  dropped the entire `rcor` block from the analytic score, so the
+  random-coefficient correlation and the ordinal-error correlation stayed at
+  their starting values (reported as `0.0` with `SE = 0.0`) while the fit still
+  reported convergence. The kernel now emits the unconditional ordinal-block
+  gradient (honouring `iid` / `correst`), the engine holds the rc<->kernel slots
+  at zero when the copula is off (GAUSS `_max_active`) instead of silently
+  zeroing everything, and a joint layout without a kernel omega-gradient now
+  raises instead of losing the block. Verified value-for-value against a live
+  GAUSS `MORP` run (score and reporting-space SEs). New copula-off FD gates and
+  a fit-level regression test cover the path.
+
 ## [0.3.2] - 2026-07-22
 
 First version available on PyPI. Identical in code to 0.3.1; released under a new

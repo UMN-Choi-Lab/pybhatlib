@@ -723,7 +723,10 @@ class EstimationSpace(ParamSpace):
                 gker = np.zeros((0, 0), dtype=np.float64)
                 gtempstar = gker
         elif joint:
-            if spec.active_corr_pairs and xrand.size != k * (k - 1) // 2:
+            # Embed a REDUCED active-pair vector (MNPKerCP layout) into the full
+            # joint vecndup vector; a full-length vector (MORP) is used as is.
+            if (spec.active_corr_pairs and xrand.size != k * (k - 1) // 2
+                    and xrand.size == len(spec.active_corr_pairs)):
                 full_pairs = [(i, j) for i in range(spec.nrndtot)
                               for j in range(i + 1, spec.nrndtot)]
                 embedded = np.zeros(len(full_pairs), dtype=np.float64)

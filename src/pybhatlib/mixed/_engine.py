@@ -209,6 +209,11 @@ class MixedMSLEstimator:
         self.space = space
         self.spec = pipeline.spec
         self.design = design
+        # Columns of a FULL joint ``rcor`` block (rc + kernel dims) whose pairs
+        # the spec marks inactive (rc<->kernel with the copula off, kernel pairs
+        # under iid): their score is zeroed so a gradient-based optimizer holds
+        # them at their start value, exactly like GAUSS ``_max_active``.
+        self._inactive_rcor: tuple[int, ...] = self._compute_inactive_rcor()
         self.weightind = np.asarray(weightind, dtype=np.float64)
         self.config = config
         self.trace = trace
@@ -432,9 +437,22 @@ class MixedMSLEstimator:
                 chain = np.asarray(rc.gtempstar, dtype=np.float64) @ np.linalg.inv(gchol)
                 drcor = dx11 @ chain.T                                    # (Q, n_rcor)
             else:
-                drcor = np.zeros((Q, layout.n_rcor), dtype=np.float64)
+                # A joint layout (rc + kernel correlation slots) whose kernel
+                # emitted no ``dlogp_domega`` would silently lose the whole
+                # correlation gradient (the MORP copula-off defect): fail loudly.
+                raise RuntimeError(
+                    "kernel emitted no joint-correlation gradient "
+                    f"(dlogp_domega is None) but the layout carries {layout.n_rcor} "
+                    f"correlation parameters while the random-coefficient block "
+                    f"has {ncorr_rc}; a kernel whose covariance depends on the joint "
+                    "omegastar must emit dlogp_domega."
+                )
         else:
             drcor = np.zeros((Q, 0), dtype=np.float64)
+
+        if self._inactive_rcor:
+            drcor = np.array(drcor, dtype=np.float64, copy=True)
+            drcor[:, list(self._inactive_rcor)] = 0.0
 
         # Yeo-Johnson power: d xlamrnd / d xlam = diag(2 pdlogit).
         dxlamrnddxlam = np.asarray(rc.dxlamrnddxlam, dtype=np.float64)
@@ -582,6 +600,27 @@ class MixedMSLEstimator:
         grad1, _grad2 = gnewcholparmcorscaled(omega_full, scal)      # (n_free, n_free)
         drcor = np.einsum("pj,qj->qp", grad1, total)                 # (Q, n_rcor)
         return drcor
+
+    def _compute_inactive_rcor(self) -> tuple[int, ...]:
+        """Inactive columns of a FULL joint ``rcor`` block, in ``vecndup`` order.
+
+        Empty unless the layout carries every off-diagonal pair of the joint
+        ``omegastar`` (``n_rcor == nrndtot*(nrndtot-1)//2``) while the spec marks
+        only a subset active (``MixingSpec.active_corr_pairs``). Reduced layouts
+        (MNPKerCP) already drop inactive pairs, so nothing is masked there.
+        """
+        spec = self.spec
+        layout = self.layout
+        nrndtot = int(getattr(spec, "nrndtot", 0))
+        n_free = nrndtot * (nrndtot - 1) // 2
+        active = tuple(getattr(spec, "active_corr_pairs", ()) or ())
+        if layout.n_rcor == 0 or layout.n_rcor != n_free or not active:
+            return ()
+        if len(active) >= n_free:
+            return ()
+        active_set = set(active)
+        full = [(p, q) for p in range(nrndtot) for q in range(p + 1, nrndtot)]
+        return tuple(i for i, pair in enumerate(full) if pair not in active_set)
 
     @staticmethod
     def _sub_to_full_offdiag(k: int, nrndtot: int) -> list[int]:

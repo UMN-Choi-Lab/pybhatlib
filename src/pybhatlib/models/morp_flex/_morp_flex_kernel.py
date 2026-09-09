@@ -70,11 +70,17 @@ Gradients (GAUSS ``lgd`` ``gradpdfrectn`` chain)
   and the ``meanyj`` mean/scale dependence);
 * ``dlogp_drc`` -- ``m_cond' @ gmu`` (the ``errbeta3`` sensitivity of
   ``B3subq``), zero when ``copula=False``;
-* ``dlogp_domega`` -- ``gcov`` routed through ``gcondnewcov`` (conditional
-  covariance) plus ``gmu`` routed through ``gcondnewmean`` (conditional mean),
-  over the free off-diagonal correlation elements of the full ``omegastar`` in
-  row-based ``vecndup`` order -- the **same** MNP copula seam layout. ``None``
-  when ``copula=False``.
+* ``dlogp_domega`` -- over the free off-diagonal correlation elements of the
+  full ``omegastar`` in row-based ``vecndup`` order (the **same** MNP copula
+  seam layout). With the copula on: ``gcov`` routed through ``gcondnewcov``
+  (conditional covariance) plus ``gmu`` routed through ``gcondnewmean``
+  (conditional mean). With the copula off the kernel covariance *is* the
+  unconditional ordinal block ``omegastar[nord, nord]``, so ``gcov`` maps
+  one-to-one onto the ordinal-kernel pairs (``iid`` / ``correst``-masked pairs
+  are left at zero; the rc<->kernel pairs are zero). ``None`` only when there
+  are no free correlation elements. The shared engine chains it through the
+  joint radial parameterization, so the ordinal-error correlation is estimable
+  without a copula (GAUSS ``_nocorrrcker = 1``).
 
 ``p_obs`` is always sourced from ``gradpdfrectn`` when gradients are requested
 (and from ``pdfrectn`` otherwise); the two agree to ~1e-12, so an analytic
@@ -189,7 +195,8 @@ class RectMvncdKernel:
         If ``True`` condition the ordinal kernel errors on the drawn random
         coefficients (GAUSS ``condition``) and emit ``dlogp_drc`` /
         ``dlogp_domega``; if ``False`` use the unconditional ordinal covariance
-        block and emit ``dlogp_drc = 0`` / ``dlogp_domega = None``.
+        block, emit ``dlogp_drc = 0`` and a ``dlogp_domega`` carrying only the
+        ordinal-kernel pairs (the rc<->kernel entries are zero and stay fixed).
         ``copula=True`` requires ``nrndcoef >= 1``.
     yj_kernel : bool, default False
         If ``True`` use the Yeo-Johnson kernel (GAUSS ``_normker == 0``) with an
@@ -693,7 +700,7 @@ class RectMvncdKernel:
             ``dlogp_dkparams`` ``(n_obs, n_thresh + n_kernlam)``, ``dlogp_drc``
             ``(n_obs, nrndcoef)`` (``= d lnP / d errbeta3``), and
             ``dlogp_domega`` ``(n_obs, nrndtot*(nrndtot-1)//2)`` in ``vecndup``
-            order (``None`` when ``copula=False``).
+            order (``None`` when there are no free correlation elements).
         """
         Vsub = np.asarray(Vsub, dtype=np.float64)
         y_ord = np.asarray(obs.y_ord, dtype=np.int64)
@@ -726,9 +733,33 @@ class RectMvncdKernel:
         dlogp_drc = np.zeros((n_obs, k), dtype=np.float64)
         dlogp_domega = (
             np.zeros((n_obs, n_free), dtype=np.float64)
-            if (self.copula and want_grad)
+            if (want_grad and n_free > 0)
             else None
         )
+        # Copula off: the kernel covariance is the unconditional ordinal block
+        # ``omegastar[k:, k:]`` itself, so ``d lnP / d omega_{k+a, k+b}`` is the
+        # ``gcov`` vech cotangent (off-diagonal doubling already applied) at the
+        # matching position. Only pairs that actually feed ``xi2subq`` are
+        # emitted: ``iid`` forces the identity and ``correst`` zeroes masked
+        # pairs, so their thetas must not receive a gradient.
+        uncond_pairs: list[tuple[int, int]] = []
+        if dlogp_domega is not None and not self.copula and not self.iid:
+            full_pos = {
+                pair: idx for idx, pair in enumerate(
+                    (p, q) for p in range(nrndtot) for q in range(p + 1, nrndtot)
+                )
+            }
+            vech_pos = {
+                pair: idx for idx, pair in enumerate(
+                    (a, b) for a in range(nord) for b in range(a, nord)
+                )
+            }
+            for a in range(nord):
+                for b in range(a + 1, nord):
+                    if self.correst is None or bool(self.correst[a, b]):
+                        uncond_pairs.append(
+                            (full_pos[(k + a, k + b)], vech_pos[(a, b)])
+                        )
 
         zero_seed = 0.0
         regions = self._obs_regions(obs, y_ord, tau)
@@ -851,6 +882,11 @@ class RectMvncdKernel:
                 )                                                # gX (n_free, nord)
                 dom = dom + gxmean_domega @ (np.asarray(gmu) * invP)
                 dlogp_domega[i] = dom
+            elif uncond_pairs:
+                # --- unconditional ordinal block (copula off) --------------
+                gcov_arr = np.asarray(gcov, dtype=np.float64)
+                for col, vpos in uncond_pairs:
+                    dlogp_domega[i, col] = gcov_arr[vpos] * invP
 
         return KernelObsResult(
             p_obs=p_obs,
