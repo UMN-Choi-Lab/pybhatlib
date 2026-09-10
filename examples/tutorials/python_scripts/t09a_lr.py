@@ -9,8 +9,9 @@ What you will learn:
     coefficient names to data columns (``"uno"`` = constant)
   - That estimation is analytical (SVD least squares): no optimizer,
     starting values, or convergence settings
-  - How to read ``results.summary()``: coefficient table, R-squared,
-    F-test, residual variance
+  - How to read ``results.summary()``: coefficient table with the
+    residual standard deviation ``sigma`` as the trailing parameter,
+    R-squared, F-test, residual variance
   - How ``LRControl(se_method=...)`` switches between classical,
     heteroscedasticity-robust (White), and BHHH standard errors
   - Prediction on the training data or on a new DataFrame
@@ -99,13 +100,18 @@ results.summary()
 
 print("""
   Reading the summary:
+    - The last row, sigma, is the residual standard deviation: the
+      Gaussian MLE sqrt(SSE / N), reported as a parameter with its own
+      standard error exactly as MDCEV reports its scale (results.params
+      is [coefficients..., sigma]). Its t-statistic tests sigma = 0 and
+      carries no information.
     - Mean log-likelihood is the Gaussian log-likelihood per observation
-      at the MLE residual variance sigma2 = SSE / N (results.sigma2).
+      at sigma^2 = SSE / N (results.sigma2).
     - Residual variance is the unbiased SSE / (N - K)
       (results.residual_variance); the default se_method="hessian" with
       df_correction=True gives the textbook OLS covariance
-      SSE / (N - K) * (X'X)^-1. p-values use Student's t with N - K
-      degrees of freedom for every se_method.
+      SSE / (N - K) * (X'X)^-1 for the coefficients. p-values use
+      Student's t with N - K degrees of freedom for every se_method.
     - F(df_model, df_resid) jointly tests all non-constant slopes.
     - R-squared is centered because the design spans a constant.
 """)
@@ -124,8 +130,9 @@ print("""
   Expenditure data are typically heteroscedastic, so compare the
   classical covariance with the White sandwich. With df_correction=True
   (the default) the sandwich is the HC1 form; "bhhh" inverts the score
-  cross-product of the Gaussian likelihood. Coefficients are identical
-  across methods; only the standard errors change.
+  cross-product of the Gaussian likelihood over all parameters including
+  sigma. Estimates are identical across methods; only the standard
+  errors change.
 """)
 
 se_table = {}
@@ -218,8 +225,9 @@ print("""
 print("  Scenario table:")
 print(ate.to_dataframe().round(4).to_string())
 
-# ATEs from externally supplied coefficients (e.g. GAUSS output) without
-# re-fitting: same scenario API, same numbers.
+# ATEs from externally supplied estimates (e.g. GAUSS output) without
+# re-fitting: pass the reported vector [coefficients..., sigma] exactly as
+# printed by summary(); same scenario API, same numbers.
 external = lr_ate_from_params(
     results.params,
     param_names=results.param_names,

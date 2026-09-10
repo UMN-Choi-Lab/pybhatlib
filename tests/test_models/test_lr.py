@@ -30,13 +30,19 @@ def test_classical_reference(data, capsys):
     x, y = data.x.to_numpy(), data.y.to_numpy()
     slope = ((x - x.mean()) @ (y - y.mean())) / np.sum((x - x.mean())**2)
     intercept = y.mean() - slope * x.mean()
-    assert_allclose(r.params, [intercept, slope])
     residual = y - intercept - slope * x
+    # params = [beta..., sigma] with sigma the Gaussian MLE sqrt(SSE / N).
+    assert_allclose(r.params, [intercept, slope, np.sqrt(residual @ residual / 80)])
+    assert r.param_names == ["CON", "B_X", "sigma"]
     variance = residual @ residual / (len(x) - 2)
     sxx = np.sum((x - x.mean())**2)
     covariance = variance * np.array([[1 / len(x) + x.mean()**2 / sxx, -x.mean() / sxx],
                                       [-x.mean() / sxx, 1 / sxx]])
-    assert_allclose(r.cov_matrix, covariance)
+    assert_allclose(r.cov_matrix[:2, :2], covariance)
+    # sigma is block-diagonal to the coefficients; SE = sigma / sqrt(2 N) times
+    # the N / (N - K) df correction.
+    assert_allclose(r.cov_matrix[2, :2], 0, atol=1e-14)
+    assert_allclose(r.se[2], r.params[2] / np.sqrt(2 * 78))
     assert_allclose(r.p_value, 2 * t.sf(abs(r.params / r.se), 78))
     assert_allclose(r.gradient, 0, atol=1e-12)
     assert_allclose(m.predict(), y - residual)
@@ -51,12 +57,22 @@ def test_classical_reference(data, capsys):
 def test_covariances(data, method):
     m = model(data, se_method=method, df_correction=False)
     r = m.fit()
-    bread = np.linalg.inv(m.X.T @ m.X)
-    xr = m.X * r.residuals[:, None]
-    expected = {"hessian": r.sigma2 * bread,
-                "sandwich": bread @ xr.T @ xr @ bread,
-                "bhhh": np.linalg.inv(xr.T @ xr) * r.sigma2**2}[method]
+    xtx_inv = np.linalg.inv(m.X.T @ m.X)
+    sigma = np.sqrt(r.sigma2)
+    bread = np.zeros((3, 3))
+    bread[:2, :2], bread[2, 2] = r.sigma2 * xtx_inv, r.sigma2 / 160
+    scores = np.column_stack([m.X * r.residuals[:, None] / r.sigma2,
+                              (r.residuals**2 / r.sigma2 - 1) / sigma])
+    expected = {"hessian": bread,
+                "sandwich": bread @ scores.T @ scores @ bread,
+                "bhhh": np.linalg.inv(scores.T @ scores)}[method]
     assert_allclose(r.cov_matrix, expected)
+    # Coefficient block keeps the OLS / White forms (bhhh picks up the
+    # third-moment cross term with sigma, so it is not exactly separable).
+    xr = m.X * r.residuals[:, None]
+    if method != "bhhh":
+        assert_allclose(r.cov_matrix[:2, :2], {"hessian": r.sigma2 * xtx_inv,
+                                               "sandwich": xtx_inv @ xr.T @ xr @ xtx_inv}[method])
     # Student-t p-values with N - K df for every se_method.
     assert_allclose(r.p_value, 2 * t.sf(np.abs(r.t_stat), 78))
     corrected = model(data, se_method=method).fit()
@@ -65,12 +81,14 @@ def test_covariances(data, method):
 
 def test_likelihood_derivatives(data):
     X = np.column_stack([np.ones(len(data)), data.x])
-    beta = np.array([1.2, 2.1])
+    theta = np.array([1.2, 2.1, 1.3])  # [beta..., sigma]
     y = data.y.to_numpy()
-    assert_allclose(lr_gradient(beta, X, y, 1.7),
-                    approx_derivative(lambda b: lr_loglik(b, X, y, 1.7), beta), atol=1e-8)
-    assert_allclose(lr_hessian(beta, X, y, 1.7),
-                    approx_derivative(lambda b: lr_gradient(b, X, y, 1.7).sum(axis=0), beta))
+    assert_allclose(lr_gradient(theta, X, y),
+                    approx_derivative(lambda b: lr_loglik(b, X, y), theta), atol=1e-8)
+    assert_allclose(lr_hessian(theta, X, y),
+                    approx_derivative(lambda b: lr_gradient(b, X, y).sum(axis=0), theta))
+    with pytest.raises(ValueError, match="sigma"):
+        lr_loglik([1.2, 2.1, -1.0], X, y)
 
 
 def test_scenarios_external_and_csv(data, tmp_path):
@@ -116,14 +134,19 @@ def test_validation_and_no_covariance(data):
         lr_predict(r, np.ones((2, 3)))
     with pytest.raises(ValueError, match="param_names"):
         LRResults.from_estimates([1, 2], param_names=["a"])
+    with pytest.raises(ValueError, match="sigma must be positive"):
+        LRResults.from_estimates([1, 2, -0.5])
+    assert LRResults.from_estimates([1, 2], sigma=0.5).param_names == ["b1", "sigma"]
+    with pytest.raises(ValueError, match="reserved"):
+        LRModel(data, "y", {"sigma": "x"})
 
 
 def test_exact_fit_and_no_intercept(data):
     r = model(data.assign(y=2 + 3 * data.x)).fit()
-    assert_allclose(r.params, [2, 3])
+    assert_allclose(r.params, [2, 3, 0])
     assert r.sigma2 == 0 and np.isposinf(r.loglik)
     assert_allclose(r.se, 0)
     m = LRModel(data, "y", {"B_X": "x"}, control=LRControl(verbose=0))
     r = m.fit()
-    assert_allclose(r.params, [data.x @ data.y / (data.x @ data.x)])
+    assert_allclose(r.params[:-1], [data.x @ data.y / (data.x @ data.x)])
     assert_allclose(r.r_squared, 1 - r.residuals @ r.residuals / (data.y @ data.y))

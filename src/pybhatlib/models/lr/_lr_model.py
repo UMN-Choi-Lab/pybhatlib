@@ -78,9 +78,14 @@ class LRModel(BaseModel):
     -----
     Rank-deficient designs and ``N <= K`` are rejected so that inference is
     identified.  Coefficients come from the SVD of the design matrix (which
-    avoids squaring its condition number).  The residual variance is the
-    Gaussian MLE ``SSE / N`` (``results.sigma2``); ``SSE / (N - K)`` is
-    reported as ``results.residual_variance``.
+    avoids squaring its condition number).  The residual standard deviation
+    ``sigma = sqrt(SSE / N)`` (the Gaussian MLE) is reported as the trailing
+    element of ``results.params`` with its own standard error, as MDCEV does
+    with its scale; ``SSE / (N - K)`` remains available as
+    ``results.residual_variance``.  The information matrix is block-diagonal
+    between the coefficients and ``sigma`` at the solution, so the
+    coefficient standard errors are the usual OLS ones for the Hessian and
+    sandwich estimators (BHHH uses the full score cross-product).
 
     Examples
     --------
@@ -116,6 +121,8 @@ class LRModel(BaseModel):
         self.n_beta = self.X.shape[1]
         if len(self.var_names) != self.n_beta:
             raise ValueError("var_names must match the number of coefficients")
+        if "sigma" in self.var_names:
+            raise ValueError('"sigma" is reserved for the residual standard deviation')
         self.y = self.data[dep_var].to_numpy(dtype=float)
         self.N = len(self.y)
         if self.y.shape != (self.N,) or not np.isfinite(self.y).all():
@@ -129,7 +136,7 @@ class LRModel(BaseModel):
         ctrl = deepcopy(self.control)
         ctrl.__post_init__()  # re-validate: control may have been mutated after construction
         if ctrl.verbose >= 1:
-            print(f"  LR estimation: {self.N} obs, {self.n_beta} parameters")
+            print(f"  LR estimation: {self.N} obs, {self.n_beta} coefficients + sigma")
         # SVD avoids squaring the design's condition number in the solve.
         u, s, vt = np.linalg.svd(self.X, full_matrices=False)
         if np.any(s <= np.finfo(float).eps * max(self.X.shape) * s[0]):
@@ -145,24 +152,33 @@ class LRModel(BaseModel):
         )
         if exact:
             sigma2 = 0.0
-        bread = (vt.T / s**2) @ vt
-        cov = np.full((self.n_beta, self.n_beta), np.nan)
+        theta = np.append(beta, np.sqrt(sigma2))  # params = [beta..., sigma]
+        n_par = self.n_beta + 1
+        scores = None if exact else lr_gradient(theta, self.X, self.y)
+        # Inverse negative Hessian at the solution: block-diagonal because
+        # X'r = 0; coefficient block via the SVD, sigma block sigma^2 / (2N).
+        bread = np.zeros((n_par, n_par))
+        bread[:-1, :-1] = sigma2 * (vt.T / s**2) @ vt
+        bread[-1, -1] = sigma2 / (2 * self.N)
+        cov = np.full((n_par, n_par), np.nan)
         if ctrl.want_covariance:
-            if ctrl.se_method == "hessian":
-                cov = sigma2 * bread
-            elif ctrl.se_method == "sandwich":
-                xr = self.X * residuals[:, None]
-                cov = bread @ (xr.T @ xr) @ bread
-            elif not exact:
-                scores = lr_gradient(beta, self.X, self.y, sigma2)
-                if np.linalg.matrix_rank(scores) < self.n_beta:
-                    raise ValueError("BHHH score matrix is rank deficient")
-                cov = np.linalg.inv(scores.T @ scores)
-            if ctrl.df_correction:
-                cov *= self.N / df
+            if exact:
+                if ctrl.se_method != "bhhh":
+                    cov = np.zeros((n_par, n_par))
+            else:
+                if ctrl.se_method == "hessian":
+                    cov = bread
+                elif ctrl.se_method == "sandwich":
+                    cov = bread @ (scores.T @ scores) @ bread
+                else:
+                    if np.linalg.matrix_rank(scores) < n_par:
+                        raise ValueError("BHHH score matrix is rank deficient")
+                    cov = np.linalg.inv(scores.T @ scores)
+                if ctrl.df_correction:
+                    cov = cov * (self.N / df)
         se = np.sqrt(np.maximum(np.diag(cov), 0))
         with np.errstate(divide="ignore", invalid="ignore"):
-            stat = beta / se
+            stat = theta / se
             corr = cov / np.outer(se, se)
         p = 2 * t.sf(np.abs(stat), df)  # Student's t with N - K df for every se_method
         ones = np.ones(self.N)
@@ -179,12 +195,11 @@ class LRModel(BaseModel):
         else:
             f_stat = (ssr / df_model) / (sse / df)
         result = LRResults(
-            params=beta, se=se, t_stat=stat, p_value=p,
-            gradient=lr_gradient(beta, self.X, self.y, sigma2).mean(axis=0)
-            if not exact else np.full(self.n_beta, np.nan),
-            loglik=float(lr_loglik(beta, self.X, self.y, sigma2).mean())
+            params=theta, se=se, t_stat=stat, p_value=p,
+            gradient=scores.mean(axis=0) if not exact else np.full(n_par, np.nan),
+            loglik=float(lr_loglik(theta, self.X, self.y).mean())
             if not exact else np.inf,
-            n_obs=self.N, param_names=self.var_names.copy(),
+            n_obs=self.N, param_names=self.var_names + ["sigma"],
             corr_matrix=corr, cov_matrix=cov, control=ctrl,
             data_path=self.data_path, convergence_time=(perf_counter() - start) / 60,
             sigma2=sigma2, residual_variance=sse / df, df_resid=df,

@@ -16,12 +16,14 @@ def lr_predict(results: LRResults, X_new: ArrayLike) -> NDArray:
     results : LRResults
         Fitted results, or :meth:`LRResults.from_estimates` output.
     X_new : array_like, shape (N, K)
-        Design matrix in the same column order as ``results.params``,
-        including the constant column if one was estimated.
+        Design matrix in the same column order as the coefficients
+        ``results.params[:-1]`` (the trailing slot is ``sigma``), including
+        the constant column if one was estimated.
 
     Returns
     -------
     y_hat : ndarray, shape (N,)
-        Predicted conditional means ``X_new @ params``.
+        Predicted conditional means ``X_new @ params[:-1]``.
     """
-    return _validate_design(X_new, len(results.params)) @ results.params
+    beta = results.params[:-1]
+    return _validate_design(X_new, len(beta)) @ beta

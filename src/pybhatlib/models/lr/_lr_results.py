@@ -18,8 +18,9 @@ class LRResults:
     Attributes
     ----------
     params : NDArray
-        Regression coefficients, shape (K,).  The residual variance is not a
-        parameter; see ``sigma2`` / ``residual_variance``.
+        Regression coefficients followed by the residual standard deviation
+        ``sigma`` (Gaussian MLE ``sqrt(SSE / N)``) as the trailing element,
+        shape (K + 1,), mirroring the MDCEV scale convention.
     se : NDArray
         Standard errors aligned with ``params``.
     t_stat : NDArray
@@ -36,7 +37,7 @@ class LRResults:
     n_obs : int
         Number of observations.
     param_names : list[str]
-        Coefficient names aligned with ``params``.
+        Coefficient names followed by ``"sigma"``, aligned with ``params``.
     corr_matrix, cov_matrix : NDArray
         Correlation / covariance matrix of the coefficient estimates.  NaN
         when ``want_covariance=False``.
@@ -50,7 +51,7 @@ class LRResults:
     message : str
         Estimation note.
     sigma2 : float
-        Gaussian MLE residual variance ``SSE / N``.
+        Gaussian MLE residual variance ``SSE / N`` (``params[-1] ** 2``).
     residual_variance : float
         Unbiased residual variance ``SSE / (N - K)``.
     df_resid : int
@@ -104,23 +105,30 @@ class LRResults:
     @classmethod
     def from_estimates(
         cls,
-        beta: ArrayLike,
+        b_reported: ArrayLike,
+        sigma: float | None = None,
         *,
         param_names: list[str] | None = None,
         control: LRControl | None = None,
     ) -> LRResults:
-        """Construct a minimal ``LRResults`` from externally supplied coefficients.
+        """Construct a minimal ``LRResults`` from externally supplied estimates.
 
         Intended for post-estimation use (prediction, :func:`lr_ate`) when a
         full fit object is not available.  Inference fields are NaN and must
-        not be interpreted, mirroring :meth:`MNLResults.from_estimates`.
+        not be interpreted, mirroring :meth:`MDCEVResults.from_estimates`.
 
         Parameters
         ----------
-        beta : array_like, shape (K,)
-            Regression coefficients.
+        b_reported : array_like, shape (K + 1,)
+            Reported parameter vector ``[beta..., sigma]`` exactly as printed
+            by :meth:`summary`: the coefficients followed by the residual
+            standard deviation.
+        sigma : float, optional
+            Residual standard deviation; overrides the trailing element of
+            *b_reported* (which must still be present).
         param_names : list[str] or None
-            Names for each element of *beta*; defaults to ``["b1", "b2", ...]``.
+            Names aligned with *b_reported*; defaults to
+            ``["b1", ..., "bK", "sigma"]``.
         control : LRControl or None
             Control structure to carry through (defaults to ``LRControl()``).
 
@@ -128,21 +136,26 @@ class LRResults:
         -------
         LRResults
         """
-        beta = np.asarray(beta, dtype=float)
-        if beta.ndim != 1 or not len(beta) or not np.isfinite(beta).all():
-            raise ValueError("beta must be a nonempty finite vector")
+        theta = np.array(b_reported, dtype=float)
+        if theta.ndim != 1 or len(theta) < 2 or not np.isfinite(theta).all():
+            raise ValueError("b_reported must be a finite vector [beta..., sigma]")
+        if sigma is not None:
+            theta[-1] = float(sigma)
+        if theta[-1] <= 0:
+            raise ValueError(f"sigma must be positive, got {theta[-1]}")
         names = list(param_names) if param_names is not None else [
-            f"b{i + 1}" for i in range(len(beta))
-        ]
-        if len(names) != len(beta):
-            raise ValueError("param_names must match beta length")
-        v = np.full(len(beta), np.nan)
-        m = np.full((len(beta), len(beta)), np.nan)
+            f"b{i + 1}" for i in range(len(theta) - 1)
+        ] + ["sigma"]
+        if len(names) != len(theta):
+            raise ValueError("param_names must match b_reported length")
+        v = np.full(len(theta), np.nan)
+        m = np.full((len(theta), len(theta)), np.nan)
         return cls(
-            params=beta.copy(), se=v.copy(), t_stat=v.copy(), p_value=v.copy(),
+            params=theta, se=v.copy(), t_stat=v.copy(), p_value=v.copy(),
             gradient=v.copy(), loglik=np.nan, n_obs=0, param_names=names,
             corr_matrix=m.copy(), cov_matrix=m.copy(),
             control=control or LRControl(), message="External estimates",
+            sigma2=float(theta[-1] ** 2),
         )
 
     def to_dataframe(self) -> pd.DataFrame:

@@ -9,8 +9,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - **Linear regression (LR)** — `LRModel` / `LRControl` / `LRResults`: one
   continuous outcome solved in closed form (SVD least squares) with classical,
-  White-robust, and BHHH standard errors; `lr_predict`, `lr_ate` /
-  `lr_ate_from_params` on the shared `scenarios=` API; tutorial `t09a_lr`.
+  White-robust, and BHHH standard errors; the residual standard deviation
+  `sigma` is reported as the trailing parameter (MDCEV convention);
+  `lr_predict`, `lr_ate` / `lr_ate_from_params` on the shared `scenarios=`
+  API; tutorial `t09a_lr`.
 
 ## [0.3.2] - 2026-07-22
 

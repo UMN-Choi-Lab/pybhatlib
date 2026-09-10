@@ -162,7 +162,7 @@ def lr_ate(
         copy of *data* and the design is rebuilt through *spec*.
     X : ndarray, shape (N, K), optional
         Pre-built design matrix for the baseline prediction.  Regressor order
-        must match ``results.params``.
+        must match the coefficients ``results.params[:-1]``.
 
     Returns
     -------
@@ -196,22 +196,27 @@ def lr_ate(
 
 
 def lr_ate_from_params(
-    beta: ArrayLike,
+    b_reported: ArrayLike,
     *,
+    sigma: float | None = None,
     param_names: list[str] | None = None,
     control: LRControl | None = None,
     **kwargs,
 ) -> LRATEResult:
-    """Scenario analysis from externally supplied regression coefficients.
+    """Scenario analysis from externally supplied estimates.
 
-    Convenience wrapper mirroring :func:`mnl_ate_from_params`: builds a
+    Convenience wrapper mirroring :func:`mdcev_ate_from_params`: builds a
     results object via :meth:`LRResults.from_estimates` and dispatches to
     :func:`lr_ate`.
 
     Parameters
     ----------
-    beta : array_like, shape (K,)
-        Regression coefficients in the order of the spec.
+    b_reported : array_like, shape (K + 1,)
+        Reported vector ``[beta..., sigma]`` in the order of the spec, exactly
+        as printed by ``summary()`` (``sigma`` does not affect the ATE).
+    sigma : float or None
+        Forwarded to :meth:`LRResults.from_estimates` (overrides the trailing
+        slot).
     param_names : list[str] or None
         Forwarded to :meth:`LRResults.from_estimates`.
     control : LRControl or None
@@ -225,5 +230,5 @@ def lr_ate_from_params(
     LRATEResult
     """
     return lr_ate(LRResults.from_estimates(
-        beta, param_names=param_names, control=control,
+        b_reported, sigma, param_names=param_names, control=control,
     ), **kwargs)
