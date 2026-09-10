@@ -1,10 +1,10 @@
-"""Uniform post-estimation object surface across all four models.
+"""Uniform post-estimation object surface across all models.
 
-Every model (MNP / MORP / MDCEV / MNL) must:
+Every model (MNP / MORP / MDCEV / MNL / LR) must:
 
 * subclass :class:`BaseModel`,
 * expose ``fit`` / ``predict`` / ``ate`` (plus a ``predict_choice`` or
-  ``predict_category`` argmax helper),
+  ``predict_category`` argmax helper for the discrete-outcome models),
 * cache the fitted results object on ``self.results_`` after ``fit()``, and
 * raise a clear error when a post-estimation helper is used before fitting.
 """
@@ -23,6 +23,7 @@ from pybhatlib.models.mnp import MNPModel, MNPControl
 from pybhatlib.models.morp import MORPModel, MORPControl, morp_ate
 from pybhatlib.models.mdcev import MDCEVModel, MDCEVControl, mdcev_ate
 from pybhatlib.models.mnl import MNLModel, MNLControl
+from pybhatlib.models.lr import LRModel, LRControl, lr_ate
 
 ALTS = ["Alt1_ch", "Alt2_ch", "Alt3_ch"]
 SPEC = {
@@ -33,7 +34,7 @@ SPEC = {
     "COST": {"Alt1_ch": "COST_DA", "Alt2_ch": "COST_SR", "Alt3_ch": "COST_TR"},
 }
 
-ALL_MODELS = [MNPModel, MORPModel, MDCEVModel, MNLModel]
+ALL_MODELS = [MNPModel, MORPModel, MDCEVModel, MNLModel, LRModel]
 
 
 @pytest.mark.parametrize("model_cls", ALL_MODELS)
@@ -45,10 +46,12 @@ def test_model_subclasses_basemodel(model_cls):
 def test_model_exposes_uniform_facade(model_cls):
     for meth in ("fit", "predict", "ate"):
         assert callable(getattr(model_cls, meth, None)), (model_cls, meth)
-    # argmax helper is named per-domain (choice vs category)
-    assert hasattr(model_cls, "predict_choice") or hasattr(
-        model_cls, "predict_category"
-    )
+    # argmax helper is named per-domain (choice vs category); a continuous
+    # outcome (LR) has no argmax.
+    if model_cls is not LRModel:
+        assert hasattr(model_cls, "predict_choice") or hasattr(
+            model_cls, "predict_category"
+        )
 
 
 def _mnl(travelmode_path, **ctrl):
@@ -109,7 +112,7 @@ def test_mnp_fit_kwarg_forwards_through_wrapper(travelmode_path):
 
 
 # ----------------------------------------------------------------------
-# Uniform scenarios= at the object layer (all four models)
+# Uniform scenarios= at the object layer (all models)
 # ----------------------------------------------------------------------
 
 
@@ -225,3 +228,36 @@ def test_mdcev_facade_scenarios_matches_free_function(mdcev_model):
         )
     assert via_facade.alternative_names == MDCEV_ALTS
     assert via_facade.comparison("base", "treatment").shape == (len(MDCEV_ALTS),)
+
+
+@pytest.fixture(scope="module")
+def lr_model():
+    rng = np.random.default_rng(7)
+    n = 100
+    df = pd.DataFrame({"x1": rng.standard_normal(n), "x2": rng.standard_normal(n)})
+    df["y"] = 1.0 + 0.5 * df["x1"] - 0.3 * df["x2"] + rng.standard_normal(n)
+    model = LRModel(
+        data=df, dep_var="y", spec={"CON": "uno", "x1": "x1", "x2": "x2"},
+        control=LRControl(verbose=0),
+    )
+    model.fit()
+    return model
+
+
+def test_lr_facade_scenarios_matches_free_function(lr_model):
+    """LRModel.ate(scenarios=) auto-fills data/spec/dep_var; effects are in outcome units."""
+    via_facade = lr_model.ate(scenarios=SCENARIOS)
+    via_func = lr_ate(
+        lr_model.results_, data=lr_model.data, spec=lr_model.spec_dict,
+        dep_var="y", scenarios=SCENARIOS,
+    )
+    assert set(via_facade.means_per_scenario) == set(SCENARIOS)
+    for name in SCENARIOS:
+        np.testing.assert_allclose(
+            via_facade.means_per_scenario[name], via_func.means_per_scenario[name]
+        )
+    # Linear model: the unit effect of x1 going 0 -> 1 is exactly the x1 coefficient.
+    np.testing.assert_allclose(
+        via_facade.comparison("base", "treatment"),
+        lr_model.results_.params[1],
+    )

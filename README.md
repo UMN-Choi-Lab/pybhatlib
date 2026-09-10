@@ -81,6 +81,9 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 - **Multiple Discrete-Continuous Extreme Value (MDCEV)** — traditional
   (Bhat 2008) and linear (Bhat 2018) outside-good utility specifications,
   selected via `MDCEVControl.utility`
+- **Multinomial Logit (MNL)**
+- **Linear regression (LR)** — single continuous outcome, closed-form OLS with
+  classical / White-robust / BHHH standard errors
 
 **Numerical core**
 - `vecup` — vecdup, matdupfull, LDLT decomposition, truncated MVN moments
@@ -155,6 +158,8 @@ matching `.py` script under `python_scripts/`):
 | MNP | `t04a_mnp_iid` … `t04g_mnp_forecasting`, `t04h_bhatlib_table1`, `t04i_bhat2018_table2` |
 | MORP | `t05b_morp_ate_predict` |
 | MDCEV | `t07a_mdcev_trad`, `t07b_mdcev_lin` |
+| MNL | `t08a_mnl` |
+| LR | `t09a_lr` |
 | Backends & verification | `t06a_backend_switching`, `t06b_custom_specs`, `t06c_gradient_verification` |
 
 ## Contributing
