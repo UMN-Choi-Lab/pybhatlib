@@ -1,4 +1,9 @@
-"""pybhatlib: Python implementation of BHATLIB for matrix-based econometric inference."""
+"""pybhatlib: matrix-based econometric inference in Python.
+
+Analytic multivariate normal CDF evaluation with gradients, plus maximum-likelihood
+estimation of discrete-choice models. The numerical core follows the GAUSS BHATLIB
+library by Chandra Bhat and colleagues (UT Austin / Aptech Systems).
+"""
 
 from pybhatlib._version import __version__
 from pybhatlib.models.lr import (

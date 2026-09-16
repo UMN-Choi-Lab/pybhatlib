@@ -5,14 +5,22 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/UMN-Choi-Lab/pybhatlib/tests.yml?branch=main&label=tests)](https://github.com/UMN-Choi-Lab/pybhatlib/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/pypi/l/pybhatlib)](https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/LICENSE)
 
-Python reimplementation of **BHATLIB** — an open-source library for statistical and
-econometric matrix-based inference methods.
+Open-source Python library for matrix-based econometric inference: multivariate
+normal CDF evaluation with analytic gradients, and maximum-likelihood estimation of
+discrete-choice models (MNP, MORP, MDCEV, MNL).
 
-BHATLIB (Bhat, Clower, Haddad, Jones; UT Austin / Aptech Systems) provides efficient
-matrix operations, gradient-enabled routines for multivariate distribution evaluation
-(including Bhat's 2018 MVNCD analytic approximation), and pre-built econometric models.
+The numerical core follows the GAUSS **BHATLIB** library by Chandra Bhat and
+colleagues (UT Austin / Aptech Systems) and implements Bhat's (2018) analytic
+MVNCD approximation.
 
 ## Installation
+
+```bash
+pip install pybhatlib                  # core (NumPy + SciPy + Numba)
+pip install "pybhatlib[torch]"         # add PyTorch backend (optional GPU)
+```
+
+From source (for development, or to run the bundled examples and tutorials):
 
 ```bash
 git clone https://github.com/UMN-Choi-Lab/pybhatlib.git
@@ -79,11 +87,15 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 - **Multivariate Ordered Response Probit (MORP)** — multiple ordinal outcomes
   with shared covariance; per-outcome `spec` mapping
 - **Multiple Discrete-Continuous Extreme Value (MDCEV)** — traditional
-  (Bhat 2008) and linear (Bhat 2018) outside-good utility specifications,
-  selected via `MDCEVControl.utility`
+  (Bhat 2008) and linear outside-good utility specifications, selected via
+  `MDCEVControl.utility`
 - **Multinomial Logit (MNL)**
 - **Linear regression (LR)** — single continuous outcome, closed-form OLS with
   classical / White-robust / BHHH standard errors
+- **Mixed / simulation-based models** — `MixMNLModel`, `MNPKerCPModel`,
+  `MORPFlexModel`, `MDCEVMixedModel` on a shared maximum-simulated-likelihood
+  engine (Halton draws, panel data, normal / log-normal / Yeo-Johnson
+  coefficient transforms). New and under active refinement.
 
 **Numerical core**
 - `vecup` — vecdup, matdupfull, LDLT decomposition, truncated MVN moments
@@ -116,8 +128,8 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 
 ## Verification
 
-pybhatlib reproduces Table 1 from the BHATLIB paper (Bhat 2018) using the
-TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
+pybhatlib reproduces Table 1 of the BHATLIB GAUSS reference implementation using
+the TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 
 | Model | Specification | Target LL | Achieved LL | Status |
 |-------|--------------|-----------|-------------|--------|
@@ -127,10 +139,10 @@ TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 | (c)     | + Random coeff. OVTT        | -635.871 | -635.871 | exact match |
 | (d)     | 2-segment mixture           | -634.975 | -632.912 | close (multi-modal) |
 
-Models (a)–(c) reproduce the published estimates and BHHH standard errors to
-≤0.001 on every parameter (verified end-to-end against GAUSS 26.1.1 + MaxLik
-5.0.9). Model (d) is documented as multi-modal — the Python optimum is a
-slightly better local mode than the published one.
+Models (a)–(c) reproduce the GAUSS estimates and BHHH standard errors to ≤0.001
+on every parameter (verified end-to-end against GAUSS 26.1.1 + MaxLik 5.0.9).
+Model (d) is multi-modal — the Python optimum is a slightly better local mode
+than the GAUSS one.
 
 For MORP, `iid=False` now uses GAUSS BHATLIB's unit-variance identification by
 default (`MORPControl.fix_scales=True`): the latent-utility variances are fixed
@@ -178,8 +190,9 @@ pytest tests/ -m torch        # PyTorch backend tests only
 1. Bhat, C. R. (2018). New Matrix-Based Methods for the Analytic Evaluation of the
    Multivariate Cumulative Normal Distribution Function. *Transportation Research
    Part B*, 109: 238–256.
-2. Bhat, C. R., Clower, E., Haddad, A. J., Jones, J. BHATLIB: An Open-Source
-   Library for Statistical and Econometric Matrix-Based Inference Methods in GAUSS.
+2. Bhat, C. R. (2008). The Multiple Discrete-Continuous Extreme Value (MDCEV)
+   Model: Role of Utility Function Parameters, Identification Considerations, and
+   Model Extensions. *Transportation Research Part B*, 42(3): 274–303.
 
 ## License
 
