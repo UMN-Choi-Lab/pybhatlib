@@ -1,6 +1,10 @@
 """pybhatlib: Python implementation of BHATLIB for matrix-based econometric inference."""
 
 from pybhatlib._version import __version__
+from pybhatlib.models.lr import (
+    LRATEResult, LRControl, LRModel, LRResults,
+    lr_ate, lr_ate_from_params, lr_predict,
+)
 from pybhatlib.models.mdcev import (
     MDCEVATEResult,
     MDCEVControl,
@@ -45,6 +49,14 @@ from pybhatlib.models.mdcev_mixed import (
 
 __all__ = [
     "__version__",
+    # Linear regression
+    "LRControl",
+    "LRModel",
+    "LRResults",
+    "LRATEResult",
+    "lr_ate",
+    "lr_ate_from_params",
+    "lr_predict",
     # MDCEV
     "MDCEVControl",
     "MDCEVModel",
