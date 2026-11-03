@@ -6,8 +6,8 @@ engine (:mod:`pybhatlib.mixed`).  ``_fit`` assembles the panel index, mixing
 spec, parameter layout, random-coefficient pipeline, softmax kernel and
 :class:`~pybhatlib.mixed._engine.MixedMSLEstimator`; packs the estimation-space
 parameter vector ``theta = [beta | rcor | scal | lam]`` (the softmax kernel owns
-no ``kern`` block); runs ``scipy.optimize.minimize(jac=True)`` against the
-engine objective; and performs a reporting-space BHHH standard-error pass
+no ``kern`` block); runs the shared SciPy optimizer against the engine
+objective; and performs a reporting-space BHHH standard-error pass
 (``cov = inv(S'S)`` from the per-individual score, delta-transformed into the
 natural reporting parameters).
 
@@ -28,7 +28,6 @@ import time
 
 import numpy as np
 import pandas as pd
-import scipy.optimize as sopt
 from numpy.typing import NDArray
 from scipy.special import ndtr
 
@@ -49,6 +48,7 @@ from pybhatlib.models._base import BaseModel
 from pybhatlib.models.mixmnl._mixmnl_control import MixMNLControl
 from pybhatlib.models.mixmnl._mixmnl_kernel import SoftmaxKernel
 from pybhatlib.models.mixmnl._mixmnl_results import MixMNLResults
+from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
 
@@ -360,33 +360,16 @@ class MixMNLModel(BaseModel):
         # ---- optimize (jac=True: objective returns (neg_ll, neg_grad)) ----
         method_map = {"bfgs": "BFGS", "lbfgsb": "L-BFGS-B", "newton": "BFGS"}
         method = method_map.get(ctrl.optimizer, "BFGS")
-        options: dict = {"maxiter": ctrl.maxiter, "gtol": ctrl.tol,
-                         "disp": ctrl.verbose >= 2}
-        if method == "L-BFGS-B":
-            options["ftol"] = ctrl.tol
-
-        iter_count = [0]
-
-        def _iter_callback(theta_k: NDArray) -> None:
-            if ctrl.verbose < 2:
-                return
-            obj_val, grad = est.objective(theta_k)
-            grad_norm = float(np.linalg.norm(np.asarray(grad, dtype=np.float64)))
-            print(
-                f"  iter={iter_count[0]:4d}  f={float(obj_val):+.12f}  "
-                f"||g||={grad_norm:.3e}"
-            )
-            if ctrl.verbose >= 3:
-                print(theta_k)
-            iter_count[0] += 1
-
-        res = sopt.minimize(
+        res = minimize_scipy(
             est.objective,
             theta0,
-            jac=True,
             method=method,
-            callback=_iter_callback if ctrl.verbose >= 2 else None,
-            options=options,
+            maxiter=ctrl.maxiter,
+            tol=ctrl.tol,
+            ftol=ctrl.tol if method == "L-BFGS-B" else None,
+            verbose=ctrl.verbose,
+            jac=True,
+            param_names=self._param_names(spec),
         )
 
         theta_hat = np.asarray(res.x, dtype=np.float64)
@@ -401,7 +384,7 @@ class MixMNLModel(BaseModel):
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
         grad_norm = float(np.linalg.norm(g_sum))
-        converged = bool(res.success) or grad_norm < ctrl.tol_check
+        converged = bool(res.converged) or grad_norm < ctrl.tol_check
 
         # ---- reporting-space BHHH covariance ------------------------------
         params_report = self._to_reporting(theta_hat, spec, layout, est.space)
@@ -433,7 +416,7 @@ class MixMNLModel(BaseModel):
         p_value = 2.0 * (1.0 - ndtr(np.abs(t_stat)))
 
         t_elapsed = (time.time() - t_start) / 60.0
-        n_iter = int(getattr(res, "nit", 0))
+        n_iter = res.n_iter
 
         if ctrl.verbose >= 1:
             msg = "converged" if converged else "NOT converged"

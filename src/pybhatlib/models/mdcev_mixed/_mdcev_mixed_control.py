@@ -75,8 +75,7 @@ class MDCEVMixedControl:
         Per-person simulated-probability floor after averaging over draws (GAUSS
         ``w2``). Defaults to ``0.0`` (GAUSS ``w2 = 0``).
     draw_seed : int or None
-        Seed for the runtime scrambled-Halton draw source. ``None`` yields
-        non-deterministic draws.
+        Seed for the runtime scrambled-Halton draw source (default 13811).
     maxiter : int
         Maximum number of optimizer iterations.
     optimizer : {"bfgs", "lbfgsb"}
@@ -92,7 +91,8 @@ class MDCEVMixedControl:
         Standard-error method. Only "bhhh" (cross-product of the per-individual
         score, matching GAUSS ``_max_CovPar = 2``) is currently implemented.
     verbose : int
-        Verbosity: 0 = silent, 1 = summary, 2 = per-iteration.
+        Verbosity: 0 = silent, 1 = optimizer summary, 2 = per-iteration
+        objective values, 3 = per-iteration parameter / gradient table.
     seed : int or None
         Random seed for reproducibility (kept for cross-model symmetry; the draw
         source uses ``draw_seed``).
@@ -125,7 +125,7 @@ class MDCEVMixedControl:
     scal: float = 1.0
     floor_pcomp: float = 0.0
     floor_z: float = 0.0
-    draw_seed: int | None = None
+    draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------
     maxiter: int = 2000
@@ -135,5 +135,5 @@ class MDCEVMixedControl:
     want_covariance: bool = True
     se_method: Literal["bhhh"] = "bhhh"
     verbose: int = 1
-    seed: int | None = None
+    seed: int | None = 14287
     startb: NDArray | None = None
