@@ -191,6 +191,9 @@ def test_randdiag_removes_random_correlation_block():
     )
 
     assert layout.n_rcor == 0
+    optimizer_names = model._optimizer_param_names(spec, layout)
+    assert len(optimizer_names) == layout.n_theta
+    assert not any(name.startswith("corr_theta[") for name in optimizer_names)
     np.testing.assert_array_equal(state.omegastar, np.eye(2))
 
 

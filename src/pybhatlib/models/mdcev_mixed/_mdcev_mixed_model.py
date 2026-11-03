@@ -467,6 +467,28 @@ class MDCEVMixedModel(BaseModel):
         names.extend(f"lam[{nm}]" for nm in rc_names)
         return names
 
+    def _optimizer_param_names(
+        self, spec: MixingSpec, layout: ParamLayout
+    ) -> list[str]:
+        """Names aligned to the actual estimation-space parameter vector."""
+        names = list(self.var_names) + list(self.gamma_names)
+        rc_names = [self.var_names[int(p)] for p in spec.mixpos]
+        if layout.n_rcor:
+            names.extend(
+                f"corr_theta[{rc_names[i]},{rc_names[j]}]"
+                for i in range(spec.nrndcoef)
+                for j in range(i + 1, spec.nrndcoef)
+            )
+        names.append("sig_ker_theta")
+        names.extend(f"scale_theta[{nm}]" for nm in rc_names)
+        names.extend(f"lambda_theta[{nm}]" for nm in rc_names)
+        if len(names) != layout.n_theta:
+            raise RuntimeError(
+                "Mixed MDCEV optimizer parameter names do not match the layout: "
+                f"{len(names)} names for {layout.n_theta} parameters"
+            )
+        return names
+
     def _default_startb(self, spec: MixingSpec, layout: ParamLayout) -> NDArray:
         """Zeros start with the outside-good gamma pinned (GAUSS ``b`` default)."""
         theta = np.zeros(layout.n_theta, dtype=np.float64)
@@ -538,7 +560,7 @@ class MDCEVMixedModel(BaseModel):
             tol=ctrl.tol,
             ftol=ctrl.tol if method == "L-BFGS-B" else None,
             verbose=ctrl.verbose,
-            param_names=self._param_names(spec),
+            param_names=self._optimizer_param_names(spec, layout),
         )
         theta_hat = np.asarray(res.x, dtype=np.float64)
         theta_hat[gamma0] = fixed_val

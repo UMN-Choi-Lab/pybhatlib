@@ -372,7 +372,7 @@ class MORPFlexModel(BaseModel):
             f"corr[{joint_names[i]},{joint_names[j]}]"
             for i in range(spec.nrndtot)
             for j in range(i + 1, spec.nrndtot)
-        ]
+        ][:layout.n_rcor]
         scal = [f"sd[{nm}]" for nm in rc_names]
         lam = [f"lam[{nm}]" for nm in rc_names]
         kernlam = [f"kernlam[{self.dep_vars[d]}]" for d in range(spec.nkernlam)]
@@ -383,6 +383,10 @@ class MORPFlexModel(BaseModel):
         names: list[str] = [""] * layout.n_theta
         for name, s in layout.slices().items():
             names[s] = blocks[name]
+        if len(names) != layout.n_theta or any(not name for name in names):
+            raise RuntimeError(
+                "MORPFlex optimizer parameter names do not match the layout"
+            )
         return names
 
     # ------------------------------------------------------------------

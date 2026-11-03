@@ -101,6 +101,11 @@ def minimize_scipy(
     """
     x0 = np.asarray(x0, dtype=np.float64)
     n_params = len(x0)
+    if param_names is not None and len(param_names) != n_params:
+        raise ValueError(
+            f"param_names has length {len(param_names)}, but the optimizer "
+            f"vector has length {n_params}"
+        )
 
     iteration_count = [0]
     start_time = time.time()
@@ -120,11 +125,12 @@ def minimize_scipy(
 
     def _print_param_table(xk, fval, grad):
         """Print per-iteration parameter/gradient/rel-gradient table (verbose=3)."""
-        # Build labels: use param_names if available, else theta[k]
-        if param_names is not None and len(param_names) == len(xk):
-            labels = param_names
-        else:
-            labels = [f"theta[{k}]" for k in range(len(xk))]
+        # Names are validated against x0 before optimization; keep a fallback
+        # for the public wrapper's optional-name behavior.
+        labels = (
+            param_names if param_names is not None
+            else [f"theta[{k}]" for k in range(len(xk))]
+        )
 
         # Relative gradient: |g_k| / max(|x_k|, 1)
         rel_grad = np.abs(grad) / np.maximum(np.abs(xk), 1.0)

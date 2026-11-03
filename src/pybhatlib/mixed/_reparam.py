@@ -771,10 +771,12 @@ class EstimationSpace(ParamSpace):
 
         # --- Yeo-Johnson power (MIXMNL 426-427, 542-544) --------------------
         actlam = np.asarray(spec.actlam, dtype=np.float64)
-        mapped_lam = np.clip(2.0 * cdlogit(xlam), _LAM_EPS, 2.0 - _LAM_EPS)
+        raw_lam = 2.0 * cdlogit(xlam)
+        mapped_lam = np.clip(raw_lam, _LAM_EPS, 2.0 - _LAM_EPS)
+        interior_lam = (raw_lam > _LAM_EPS) & (raw_lam < 2.0 - _LAM_EPS)
         xlamrnd = actlam * mapped_lam + (1.0 - actlam)
         dxlamrnddxlam = (
-            np.diag(actlam * 2.0 * pdlogit(xlam)) if want_grad else None
+            np.diag(actlam * interior_lam * 2.0 * pdlogit(xlam)) if want_grad else None
         )
         if want_grad:
             mulamrnd, siglamrnd, dmulamrnddxlamrnd, dsiglamrnddxlamrnd = gradmeanyj(
