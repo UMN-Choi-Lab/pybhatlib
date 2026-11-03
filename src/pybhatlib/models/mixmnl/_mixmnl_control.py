@@ -106,7 +106,7 @@ class MixMNLControl:
     # --- MSL / reparameterization -------------------------------------------
     randdiag: bool = False
     n_rep: int = 125
-    intordn1: int = 20
+    intordn1: int = 92
     spher: bool = False
     scal: float = 1.0
     floor_pcomp: float = 1e-4

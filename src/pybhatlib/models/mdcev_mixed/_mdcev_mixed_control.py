@@ -119,12 +119,12 @@ class MDCEVMixedControl:
 
     # --- MSL / reparameterization -------------------------------------------
     randdiag: bool = False
-    n_rep: int = 10
-    intordn1: int = 20
+    n_rep: int = 125
+    intordn1: int = 92
     spher: bool = False
     scal: float = 1.0
-    floor_pcomp: float = 0.0
-    floor_z: float = 0.0
+    floor_pcomp: float = 1e-4
+    floor_z: float = 1e-4
     draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------
