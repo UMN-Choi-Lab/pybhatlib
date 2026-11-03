@@ -14,7 +14,7 @@ random-coefficient pipeline, logit-Jacobian kernel and
 parameter vector ``theta = [beta | gamma | rcor | kern | scal | lam]`` (the
 GAUSS ``Mixed Traditional MDCEV.gss`` ``b`` order, with the kernel scale placed
 between ``rcor`` and the random-coefficient scales); runs
-``scipy.optimize.minimize(jac=True)`` against the engine objective with
+the shared SciPy optimizer against the engine objective with
 ``score_convention="divide"`` (GAUSS ``gcomp ./ Pobs``); and performs a
 reporting-space BHHH standard-error pass.
 
@@ -37,7 +37,6 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-import scipy.optimize as sopt
 from numpy.typing import NDArray
 from scipy.special import ndtr
 
@@ -52,6 +51,7 @@ from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_control import MDCEVMixedControl
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_kernel import LogitJacobianKernel
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_results import MDCEVMixedResults
+from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
 
@@ -529,13 +529,16 @@ class MDCEVMixedModel(BaseModel):
             )
 
         method = "BFGS" if ctrl.optimizer == "bfgs" else "L-BFGS-B"
-        options: dict = {"maxiter": ctrl.maxiter, "gtol": ctrl.tol,
-                         "disp": ctrl.verbose >= 2}
-        if method == "L-BFGS-B":
-            options["ftol"] = ctrl.tol
-
-        res = sopt.minimize(
-            objective, theta0, jac=True, method=method, options=options,
+        res = minimize_scipy(
+            objective,
+            theta0,
+            jac=True,
+            method=method,
+            maxiter=ctrl.maxiter,
+            tol=ctrl.tol,
+            ftol=ctrl.tol if method == "L-BFGS-B" else None,
+            verbose=ctrl.verbose,
+            param_names=self._param_names(spec),
         )
         theta_hat = np.asarray(res.x, dtype=np.float64)
         theta_hat[gamma0] = fixed_val
@@ -547,7 +550,7 @@ class MDCEVMixedModel(BaseModel):
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
         grad_norm = float(np.linalg.norm(np.delete(g_sum, gamma0)))
-        converged = bool(res.success) or grad_norm < ctrl.tol_check
+        converged = bool(res.converged) or grad_norm < ctrl.tol_check
 
         params_report = self._to_reporting(theta_hat, spec, layout, est.space)
         if ctrl.want_covariance:
@@ -585,7 +588,7 @@ class MDCEVMixedModel(BaseModel):
         p_value = 2.0 * (1.0 - ndtr(np.abs(t_stat)))
 
         t_elapsed = (time.time() - t_start) / 60.0
-        n_iter = int(getattr(res, "nit", 0))
+        n_iter = res.n_iter
 
         if ctrl.verbose >= 1:
             msg = "converged" if converged else "NOT converged"
@@ -612,7 +615,7 @@ class MDCEVMixedModel(BaseModel):
             return_code=0 if converged else 1,
             control=ctrl,
             data_path=self.data_path,
-            message=getattr(res, "message", None),
+            message=res.message,
         )
 
     # ------------------------------------------------------------------

@@ -66,8 +66,7 @@ class MNPKerCPControl:
         Per-person simulated-probability floor after averaging over draws
         (GAUSS ``w2``).
     draw_seed : int or None
-        Seed for the runtime scrambled-Halton draw source.  ``None`` yields
-        non-deterministic draws.
+        Seed for the runtime scrambled-Halton draw source (default 13811).
     maxiter : int
         Maximum number of optimizer iterations.
     optimizer : str
@@ -82,7 +81,8 @@ class MNPKerCPControl:
     se_method : str
         Standard-error method.  Only "bhhh" is implemented.
     verbose : int
-        Verbosity: 0 = silent, 1 = summary, 2 = per-iteration.
+        Verbosity: 0 = silent, 1 = optimizer summary, 2 = per-iteration
+        objective values, 3 = per-iteration parameter / gradient table.
     seed : int or None
         Random seed kept for cross-model symmetry (the draw source uses
         ``draw_seed``).
@@ -124,7 +124,7 @@ class MNPKerCPControl:
     scal: float = 1.0
     floor_pcomp: float = 1e-4
     floor_z: float = 1e-4
-    draw_seed: int | None = None
+    draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------
     maxiter: int = 2000
@@ -134,6 +134,6 @@ class MNPKerCPControl:
     want_covariance: bool = True
     se_method: Literal["bhhh"] = "bhhh"
     verbose: int = 1
-    seed: int | None = None
+    seed: int | None = 14287
     startb: NDArray | None = None
     start_from_shares: bool = False

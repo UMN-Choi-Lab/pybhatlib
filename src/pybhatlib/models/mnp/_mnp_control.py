@@ -123,7 +123,7 @@ class MNPControl:
     se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh"
     se_diagnostic: bool = False
     verbose: int = 1
-    seed: int | None = None
+    seed: int | None = 14287
     analytic_grad: bool = True
     startb: NDArray | None = None
     active_mask: NDArray | None = None

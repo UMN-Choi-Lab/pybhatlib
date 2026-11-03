@@ -60,6 +60,7 @@ def minimize_scipy(
     verbose: int = 1,
     jac: bool = True,
     hess=None,
+    ftol: float | None = None,
     bounds=None,
     param_names: list[str] | None = None,
 ) -> OptimResult:
@@ -85,6 +86,8 @@ def minimize_scipy(
         Whether func returns (f, grad) tuple.
     hess : callable or None
         Optional Hessian function, used by methods such as "Newton-CG".
+    ftol : float or None
+        Optional function tolerance for "L-BFGS-B", passed alongside ``tol``.
     bounds : list of tuples or None
         Parameter bounds for L-BFGS-B.
     param_names : list of str or None
@@ -198,6 +201,8 @@ def minimize_scipy(
 
     tol_key = "xtol" if method == "Newton-CG" else "gtol"
     _options = {"maxiter": maxiter, tol_key: tol, "disp": False}
+    if method == "L-BFGS-B" and ftol is not None:
+        _options["ftol"] = ftol
 
     def _minimize_from(x_init):
         minimize_kwargs = {
