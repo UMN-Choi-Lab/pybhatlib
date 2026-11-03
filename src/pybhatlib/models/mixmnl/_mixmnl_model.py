@@ -34,6 +34,7 @@ from scipy.special import ndtr
 from pybhatlib.io._data_loader import load_data, used_columns_selector
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.mixed._draws import DrawSource, FixtureDrawSource, ScipyHaltonDrawSource
+from pybhatlib.mixed._halt_draws import ExplicitHaltonDrawSource
 from pybhatlib.mixed._engine import DesignData, MixedMSLEstimator, MSLConfig
 from pybhatlib.mixed._predict import MixedPredictComponents
 from pybhatlib.mixed._rc_pipeline import RandomCoefPipeline
@@ -206,6 +207,10 @@ class MixMNLModel(BaseModel):
             # scipy.qmc.Halton(d=0) is undefined; a zero-width block suffices
             # since the pipeline broadcasts a (n_obs, 0) draw matrix.
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
+        if self.control.draw_method == "explicit":
+            return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
+        if self.control.draw_method != "scipy":
+            raise ValueError("draw_method must be 'scipy' or 'explicit'")
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def _build_estimator(

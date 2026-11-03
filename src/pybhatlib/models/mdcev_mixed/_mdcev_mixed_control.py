@@ -74,6 +74,11 @@ class MDCEVMixedControl:
     floor_z : float
         Per-person simulated-probability floor after averaging over draws (GAUSS
         ``w2``). Defaults to ``0.0`` (GAUSS ``w2 = 0``).
+    draw_method : {"scipy", "explicit"}
+        Halton source; defaults to "scipy". "explicit" uses the deterministic
+        GAUSS-style digit-permutation source up to 16 dimensions; above that it
+        prints a message and falls back to SciPy using draw_seed. Within the
+        explicit dimension limit, draw_seed is ignored. With no random coefficients a zero-width fixture is used.
     draw_seed : int or None
         Seed for the runtime scrambled-Halton draw source (default 13811).
     maxiter : int
@@ -137,3 +142,4 @@ class MDCEVMixedControl:
     verbose: int = 1
     seed: int | None = 14287
     startb: NDArray | None = None
+    draw_method: Literal["scipy", "explicit"] = "scipy"
