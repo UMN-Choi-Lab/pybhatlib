@@ -116,6 +116,9 @@ def test_randdiag_removes_joint_correlation_block():
     ).kernel.prepare(np.zeros(layout.n_theta), layout)
 
     assert layout.n_rcor == 0
+    optimizer_names = model._param_names(spec, layout)
+    assert len(optimizer_names) == layout.n_theta
+    assert not any(name.startswith("corr[") for name in optimizer_names)
     np.testing.assert_array_equal(state.omegastar, np.eye(spec.nrndtot))
 
 
@@ -144,6 +147,8 @@ def test_iid_forces_ordinal_independence():
     )
     spec, layout = model._build_spec_layout()
     theta = np.zeros(layout.n_theta)
+    optimizer_names = model._param_names(spec, layout)
+    assert len(optimizer_names) == layout.n_theta
     theta[layout.slices()["rcor"]] = 0.8
     state = model._build_estimator(
         spec, layout, PanelIndex.from_ids(model.person_ids)

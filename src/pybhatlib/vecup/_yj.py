@@ -169,14 +169,17 @@ def yjinvnonp(
     mask_neg = newx < 0.0
 
     # newx < 0 branch: base = 1 - (2 - lam) * newx  (positive where mask_neg).
-    base_neg = 1.0 - (2.0 - lam_c) * newx
-    safe_base_neg = np.where(mask_neg, base_neg, 1.0)
-    zl0 = 1.0 - safe_base_neg ** (1.0 / (2.0 - lam_c))
+    # log1p/expm1 avoid cancellation; lambda=2 uses the exponential limit.
+    t_neg = np.where(mask_neg, -(2.0 - lam_c) * newx, 0.0)
+    exponent = np.divide(np.log1p(t_neg), 2.0 - lam_c,
+                         out=np.where(mask_neg, -newx, 0.0), where=lam_c != 2.0)
+    zl0 = -np.expm1(exponent)
 
     # newx >= 0 branch: base = 1 + lam * newx  (positive where ~mask_neg).
-    base_pos = 1.0 + lam_c * newx
-    safe_base_pos = np.where(mask_neg, 1.0, base_pos)
-    znew = safe_base_pos ** (1.0 / lam_c) - 1.0
+    t_pos = np.where(mask_neg, 0.0, lam_c * newx)
+    exponent = np.divide(np.log1p(t_pos), lam_c,
+                         out=np.where(mask_neg, 0.0, newx), where=lam_c != 0.0)
+    znew = np.expm1(exponent)
 
     zf = np.where(mask_neg, zl0, znew)
     if squeeze:
@@ -216,25 +219,27 @@ def _gyjinvnonp_diag(
     for i in range(e1):
         newxelem = newx[i]
         if newxelem < 0.0:
-            z1 = 1.0 - (2.0 - lam[i]) * newxelem
-            z2 = 1.0 / (2.0 - lam[i])
-            y = z1 ** z2
-            z[i] = 1.0 - y
-            y1 = (z2 / z1) * newxelem + (z2 ** 2) * np.log(z1)
-            glam_diag[i] = -y1 * y
-            gx_diag[i] = w[i] * (y / z1)
-            gw[i] = x_v[i] * (y / z1)
-            gmu_diag[i] = y / z1
+            power = 2.0 - lam[i]
+            sign = -1.0
         else:
-            z1 = 1.0 + lam[i] * newxelem
-            z2 = 1.0 / lam[i]
-            y = z1 ** z2
-            z[i] = y - 1.0
-            y1 = (z2 / z1) * newxelem - (z2 ** 2) * np.log(z1)
-            glam_diag[i] = y1 * y
-            gx_diag[i] = w[i] * (y / z1)
-            gw[i] = x_v[i] * (y / z1)
-            gmu_diag[i] = y / z1
+            power = lam[i]
+            sign = 1.0
+        a = abs(newxelem)
+        t = power * a
+        logbase = np.log1p(t)
+        exponent = logbase / power if power != 0.0 else a
+        y = np.exp(exponent)
+        z[i] = sign * np.expm1(exponent)
+        # d[log1p(power*a)/power]/dp: use its series to avoid
+        # subtraction of almost equal terms at lambda near 0 or 2.
+        if abs(t) < 1e-3:
+            slope = a*a*(-.5 + t*(2/3 + t*(-3/4 + t*(4/5 + t*(-5/6 + t*6/7)))))
+        else:
+            slope = (t/(1+t) - logbase)/(power*power)
+        glam_diag[i] = y * slope  # both sign reversals cancel on negative branch
+        gmu_diag[i] = np.exp(exponent - logbase)
+        gx_diag[i] = w[i] * gmu_diag[i]
+        gw[i] = x_v[i] * gmu_diag[i]
 
     return z, gmu_diag, gw, glam_diag, gx_diag
 
