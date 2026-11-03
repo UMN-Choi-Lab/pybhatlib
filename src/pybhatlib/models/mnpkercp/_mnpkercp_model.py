@@ -48,6 +48,7 @@ from pybhatlib.io._data_loader import load_data, used_columns_selector
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.matgradient._radial import newcholparmscaled
 from pybhatlib.mixed._draws import FixtureDrawSource, ScipyHaltonDrawSource
+from pybhatlib.mixed._halt_draws import ExplicitHaltonDrawSource
 from pybhatlib.mixed._engine import DesignData, MixedMSLEstimator, MSLConfig
 from pybhatlib.mixed._rc_pipeline import RandomCoefPipeline
 from pybhatlib.mixed._reparam import EstimationSpace, ParamLayout
@@ -217,6 +218,10 @@ class MNPKerCPModel(BaseModel):
         """Runtime draw source (zeros when there are no random coefficients)."""
         if n_rnd == 0:
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
+        if self.control.draw_method == "explicit":
+            return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
+        if self.control.draw_method != "scipy":
+            raise ValueError("draw_method must be 'scipy' or 'explicit'")
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def _build_estimator(
