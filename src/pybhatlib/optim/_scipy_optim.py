@@ -59,6 +59,7 @@ def minimize_scipy(
     tol: float = 1e-5,
     verbose: int = 1,
     jac: bool = True,
+    hess=None,
     bounds=None,
     param_names: list[str] | None = None,
 ) -> OptimResult:
@@ -72,7 +73,7 @@ def minimize_scipy(
     x0 : ndarray
         Initial parameter vector.
     method : str
-        "BFGS", "L-BFGS-B", or "Nelder-Mead".
+        "BFGS", "L-BFGS-B", "Newton-CG", or "Nelder-Mead".
     maxiter : int
         Maximum iterations.
     tol : float
@@ -82,6 +83,8 @@ def minimize_scipy(
         3=per-iteration NLL + parameter/gradient/rel-gradient table.
     jac : bool
         Whether func returns (f, grad) tuple.
+    hess : callable or None
+        Optional Hessian function, used by methods such as "Newton-CG".
     bounds : list of tuples or None
         Parameter bounds for L-BFGS-B.
     param_names : list of str or None
@@ -135,6 +138,7 @@ def minimize_scipy(
             print(
                 f"  {lb:<{col_w_name}s}  {v:>+14.6f}  {g:>+14.6f}  {rg:>14.6f}"
             )
+        print( " " )
 
     def callback(xk):
         iteration_count[0] += 1
@@ -192,18 +196,22 @@ def minimize_scipy(
 
         chosen_func = scipy_func_nojac
 
-    _options = {"maxiter": maxiter, "gtol": tol, "disp": False}
+    tol_key = "xtol" if method == "Newton-CG" else "gtol"
+    _options = {"maxiter": maxiter, tol_key: tol, "disp": False}
 
     def _minimize_from(x_init):
-        return minimize(
-            chosen_func,
-            x_init,
-            method=method,
-            jac=jac,
-            options=_options,
-            bounds=bounds,
-            callback=callback,
-        )
+        minimize_kwargs = {
+            "fun": chosen_func,
+            "x0": x_init,
+            "method": method,
+            "jac": jac,
+            "options": _options,
+            "bounds": bounds,
+            "callback": callback,
+        }
+        if hess is not None:
+            minimize_kwargs["hess"] = hess
+        return minimize(**minimize_kwargs)
 
     result = _minimize_from(x0)
 
