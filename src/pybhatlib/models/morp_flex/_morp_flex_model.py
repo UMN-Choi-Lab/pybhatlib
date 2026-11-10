@@ -54,7 +54,10 @@ from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
 from pybhatlib.models.morp_flex._morp_flex_control import MORPFlexControl
 from pybhatlib.models.morp_flex._morp_flex_kernel import RectMvncdKernel
-from pybhatlib.models.morp_flex._morp_flex_results import MORPFlexResults
+from pybhatlib.models.morp_flex._morp_flex_results import (
+    MORPFlexResults,
+    mixing_summary_from_state,
+)
 from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.utils._logistic import cdlogit
 from pybhatlib.vecup._panel import PanelIndex
@@ -503,7 +506,21 @@ class MORPFlexModel(BaseModel):
                 f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}"
             )
 
+        rc_state = est.space.unpack(theta_hat, spec, want_grad=False)
+        kernel_state = est.kernel.prepare(theta_hat, layout)
+        mixing_summary = mixing_summary_from_state(
+            self.var_names, spec, rc_state,
+            kernel_names=[f"ker[{dep}]" for dep in self.dep_vars],
+            kernel_shapes=kernel_state.xlamker,
+            joint_corr=kernel_state.omegastar,
+            copula=est.kernel.copula,
+            note=(
+                "ker[outcome] denotes its undifferenced ordinal error; "
+                "kernel scales are fixed at 1."
+            ),
+        )
         return MORPFlexResults(
+            mixing_summary=mixing_summary,
             params=params_report,
             se=se,
             t_stat=t_stat,

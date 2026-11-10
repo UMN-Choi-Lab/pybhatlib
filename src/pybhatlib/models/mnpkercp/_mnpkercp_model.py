@@ -56,7 +56,10 @@ from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
 from pybhatlib.models.mnpkercp._mnpkercp_control import MNPKerCPControl
 from pybhatlib.models.mnpkercp._mnpkercp_kernel import MvncdKernel
-from pybhatlib.models.mnpkercp._mnpkercp_results import MNPKerCPResults
+from pybhatlib.models.mnpkercp._mnpkercp_results import (
+    MNPKerCPResults,
+    mixing_summary_from_state,
+)
 from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.utils._logistic import logitmod
 from pybhatlib.vecup._panel import PanelIndex
@@ -545,7 +548,24 @@ class MNPKerCPModel(BaseModel):
         self._mixing_spec = spec
         self._layout = layout
 
+        rc_state = est.space.unpack(theta_hat, spec, want_grad=False)
+        kernel_state = est.kernel.prepare(theta_hat, layout)
+        mixing_summary = mixing_summary_from_state(
+            self.var_names, spec, rc_state,
+            kernel_names=[
+                f"ker[{alt}-{self.alternatives[0]}]"
+                for alt in self.alternatives[1:]
+            ],
+            kernel_scales=np.diag(kernel_state.wdiagker),
+            joint_corr=kernel_state.omegastar,
+            copula=est.kernel.copula,
+            note=(
+                "ker[A-B] denotes epsilon[A] - epsilon[B]; kernel scales have "
+                "sum of squares = 1."
+            ),
+        )
         return MNPKerCPResults(
+            mixing_summary=mixing_summary,
             params=params_report,
             se=se,
             t_stat=t_stat,
