@@ -57,6 +57,7 @@ class MDCEVMixedControl:
     outside_good_gamma : float
         Fixed satiation value forced on the outside good (GAUSS
         ``u[.,1] = -1000``); passed through to the kernel's MDCEV control.
+        It is excluded from ``gamma_spec``, optimization, and reported parameters.
     n_rep : int
         Number of MSL replications (GAUSS ``nrep``, default 10 for the SCAG
         driver).
@@ -104,7 +105,8 @@ class MDCEVMixedControl:
     startb : NDArray or None
         User-supplied starting values (full ``theta`` in estimation space,
         ``[beta | gamma | rcor | kern | scal | lam]`` order). If None, defaults
-        to zeros with the outside-good gamma pinned to ``outside_good_gamma``.
+        to zeros. The outside-good gamma is supplied by ``outside_good_gamma``
+        and is not part of the parameter vector.
     """
 
     utility: Literal["trad", "linear"] = "trad"
