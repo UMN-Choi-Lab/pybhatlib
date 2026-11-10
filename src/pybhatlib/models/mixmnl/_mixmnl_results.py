@@ -106,6 +106,12 @@ class MixMNLResults:
     control: MixMNLControl | None = None
     data_path: str = ""
     message: str | None = None
+    random_coef_names: list[str] | None = None
+    random_coef_means: NDArray | None = None
+    random_coef_scales: NDArray | None = None
+    random_coef_shapes: NDArray | None = None
+    random_coef_corr_matrix: NDArray | None = None
+    random_coef_cov_matrix: NDArray | None = None
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MixMNLResults, accepting both canonical and legacy kwargs.
@@ -230,6 +236,69 @@ class MixMNLResults:
                 f"  {name:<{name_width}s} {est:>10.4f} {se:>10.4f}"
                 f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
+
+
+        rc_names = self.random_coef_names
+        rc_means = self.random_coef_means
+        rc_scales = self.random_coef_scales
+        rc_shapes = self.random_coef_shapes
+        rc_corr = self.random_coef_corr_matrix
+        rc_cov = self.random_coef_cov_matrix
+        if (
+            rc_names
+            and rc_means is not None
+            and rc_scales is not None
+            and rc_corr is not None
+            and rc_cov is not None
+        ):
+            lines.append("")
+            lines.append("  Random-coefficient locations, scales, and shapes")
+            lines.append(
+                f"  {'Coefficient':<20s} {'Location':>12s} {'Scale':>12s} {'Shape':>12s}"
+            )
+            lines.append("  " + "-" * 59)
+            for i, (name, mean, scale) in enumerate(zip(rc_names, rc_means, rc_scales)):
+                shape = (
+                    f"{rc_shapes[i]:>12.5f}"
+                    if rc_shapes is not None
+                    else f"{'--':>12s}"
+                )
+                lines.append(f"  {name:<20s} {mean:>12.5f} {scale:>12.5f} {shape}")
+
+            matrix_name_width = max(
+                12, max((len(name) for name in rc_names), default=12)
+            )
+
+            def _append_rc_matrix(title: str, matrix: NDArray) -> None:
+                lines.append("")
+                lines.append(f"  {title}")
+                lines.append(
+                    f"  {'':<{matrix_name_width}s} "
+                    + " ".join(f"{name:>11s}" for name in rc_names)
+                )
+                for i, name in enumerate(rc_names):
+                    values = [
+                        f"{matrix[i, j]:>11.4f}"
+                        if np.isfinite(matrix[i, j])
+                        else f"{'--':>11s}"
+                        for j in range(len(rc_names))
+                    ]
+                    lines.append(
+                        f"  {name:<{matrix_name_width}s} " + " ".join(values)
+                    )
+
+            _append_rc_matrix("Random-coefficient correlation matrix", rc_corr)
+            _append_rc_matrix("Implied random-coefficient covariance matrix", rc_cov)
+
+        lines.append("")
+        n_params = len(self.param_names)
+        lines.append("  Correlation matrix of the parameters")
+        for i in range(min(n_params, self.corr_matrix.shape[0])):
+            row_vals = [
+                f"{self.corr_matrix[i, j]:>7.3f}"
+                for j in range(min(n_params, self.corr_matrix.shape[1]))
+            ]
+            lines.append("  " + " ".join(row_vals))
 
         lines.append("")
         lines.append(f"  Number of iterations   {self.n_iter:>10d}")

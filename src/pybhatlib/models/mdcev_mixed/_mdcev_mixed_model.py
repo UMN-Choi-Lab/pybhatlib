@@ -51,7 +51,10 @@ from pybhatlib.models._base import BaseModel
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_control import MDCEVMixedControl
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_kernel import LogitJacobianKernel
-from pybhatlib.models.mdcev_mixed._mdcev_mixed_results import MDCEVMixedResults
+from pybhatlib.models.mdcev_mixed._mdcev_mixed_results import (
+    MDCEVMixedResults,
+    mixing_summary_from_state,
+)
 from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
@@ -624,7 +627,12 @@ class MDCEVMixedModel(BaseModel):
                 f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}"
             )
 
+        mixing_summary = mixing_summary_from_state(
+            self.var_names, spec,
+            est.space.unpack(theta_hat, spec, want_grad=False),
+        )
         return MDCEVMixedResults(
+            mixing_summary=mixing_summary,
             params=params_report,
             se=se,
             t_stat=t_stat,

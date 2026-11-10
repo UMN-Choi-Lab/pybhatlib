@@ -414,6 +414,30 @@ class MixMNLModel(BaseModel):
 
         # ---- reporting-space BHHH covariance ------------------------------
         params_report = self._to_reporting(theta_hat, spec, layout, est.space)
+        rc_names = [self.var_names[int(p)] for p in spec.mixpos]
+        rc_means = None
+        rc_scales = None
+        rc_shapes = None
+        rc_corr = None
+        rc_cov = None
+        if rc_names:
+            n_rc = len(rc_names)
+            n_rc_corr = n_rc * (n_rc - 1) // 2
+            corr_start = spec.n_beta
+            scale_start = corr_start + n_rc_corr
+            rc_means = params_report[np.asarray(spec.mixpos, dtype=np.intp)].copy()
+            rc_scales = params_report[scale_start : scale_start + n_rc].copy()
+            shape_start = scale_start + n_rc
+            rc_shapes = params_report[shape_start : shape_start + n_rc].copy()
+            rc_corr = np.eye(n_rc, dtype=np.float64)
+            corr_idx = corr_start
+            for i in range(n_rc):
+                for j in range(i + 1, n_rc):
+                    rho = float(params_report[corr_idx])
+                    rc_corr[i, j] = rc_corr[j, i] = rho
+                    corr_idx += 1
+            rc_cov = np.outer(rc_scales, rc_scales) * rc_corr
+
         if ctrl.want_covariance:
             if ctrl.se_method.lower() != "bhhh":
                 raise ValueError(
@@ -470,6 +494,12 @@ class MixMNLModel(BaseModel):
             control=ctrl,
             data_path=self.data_path,
             message=getattr(res, "message", None),
+            random_coef_names=rc_names or None,
+            random_coef_means=rc_means,
+            random_coef_scales=rc_scales,
+            random_coef_shapes=rc_shapes,
+            random_coef_corr_matrix=rc_corr,
+            random_coef_cov_matrix=rc_cov,
         )
 
     # ------------------------------------------------------------------
