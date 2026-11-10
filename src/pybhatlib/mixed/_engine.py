@@ -1,6 +1,6 @@
 """Shared MSL simulation engine for mixed/panel choice models (T0.13).
 
-This is the byte-identical skeleton that all four mixed-model families
+This is the shared simulation engine that all four mixed-model families
 (``mixmnl``, ``mnpkercp``, ``morp_flex``, ``mdcev_mixed``) reuse; the only
 per-model piece is the inner :class:`~pybhatlib.mixed._kernel.MixedKernel`
 probability + score.  The engine (plan MIXED_PANEL_MODELS_PLAN.md 2.2/2.3):
@@ -12,8 +12,8 @@ probability + score.  The engine (plan MIXED_PANEL_MODELS_PLAN.md 2.2/2.3):
       -> Vsub = X . xmunew
       -> kernel.probability                         (the ONLY differing piece)
       -> floor pcomp BEFORE log
-      -> Pprod = exp(Dmask' @ lnP)                  (product across occasions)
-      -> average over draws
+      -> sum log likelihoods within each person
+      -> log-sum-exp over draws, with stable draw-weighted scores
       -> flooring on z
       -> analytic score chained through BOTH the utility path (``dlogp_dV``) and
          the copula path (``dlogp_drc``; zero for MNL) into the shared
@@ -41,7 +41,7 @@ in the task report:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace, field
 from typing import Any, Optional
 
 import numpy as np
@@ -263,10 +263,10 @@ class MixedMSLEstimator:
         self._emit("wscalrand", rc.wscalrand)
         self._emit("xlamrnd", rc.xlamrnd)
 
-        p0 = np.zeros(n_ind, dtype=np.float64)
-        g0 = (
-            np.zeros((n_ind, n_theta), dtype=np.float64) if want_grad else None
-        )
+        log_p0 = np.full(n_ind, -np.inf, dtype=np.float64)
+        mean_score = np.zeros((n_ind, n_theta)) if want_grad else None
+        log_floor_p = np.log(cfg.floor_pcomp) if cfg.floor_pcomp > 0 else -np.inf
+        log_floor_z = np.log(cfg.floor_z) if cfg.floor_z > 0 else -np.inf
 
         # Panel dedup: the RC realization is row-wise, so on panel data (multiple
         # obs per person) it is computed once per unique person and broadcast to
@@ -297,9 +297,26 @@ class MixedMSLEstimator:
                 Vsub, self.design.obs, kst,
                 rc_draw=cache.errbeta3, want_grad=want_grad,
             )
-            lnP = np.log(np.maximum(kev.p_obs, cfg.floor_pcomp))   # floor BEFORE log
-            Pprod = panel.logprod(lnP)                             # (n_ind,)
-            p0 += Pprod
+            if kev.log_p_obs is not None:
+                raw_log_p = kev.log_p_obs
+            else:
+                raw_log_p = np.full_like(kev.p_obs, -np.inf)
+                np.log(kev.p_obs, out=raw_log_p, where=kev.p_obs > 0)
+                raw_log_p = np.where(np.isnan(kev.p_obs), np.nan, raw_log_p)
+            lnP = np.maximum(raw_log_p, log_floor_p)
+            log_prod = panel.scatter_sum(lnP)
+            next_log_p0 = np.logaddexp(log_p0, log_prod)
+            if want_grad:
+                old_weight = np.exp(np.subtract(
+                    log_p0, next_log_p0, out=np.full(n_ind, -np.inf),
+                    where=np.isfinite(next_log_p0),
+                ))
+                new_weight = np.exp(np.subtract(
+                    log_prod, next_log_p0, out=np.full(n_ind, -np.inf),
+                    where=np.isfinite(next_log_p0),
+                ))
+            log_p0 = next_log_p0
+            Pprod = np.exp(log_prod) if self.trace is not None else None
 
             if self.trace is not None:
                 # obs-level draws recovered for the parity comparator only.
@@ -310,39 +327,50 @@ class MixedMSLEstimator:
             self._emit("xmunew", cache.xmunew, rep=r)
             self._emit("Vsubq", Vsub, rep=r)
             self._emit("pcomp", kev.p_obs, rep=r)
+            self._emit("log_pcomp", raw_log_p, rep=r)
             self._emit("Pprod", Pprod, rep=r)
 
             if want_grad:
-                gcomp = self._assemble_score(kev, cache, rc, kst)  # (n_obs, n_theta)
-                if cfg.score_convention == "mask":
-                    gcomp = gcomp * (kev.p_obs[:, None] > cfg.floor_pcomp)
-                elif cfg.score_convention == "divide":            # MDCEV (line 791)
-                    gcomp = gcomp / kev.p_obs[:, None]
-                else:
-                    raise ValueError(
-                        f"unknown score_convention {cfg.score_convention!r}"
+                if kev.score_dV is not None:
+                    log_result = replace(
+                        kev, dlogp_dV=kev.score_dV,
+                        dlogp_dkparams=kev.score_dkparams,
                     )
-                gPprodgcomp = Pprod[:, None] * panel.scatter_sum(gcomp)
-                g0 += gPprodgcomp
+                    gcomp = self._assemble_score(log_result, cache, rc, kst)
+                    gcomp = np.where(raw_log_p[:, None] > log_floor_p, gcomp, 0.0)
+                else:
+                    gcomp = self._assemble_score(kev, cache, rc, kst)
+                    if cfg.score_convention == "mask":
+                        gcomp = np.where(raw_log_p[:, None] > log_floor_p, gcomp, 0.0)
+                    elif cfg.score_convention == "divide":
+                        gcomp = np.divide(
+                            gcomp, kev.p_obs[:, None], out=np.zeros_like(gcomp),
+                            where=raw_log_p[:, None] > log_floor_p,
+                        )
+                    else:
+                        raise ValueError(f"unknown score_convention {cfg.score_convention!r}")
+                person_score = panel.scatter_sum(gcomp)
+                mean_score = (old_weight[:, None] * mean_score
+                              + new_weight[:, None] * person_score)
                 self._emit("gcomp", gcomp, rep=r)
-                self._emit("gPprodgcomp", gPprodgcomp, rep=r)
+                if self.trace is not None:
+                    self._emit("gPprodgcomp", Pprod[:, None] * person_score, rep=r)
 
-        z = np.maximum(p0 / cfg.n_rep, cfg.floor_z)
-        ll = self.weightind * np.log(z)
-        self._emit("p0", p0)
-        self._emit("z", z)
+        log_mean_p = log_p0 - np.log(cfg.n_rep)
+        log_z = np.maximum(log_mean_p, log_floor_z)
+        ll = self.weightind * log_z
+        if self.trace is not None:
+            self._emit("p0", np.exp(log_p0))
+            self._emit("z", np.exp(log_z))
         self._emit("final", ll)
-
         if not want_grad:
             return ll, None
-
-        active = (p0 / cfg.n_rep > cfg.floor_z)
-        score = (
-            self.weightind[:, None]
-            * ((g0 / cfg.n_rep) / z[:, None])
-            * active[:, None]
+        score = np.where(
+            (log_mean_p > log_floor_z)[:, None],
+            self.weightind[:, None] * mean_score, 0.0,
         )
-        self._emit("g0", g0)
+        if self.trace is not None:
+            self._emit("g0", np.exp(log_p0)[:, None] * mean_score)
         self._emit("grad", score)
         return ll, score
 
