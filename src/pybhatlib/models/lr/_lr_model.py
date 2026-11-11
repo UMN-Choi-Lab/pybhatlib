@@ -183,8 +183,22 @@ class LRModel(BaseModel):
         p = 2 * t.sf(np.abs(stat), df)  # Student's t with N - K df for every se_method
         ones = np.ones(self.N)
         constant = np.linalg.norm(ones - u @ (u.T @ ones)) < 1e-10 * np.sqrt(self.N)
-        centered = self.y - self.y.mean() if constant else self.y
+        mean_centered = self.y - self.y.mean()
+        centered = mean_centered if constant else self.y
         tss = float(centered @ centered)
+        # Gaussian baseline MLEs, directly from the outcome: an intercept-only
+        # mean for LL(C), and a zero mean for LL(0). Re-estimate sigma in each
+        # baseline using SSE/N, independently of the fitted model's intercept
+        # and df correction. No likelihood calls or additional fits are needed.
+        baseline_variances = (
+            float(mean_centered @ mean_centered / self.N),
+            float(self.y @ self.y / self.N),
+        )
+        ll_constants, ll_zero = (
+            np.inf if variance == 0.0 else
+            -0.5 * (np.log(2 * np.pi) + 1.0 + np.log(variance))
+            for variance in baseline_variances
+        )
         r2 = 1 - sse / tss if tss > 0 else np.nan
         ssr = tss - sse
         df_model = self.n_beta - int(constant)
@@ -203,6 +217,7 @@ class LRModel(BaseModel):
             corr_matrix=corr, cov_matrix=cov, control=ctrl,
             data_path=self.data_path, convergence_time=(perf_counter() - start) / 60,
             sigma2=sigma2, residual_variance=sse / df, df_resid=df,
+            loglik_constants=ll_constants, loglik_zero=ll_zero,
             r_squared=r2, adj_r_squared=1 - (1 - r2) * (self.N - int(constant)) / df,
             fitted_values=fitted, residuals=residuals,
             sst=tss, ssr=ssr, sse=sse, df_model=df_model, f_stat=f_stat,
