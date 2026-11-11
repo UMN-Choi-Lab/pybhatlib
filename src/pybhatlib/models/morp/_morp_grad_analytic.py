@@ -41,6 +41,8 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+
+from pybhatlib.models._fit_diagnostics import record_probabilities
 from pybhatlib.utils._safe_reparam import safe_exp
 
 from pybhatlib.gradmvn._mvncd_grad_analytic import mvncd_grad_me_analytic
@@ -157,6 +159,7 @@ def morp_analytic_gradient(
             lower, upper, has_lower, has_upper, sigma, K, use_ovus,
         )
         prob_q = max(prob_q, 1e-300)
+        record_probabilities(prob_q)
         total_ll += np.log(prob_q)
         inv_p = 1.0 / prob_q
 

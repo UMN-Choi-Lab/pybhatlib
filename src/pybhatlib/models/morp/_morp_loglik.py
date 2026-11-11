@@ -18,6 +18,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from pybhatlib.models._fit_diagnostics import record_probabilities, pause_probability_recording
+
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd_rect
 from pybhatlib.matgradient._spherical import theta_to_corr
@@ -96,9 +98,10 @@ def morp_loglik(
     nll = -mean_ll
 
     if return_gradient:
-        grad = _numerical_gradient_morp(
-            theta_np, X_np, y_np, n_dims, n_categories, n_beta, control, xp
-        )
+        with pause_probability_recording():
+            grad = _numerical_gradient_morp(
+                theta_np, X_np, y_np, n_dims, n_categories, n_beta, control, xp
+            )
         return nll, grad
 
     return nll
@@ -173,6 +176,7 @@ def _per_obs_loglik(
         prob_q = max(prob_q, 1e-300)
         ll_per_obs[q] = np.log(prob_q)
 
+    record_probabilities(np.exp(ll_per_obs))
     return ll_per_obs
 
 

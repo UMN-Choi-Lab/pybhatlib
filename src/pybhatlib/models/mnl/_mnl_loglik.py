@@ -22,6 +22,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from pybhatlib.models._fit_diagnostics import record_probabilities
+
 
 # ---------------------------------------------------------------------------
 # Internal helper
@@ -133,6 +135,8 @@ def mnl_loglik(
     # GAUSS: z = sumc((p2 .* dta[.,dvunord])')
     chosen = dta[:, dvunord]                                    # (e1, nc)  0/1
     z = (p2 * chosen).sum(axis=1)                              # (e1,)
+
+    record_probabilities(z)
 
     # Floor to avoid log(0), matching GAUSS missrv fallback
     z = np.maximum(z, 1e-4)

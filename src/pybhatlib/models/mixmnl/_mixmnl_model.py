@@ -46,6 +46,7 @@ from pybhatlib.mixed._reparam import (
 )
 from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import baseline_loglikelihoods
 from pybhatlib.models.mixmnl._mixmnl_control import MixMNLControl
 from pybhatlib.models.mixmnl._mixmnl_kernel import SoftmaxKernel
 from pybhatlib.models.mixmnl._mixmnl_results import MixMNLResults
@@ -405,7 +406,9 @@ class MixMNLModel(BaseModel):
         self._theta_hat = theta_hat
 
         # ---- final LL and per-individual score ----------------------------
-        ll_pi, score = est.simulated_loglik(theta_hat, want_grad=True)
+        ll_pi, score = est.simulated_loglik(
+            theta_hat, want_grad=True, collect_probabilities=True,
+        )
         ll_total = float(ll_pi.sum())
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
@@ -475,7 +478,13 @@ class MixMNLModel(BaseModel):
                 f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}"
             )
 
+        ll_c, ll_0 = baseline_loglikelihoods(
+            self.y, [self.n_alts], availability=self.avail,
+            row_to_person=panel.row_to_person, person_weights=est.weightind,
+        )
         return MixMNLResults(
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,
             t_stat=t_stat,
