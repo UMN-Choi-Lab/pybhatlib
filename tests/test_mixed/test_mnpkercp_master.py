@@ -107,8 +107,10 @@ def _fd_grad(est, theta, *, eps=1e-6):
 
 
 @pytest.mark.parametrize("seed", [20260716, 424242])
-def test_mnpkercp_master_fd(seed):
+@pytest.mark.parametrize("scaling", ["sumsq", "first"])
+def test_mnpkercp_master_fd(seed, scaling):
     est, layout, theta = _build_estimator(seed)
+    est.kernel.scaling = scaling
 
     _, score = est.simulated_loglik(theta, want_grad=True)
     assert score.shape[1] == layout.n_theta

@@ -43,9 +43,16 @@ class MNPResults:
         (Previously named ``b``; the old attribute is still available
         as a deprecated alias.)
     b_original : NDArray
-        BHATLIB-normalized reporting coefficients (Sigma_diff[0,0]=1).
-        Aligned with ``param_names``.  For non-IID models this has
-        one fewer element than ``params`` (one scale absorbed).
+        Reporting coefficients under ``control.scaling``. Aligned with
+        ``param_names``; non-IID reporting includes all differenced scales,
+        with the first fixed (``first``) or implied by the others (``sumsq``).
+        Random-coefficient blocks report correlations and standard deviations
+        (``scal[name]``), following mixed MNP. ``omega_hat`` and ``params``
+        retain their structural covariance and optimizer-space meanings.
+        Mixture weight rows report probabilities: ``segunpar`` is the second
+        segment's probability for two segments; ``segunpar_sN`` identifies
+        segments 2..N for larger mixtures. The reference probability is shown
+        with all other weights in the segment-probability table.
     se : NDArray
         Delta-method standard errors (aligned with ``b_original``).
         Computed using the estimator named in ``control.se_method``.
@@ -157,6 +164,7 @@ class MNPResults:
     control: MNPControl | None = None
     data_path: str = ""
     ranvar_indices: list[int] | None = None
+    random_coefficient_names: list[str] | None = None
     se_bhhh: NDArray | None = None
     se_hessian: NDArray | None = None
     se_sandwich: NDArray | None = None
@@ -209,7 +217,10 @@ class MNPResults:
         kernel_cov : array-like, shape (I-1, I-1), optional
             Differenced kernel error covariance ``Lambda`` (the quantity
             :func:`~pybhatlib.models.mnp._mnp_loglik._build_lambda` returns).
-            ``None`` (default) builds an IID model (``Lambda = I``).
+            ``None`` (default) builds an IID model. Non-IID covariance and
+            beta are normalized together according to ``control.scaling``:
+            first scale 1, or sum of squared differenced scales 1. Supplying
+            an already normalized pair leaves its utility scale unchanged.
         control : MNPControl, optional
             Control structure.  Defaults to ``MNPControl(iid=kernel_cov is
             None)``.  Its ``heteronly`` flag selects the variance-only
@@ -259,8 +270,14 @@ class MNPResults:
             # K[0,0] PINNED to 1. Encode only the I-2 FREE scales (scales[1:]) as
             # log-scales; the first scale is implicit (pinned to 1).
             scales = np.sqrt(np.clip(np.diag(Lambda), 1e-300, None))
-            free_scales = scales[1:]  # length I-2 (drop pinned scale01)
-            theta.extend(np.log(free_scales).tolist())
+            from pybhatlib.models._mnp_scaling import encode_kernel_scales
+
+            # Keep beta and covariance on the same utility scale. Already
+            # normalized inputs pass through; arbitrary equivalent inputs are
+            # rescaled together before encoding the omitted reference scale.
+            norm = np.linalg.norm(scales) if control.scaling == "sumsq" else scales[0]
+            theta[:n_beta] = (beta / norm).tolist()
+            theta.extend(encode_kernel_scales(scales / norm, control.scaling).tolist())
             if not control.heteronly:
                 corr = Lambda / np.outer(scales, scales)
                 theta.extend(corr_to_theta(corr, dim).tolist())
@@ -275,7 +292,7 @@ class MNPResults:
         nan_mat = np.full((theta_arr.shape[0], theta_arr.shape[0]), np.nan)
         return cls(
             params=theta_arr,
-            b_original=beta.copy(),
+            b_original=theta_arr[:n_beta].copy(),
             se=nan_b.copy(),
             t_stat=nan_b.copy(),
             p_value=nan_b.copy(),
@@ -355,46 +372,90 @@ class MNPResults:
 
         lines.append("")
 
-        # The stored kernel is the covariance of differenced errors (I - 1
-        # dimensions), not the unidentified covariance of the original errors.
-        if self.lambda_hat is not None:
-            kernel_cov = np.asarray(self.lambda_hat, dtype=np.float64)
-            scales = np.sqrt(np.maximum(np.diag(kernel_cov), 0.0))
-            scale_outer = np.outer(scales, scales)
-            kernel_corr = np.full_like(kernel_cov, np.nan)
-            np.divide(
-                kernel_cov,
-                scale_outer,
-                out=kernel_corr,
-                where=scale_outer > 0,
-            )
-            
-            reference_alt = (
-                self.alternatives[0] if self.alternatives else "first alternative"
-            )
-            lines.append(
-                "  Estimated error correlation matrix "
-                f"(differenced relative to {reference_alt})"
-            )
-            for i in range(kernel_corr.shape[0]):
-                row_vals = [f"{kernel_corr[i, j]:>7.3f}" for j in range(kernel_corr.shape[1])]
-                lines.append("  " + " ".join(row_vals))
+        if self.segment_probs is not None and len(self.segment_probs) > 1:
+            lines.extend([
+                "  Segment probabilities",
+                f"  {'Segment':<20s} {'Probability':>12s}",
+                "  " + "-" * 33,
+            ])
+            for h, probability in enumerate(self.segment_probs, start=1):
+                lines.append(f"  {f's{h}':<20s} {probability:>12.5f}")
 
-            lines.append("")
-            lines.append(
-                "  Estimated scales "
-                f"(differenced relative to {reference_alt}; first differenced scale fixed to 1.000)"
+        has_random = bool(self.ranvar_indices) and self.omega_hat is not None
+        if has_random or self.lambda_hat is not None:
+            indices = self.ranvar_indices if has_random else []
+            base_names = (self.random_coefficient_names or [self.param_names[i] for i in indices]) if has_random else []
+            kernel_cov = (
+                np.asarray(self.lambda_hat, dtype=np.float64)
+                if self.lambda_hat is not None else np.zeros((0, 0))
             )
-            lines.append("  " + " ".join(f"{scale:>7.3f}" for scale in scales))
+            kd = len(kernel_cov)
+            alternatives = self.alternatives or [f"alt{i + 1}" for i in range(kd + 1)]
+            kernel_names = [f"ker[{alt}-{alternatives[0]}]" for alt in alternatives[1:kd + 1]]
+            means = (self.segment_means or [self.b_original]) if has_random else []
+            covariances = (self.segment_covs or [self.omega_hat]) if has_random else []
+            nr_per_segment = len(base_names)
+            nr = nr_per_segment * len(covariances)
+            rc_cov = np.full((nr, nr), np.nan)
+            rc_rows = []
+            for h, (mean, covariance) in enumerate(zip(means, covariances)):
+                suffix = f"_s{h + 1}" if h else ""
+                start = h * nr_per_segment
+                rc_cov[start:start + nr_per_segment, start:start + nr_per_segment] = covariance
+                scales = np.sqrt(np.maximum(np.diag(covariance), 0.0))
+                rc_rows.extend((name + suffix, mean[index], scale)
+                               for name, index, scale in zip(base_names, indices, scales))
+            names = [name for name, _, _ in rc_rows] + kernel_names
+            width = max(20, max(map(len, names)))
+            col_width = max(11, max(map(len, names)))
+            kernel_scales = np.sqrt(np.maximum(np.diag(kernel_cov), 0.0))
 
-            lines.append("")
-            lines.append(
-                            "  Implied error covariance matrix "
-                            f"(differenced relative to {reference_alt}; first differenced scale fixed to 1.000)"
-                        )
-            for i in range(kernel_cov.shape[0]):
-                row_vals = [f"{kernel_cov[i, j]:>7.3f}" for j in range(kernel_cov.shape[1])]
-                lines.append("  " + " ".join(row_vals))
+            def append_matrix(title: str, matrix: NDArray) -> None:
+                lines.extend([
+                    "", f"  {title}", f"  {'':<{width}s} "
+                    + " ".join(f"{name:>{col_width}s}" for name in names),
+                ])
+                for name, row in zip(names, matrix):
+                    values = [f"{value:>{col_width}.4f}" if np.isfinite(value)
+                              else f"{'--':>{col_width}s}" for value in row]
+                    lines.append(f"  {name:<{width}s} " + " ".join(values))
+
+            if has_random:
+                lines.extend([
+                    "", "  Random-coefficient locations and scales",
+                    f"  {'Coefficient':<{width}s} {'Location':>12s} {'Scale':>12s}",
+                    "  " + "-" * (width + 26),
+                ])
+                for name, location, scale in rc_rows:
+                    lines.append(f"  {name:<{width}s} {location:>12.5f} {scale:>12.5f}")
+
+            if kd:
+                normalization = (
+                    "sum of squared differenced scales fixed to 1.000"
+                    if getattr(self.control, "scaling", "sumsq") == "sumsq"
+                    else "first differenced scale fixed to 1.000"
+                )
+                lines.extend([
+                    "", f"  Kernel-error scales (differenced; {normalization})",
+                    f"  {'Coefficient':<{width}s} {'Scale':>12s}",
+                    "  " + "-" * (width + 13),
+                ])
+                for name, scale in zip(kernel_names, kernel_scales):
+                    lines.append(f"  {name:<{width}s} {scale:>12.5f}")
+
+            joint_cov = np.zeros((nr + kd, nr + kd))
+            joint_cov[:nr, :nr] = rc_cov
+            joint_cov[nr:, nr:] = kernel_cov
+            scales = np.concatenate([[scale for _, _, scale in rc_rows], kernel_scales])
+            outer = np.outer(scales, scales)
+            joint_corr = np.divide(joint_cov, outer, out=np.full_like(joint_cov, np.nan), where=outer > 0)
+            subject = (
+                "Random-coefficient / kernel-error (differenced)" if kd and len(covariances) > 1
+                else "Joint random-coefficient / kernel-error (differenced)" if kd and has_random
+                else "Kernel-error (differenced)" if kd else "Random-coefficient"
+            )
+            append_matrix(f"{subject} correlation matrix", joint_corr)
+            append_matrix(f"{subject} implied covariance matrix", joint_cov)
             lines.append("")
 
         # Correlation matrix

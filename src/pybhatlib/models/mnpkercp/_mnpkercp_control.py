@@ -45,11 +45,14 @@ class MNPKerCPControl:
         If ``False`` (GAUSS ``_nocorrrcker = 1``; **required for panel data**)
         the kernel covariance is the unconditional differenced-kernel block and
         the copula gradient path vanishes.  Default ``False``.
-    scaling : {"sumsq"}
-        Kernel-scale reparameterization.  Only the sum-of-squares
-        (``sqrt(logitmod([0, xscalker]))``) form of ``MNPKERCP.gss`` is
-        implemented, so the squared kernel scales are a probability vector
-        summing to one.
+    scaling : {"sumsq", "first"}
+        Differenced kernel-error identification. ``sumsq`` (default) uses
+        ``sqrt(logitmod([0, xscalker]))``, whose squared scales sum to 1.
+        ``first`` fixes the first scale to 1 and exponentiates the remaining
+        log scales. Both have nc-2 free coordinates. ``startb`` uses these
+        optimizer coordinates; reported/external ``kern`` entries are natural
+        scales for errors 2..nc-1. The first is implicit: sqrt(1-sum(free^2))
+        for ``sumsq``, or 1 for ``first``. IID uses equal normalized scales.
     n_rep : int
         Number of MSL replications (GAUSS ``nrep``, default 5 for MNPKERCP).
     intordn1 : int
@@ -118,7 +121,7 @@ class MNPKerCPControl:
     # --- kernel / copula -----------------------------------------------------
     iid: bool = False
     copula: bool = False
-    scaling: Literal["sumsq"] = "sumsq"
+    scaling: Literal["sumsq", "first"] = "sumsq"
     method: str = "ovus"
 
     # --- MSL / reparameterization -------------------------------------------
@@ -143,3 +146,8 @@ class MNPKerCPControl:
     startb: NDArray | None = None
     start_from_shares: bool = False
     draw_method: Literal["scipy", "explicit"] = "scipy"
+
+    def __post_init__(self):
+        from pybhatlib.models._mnp_scaling import validate_scaling
+
+        validate_scaling(self.scaling)
