@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import warnings
 
+import numpy as np
 import pytest
 
 from pybhatlib.models.mnp import MNPControl, MNPModel
@@ -93,6 +94,103 @@ def _make_model(spec, nseg, ranvars, travelmode_path, mix=True, **ctrl_kwargs):
 # ---------------------------------------------------------------------------
 # Backward-compatibility (nseg=1) — auto-expansion must be a no-op
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("nseg", [2, 3])
+@pytest.mark.parametrize("randdiag", [False, True])
+@pytest.mark.parametrize("ranvars", [["OVTT"], ["OVTT", "COST"]])
+def test_all_segments_start_with_positive_random_scales(
+    travelmode_path, nseg, randdiag, ranvars,
+):
+    from pybhatlib.models.mnp._mnp_loglik import _unpack_params, _build_omega_cholesky
+
+    model = _make_model(SPEC_BASE, nseg, ranvars, travelmode_path, randdiag=randdiag)
+    theta = model._default_start_values()
+    params = _unpack_params(theta, model.n_beta, model.n_alts, model.control, model.ranvar_indices)
+    omegas = [params["omega_params"]] + params["segment_omegas"]
+    assert len(omegas) == nseg
+    expected = np.eye(len(ranvars)) * 0.1
+    for omega in omegas:
+        L = _build_omega_cholesky(omega, model.ranvar_indices, model.control)
+        np.testing.assert_allclose(L, expected)
+
+
+@pytest.mark.parametrize("scaling", ["first", "sumsq"])
+def test_second_segment_default_scale_has_nonzero_correct_gradient(travelmode_path, scaling):
+    from pybhatlib.models.mnp._mnp_loglik import mnp_loglik
+
+    model = _make_model(SPEC_BASE, 2, ["OVTT"], travelmode_path, scaling=scaling)
+    np.random.seed(42)
+    theta = model._default_start_values()
+    scale_index = model._build_param_names().index("scal_theta[OVTT]_s2")
+
+    def likelihood(t):
+        return mnp_loglik(t, model.X, model.y, model.avail, model.n_alts,
+                          model.n_beta, model.control, model.ranvar_indices,
+                          return_gradient=True)
+
+    value, gradient = likelihood(theta)
+    step = np.zeros_like(theta)
+    step[scale_index] = 1e-5
+    fd = (likelihood(theta + step)[0] - likelihood(theta - step)[0]) / 2e-5
+    assert abs(gradient[scale_index]) > 1e-5
+    assert gradient[scale_index] == pytest.approx(fd, abs=1e-6, rel=1e-5)
+    improved = theta.copy()
+    improved[scale_index] -= np.sign(gradient[scale_index]) * 1e-3
+    assert likelihood(improved)[0] < value
+
+    # Zero is now log(SD)=0, i.e. SD=1, rather than a zero-variance trap.
+    zero = theta.copy()
+    zero[scale_index] = 0.0
+    assert abs(likelihood(zero)[1][scale_index]) > 1e-5
+
+
+@pytest.mark.parametrize("scaling", ["first", "sumsq"])
+def test_one_random_coefficient_is_identical_for_both_randdiag_settings(travelmode_path, scaling):
+    from pybhatlib.models.mnp._mnp_loglik import mnp_loglik, mnp_loglik_unpar
+
+    results = []
+    starts = []
+    for diagonal in (False, True):
+        model = _make_model(SPEC_BASE, 2, ["OVTT"], travelmode_path,
+                            randdiag=diagonal, scaling=scaling)
+        np.random.seed(42)
+        theta = model._default_start_values()
+        starts.append(theta)
+        results.append(mnp_loglik(theta, model.X, model.y, model.avail,
+                                  model.n_alts, model.n_beta, model.control,
+                                  model.ranvar_indices, return_gradient=True))
+        natural_ll = mnp_loglik_unpar(model._unparametrize(theta), model.X,
+                                     model.y, model.avail, model.n_alts,
+                                     model.n_beta, model.control, model.ranvar_indices)
+        assert natural_ll == pytest.approx(results[-1][0], abs=1e-10)
+        assert model._build_param_names()[-1] == "scal_theta[OVTT]_s2"
+    np.testing.assert_array_equal(starts[0], starts[1])
+    assert results[0][0] == pytest.approx(results[1][0], abs=1e-12)
+    np.testing.assert_allclose(results[0][1], results[1][1], atol=1e-12)
+
+
+@pytest.mark.parametrize("n_rand", [1, 2, 3])
+@pytest.mark.parametrize("randdiag", [False, True])
+def test_random_covariance_log_scale_chain(n_rand, randdiag):
+    from pybhatlib.models.mnp._mnp_random import random_covariance, random_covariance_adjoint
+
+    ctrl = MNPControl(randdiag=randdiag, scal=1.7)
+    n_corr = 0 if randdiag else n_rand * (n_rand - 1) // 2
+    theta = np.linspace(-0.4, 0.3, n_corr + n_rand)
+    rng = np.random.default_rng(24)
+    adjoint = rng.normal(size=(n_rand, n_rand))
+    adjoint = 0.5 * (adjoint + adjoint.T)
+    L, covariance = random_covariance(theta, n_rand, ctrl)
+    np.testing.assert_allclose(np.sqrt(np.diag(covariance)), np.exp(theta[n_corr:]))
+    np.testing.assert_allclose(L @ L.T, covariance)
+    analytic = random_covariance_adjoint(adjoint, theta, n_rand, ctrl)
+    numeric = np.zeros_like(theta)
+    for i, direction in enumerate(np.eye(len(theta))):
+        plus = random_covariance(theta + 1e-6 * direction, n_rand, ctrl)[1]
+        minus = random_covariance(theta - 1e-6 * direction, n_rand, ctrl)[1]
+        numeric[i] = np.sum(adjoint * (plus - minus)) / 2e-6
+    np.testing.assert_allclose(analytic, numeric, atol=1e-8, rtol=1e-7)
 
 
 class TestRanvarsBackwardCompatibilityNseg1:

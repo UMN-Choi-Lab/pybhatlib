@@ -94,7 +94,7 @@ def test_mnp_gauss_flex_age45_ate_from_reported_estimates(travelmode_path):
     data = pd.read_csv(travelmode_path)
 
     # 1) Fresh fit -> ATE predicted shares (the reference).
-    ctrl = MNPControl(iid=False, maxiter=200, verbose=0, seed=42)
+    ctrl = MNPControl(scaling="first", iid=False, maxiter=200, verbose=0, seed=42)
     model = MNPModel(
         data=travelmode_path,
         alternatives=ALTERNATIVES,
@@ -113,7 +113,7 @@ def test_mnp_gauss_flex_age45_ate_from_reported_estimates(travelmode_path):
     ate_gauss = mnp_ate_from_params(
         _GAUSS_BETA,
         kernel_cov=_GAUSS_KERNEL,
-        control=MNPControl(iid=False),
+        control=MNPControl(scaling="first", iid=False),
         n_alts=3,
         data=data,
         spec=SPEC_WITH_AGE45,

@@ -80,7 +80,9 @@ from pybhatlib.matgradient._radial import newcholparmscaled
 from pybhatlib.mixed._copula import condition, gcondnewcov, gcondnewmean
 from pybhatlib.mixed._kernel import KernelObsResult
 from pybhatlib.models.mnpkercp._mnpkercp_diff import dm_matrix
-from pybhatlib.utils._logistic import gradlogitmod
+from pybhatlib.models._mnp_scaling import (
+    kernel_scales, kernel_scale_jacobian, validate_scaling,
+)
 
 
 @dataclass(frozen=True)
@@ -133,6 +135,7 @@ class MvncdKernelState:
     dwker_dxscal: NDArray
     indxrand: Optional[NDArray] = None
     gxcov_domega: Optional[NDArray] = None
+    mean_scale: float = 1.0
 
 
 class MvncdKernel:
@@ -154,6 +157,11 @@ class MvncdKernel:
     scal : float, default 1.0
         Radial correlation-Cholesky scaling constant (must match the pipeline /
         space value); passed to ``newcholparmscaled``.
+    scaling : {"sumsq", "first"}
+        Differenced-error identification. The default preserves the GAUSS
+        squared-sum normalization; ``first`` fixes the first scale at 1.
+        In the copula path ``first`` also converts the conditional mean from
+        the existing sumsq utility units, preserving choice probabilities.
 
     Attributes
     ----------
@@ -164,7 +172,7 @@ class MvncdKernel:
     def __init__(
         self, nc: int, nrndcoef: int, *, copula: bool = False, scal: float = 1.0,
         iid: bool = False, active_corr_pairs: tuple[tuple[int, int], ...] | None = None,
-        method: str = "ovus",
+        method: str = "ovus", scaling: str = "sumsq",
     ) -> None:
         if nc < 2:
             raise ValueError(f"nc must be >= 2, got {nc}")
@@ -182,6 +190,8 @@ class MvncdKernel:
         self.iid: bool = bool(iid)
         self.active_corr_pairs = active_corr_pairs
         self.method: str = str(method).lower()
+        validate_scaling(scaling)
+        self.scaling = scaling
 
     # ------------------------------------------------------------------
     def kernel_param_names(self) -> list[str]:
@@ -194,7 +204,8 @@ class MvncdKernel:
 
         Reproduces the draw-independent setup of GAUSS ``lpr``/``lgd``:
         ``omegastar`` from the correlation block (``newcholparmscaled``),
-        ``wker_full = sqrt(logitmod([0, xscalker]))`` and ``wdiagker`` from the
+        ``wker_full`` and ``wdiagker`` from the selected scale normalization
+        (sqrt-softmax for ``sumsq``, or [1, exp(free)] for ``first``), from the
         kernel-scale block, the conditional (copula) or unconditional kernel
         covariance ``covker2``, and the conditional-mean sensitivity
         ``m_cond = X12 X11^{-1}``.
@@ -273,22 +284,16 @@ class MvncdKernel:
         k = self.nrndcoef
         kd = self.kernel_dim
 
-        # --- kernel scale: wker_full = sqrt(logitmod([0, xscalker])) --------
+        # --- normalized kernel scales and their free-coordinate Jacobian ---
         if self.iid:
-            wker_full = np.full(kd, 1.0 / np.sqrt(kd), dtype=np.float64)
-            ga = np.zeros((kd, kd), dtype=np.float64)
+            value = 1.0 / np.sqrt(kd) if self.scaling == "sumsq" else 1.0
+            wker_full = np.full(kd, value, dtype=np.float64)
         else:
-            xscalker_full = np.concatenate([
-                np.zeros(1, dtype=np.float64),
-                np.asarray(xscalker_free, dtype=np.float64),
-            ])
-            F, ga = gradlogitmod(xscalker_full)
-            wker_full = np.sqrt(F)
+            wker_full = kernel_scales(xscalker_free, self.scaling)
         wdiagker = np.diag(wker_full)                         # (nc-1, nc-1)
-        # d wker_full[k] / d xscalker_free[j] = ga[j+1, k] / (2 wker_full[k]).
-        # Rows are the free params (drop the fixed reference param, full idx 0).
+        # Rows are free coordinates; columns include the implicit first scale.
         if self.n_kern > 0:
-            dwker_dxscal = ga[1:, :] / (2.0 * wker_full[None, :])   # (n_kern, nc-1)
+            dwker_dxscal = kernel_scale_jacobian(wker_full, self.scaling)
         else:
             dwker_dxscal = np.zeros((0, kd), dtype=np.float64)
 
@@ -336,6 +341,10 @@ class MvncdKernel:
             dwker_dxscal=dwker_dxscal,
             indxrand=indxrand,
             gxcov_domega=gxcov_domega,
+            # The existing copula mean is in sumsq-normalized utility units.
+            # Switching identification rescales that mean along with the
+            # covariance; the default sumsq path remains exactly unchanged.
+            mean_scale=float(np.linalg.norm(wker_full)) if self.scaling == "first" else 1.0,
         )
 
     # ------------------------------------------------------------------
@@ -415,7 +424,7 @@ class MvncdKernel:
 
             if self.copula:
                 B1 = kstate.m_cond @ rc[i]                    # (nc-1,)
-                B2 = N @ B1 + Vsub[i]                         # (nc,)
+                B2 = kstate.mean_scale * (N @ B1) + Vsub[i]   # (nc,)
             else:
                 B2 = Vsub[i]
 
@@ -450,7 +459,7 @@ class MvncdKernel:
 
             # --- copula path: errbeta3 -> B1 -> B2 -> B3 ---
             if self.copula:
-                dlogp_drc[i] = kstate.m_cond.T @ (N.T @ dV)  # (nrndcoef,)
+                dlogp_drc[i] = kstate.mean_scale * (kstate.m_cond.T @ (N.T @ dV))
 
             # Symmetric dP/dxisubq from the row-based vech ``grad_sigma`` --
             # shared by the kernel-scale and joint-correlation paths.
@@ -475,6 +484,12 @@ class MvncdKernel:
                 # dP/dwker_full[m] = 2 (inner W Gxi3)[m,m]  (product rule on W..W)
                 dPdwker = 2.0 * np.diag(YW @ Gxi3)           # (nc-1,)
                 dlnPdwker = dPdwker / P
+                if self.copula and self.scaling == "first":
+                    # d ||w|| / dw for the same normalization of the mean.
+                    dlnPdwker += (
+                        float((N.T @ dV) @ B1)
+                        * np.diag(kstate.wdiagker) / kstate.mean_scale
+                    )
                 dlogp_dkparams[i] = kstate.dwker_dxscal @ dlnPdwker  # (n_kern,)
 
             # Unconditional kernel covariance path.  With copula disabled,
@@ -513,7 +528,7 @@ class MvncdKernel:
 
                 # (b) mean: B1subq = X12 X11^{-1} errbeta3 depends on omegastar
                 # (holding ``errbeta3`` fixed) -- ``gcondnewmean``'s gX.
-                b1_bar = N.T @ dV                            # (nc-1,) d lnP / d B1
+                b1_bar = kstate.mean_scale * (N.T @ dV)       # d lnP / d B1
                 g_full = np.concatenate([rc[i], np.zeros(kd, dtype=np.float64)])
                 _gy, _gmu, gxmean_domega, _gg = gcondnewmean(
                     np.eye(kd), np.zeros(nrndtot), kstate.omegastar,

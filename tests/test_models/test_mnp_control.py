@@ -24,6 +24,7 @@ class TestMNPControlDefaults:
         ctrl = MNPControl()
         assert ctrl.spherical is True
         assert ctrl.scal == 1.0
+        assert ctrl.scaling == "sumsq"
         assert ctrl.IID_first is True
         assert ctrl.want_covariance is True
         assert ctrl.seed10 == 1234
