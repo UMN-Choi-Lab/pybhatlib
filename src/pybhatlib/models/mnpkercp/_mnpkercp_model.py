@@ -54,6 +54,7 @@ from pybhatlib.mixed._rc_pipeline import RandomCoefPipeline
 from pybhatlib.mixed._reparam import EstimationSpace, ParamLayout
 from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import baseline_loglikelihoods
 from pybhatlib.models.mnpkercp._mnpkercp_control import MNPKerCPControl
 from pybhatlib.models.mnpkercp._mnpkercp_kernel import MvncdKernel
 from pybhatlib.models.mnpkercp._mnpkercp_results import (
@@ -494,7 +495,9 @@ class MNPKerCPModel(BaseModel):
         )
         theta_hat = np.asarray(res.x, dtype=np.float64)
 
-        ll_pi, score = est.simulated_loglik(theta_hat, want_grad=True)
+        ll_pi, score = est.simulated_loglik(
+            theta_hat, want_grad=True, collect_probabilities=True,
+        )
         ll_total = float(ll_pi.sum())
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
@@ -564,8 +567,14 @@ class MNPKerCPModel(BaseModel):
                 "sum of squares = 1."
             ),
         )
+        ll_c, ll_0 = baseline_loglikelihoods(
+            self.y, [self.n_alts], availability=self.avail,
+            row_to_person=panel.row_to_person, person_weights=est.weightind,
+        )
         return MNPKerCPResults(
             mixing_summary=mixing_summary,
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,
             t_stat=t_stat,

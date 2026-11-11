@@ -52,6 +52,7 @@ from pybhatlib.mixed._reparam import (
 )
 from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import baseline_loglikelihoods
 from pybhatlib.models.morp_flex._morp_flex_control import MORPFlexControl
 from pybhatlib.models.morp_flex._morp_flex_kernel import RectMvncdKernel
 from pybhatlib.models.morp_flex._morp_flex_results import (
@@ -461,7 +462,9 @@ class MORPFlexModel(BaseModel):
             theta=theta_hat, spec=spec, layout=layout, panel=panel, est=est
         )
 
-        ll_pi, score = est.simulated_loglik(theta_hat, want_grad=True)
+        ll_pi, score = est.simulated_loglik(
+            theta_hat, want_grad=True, collect_probabilities=True,
+        )
         ll_total = float(ll_pi.sum())
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
@@ -519,8 +522,14 @@ class MORPFlexModel(BaseModel):
                 "kernel scales are fixed at 1."
             ),
         )
+        ll_c, ll_0 = baseline_loglikelihoods(
+            self.y_ord, self.n_categories,
+            row_to_person=panel.row_to_person, person_weights=est.weightind,
+        )
         return MORPFlexResults(
             mixing_summary=mixing_summary,
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,
             t_stat=t_stat,

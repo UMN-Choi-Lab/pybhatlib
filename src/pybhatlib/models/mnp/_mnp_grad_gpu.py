@@ -15,6 +15,8 @@ import numpy as np
 import torch
 from numpy.typing import NDArray
 
+from pybhatlib.models._fit_diagnostics import record_probabilities
+
 from pybhatlib.gradmvn._mvncd_torch import (
     bvn_cdf_torch,
     mvncd_grad_batch_k2_torch,
@@ -194,6 +196,7 @@ def mnp_gradient_gpu(
     )
     prob_all, grad_a_all, grad_sv_all = grad_fn(diff_V_all, Lambda_diff_all)
 
+    record_probabilities(prob_all)
     total_ll = torch.log(prob_all).sum()
     inv_p_all = 1.0 / prob_all
 
@@ -388,6 +391,7 @@ def _mixture_gradient_gpu(
     # Mixture probabilities
     P_q_all = P_q_h_all @ pi_h_gpu
     P_q_all = P_q_all.clamp(min=1e-300)
+    record_probabilities(P_q_all)
     total_ll = torch.log(P_q_all).sum()
     inv_P_q = 1.0 / P_q_all
 

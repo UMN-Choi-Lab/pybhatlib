@@ -124,6 +124,17 @@ class MORPFlexResults:
         Final (summed) score vector at convergence, estimation space.
     loglik : float
         Mean simulated log-likelihood (per individual).
+    loglik_constants, loglik_zero : float
+        Mean independent empirical-share and uniform null log-likelihoods,
+        normalized like ``loglik``. Shares are conditional on the available
+        choice set; ordinal dimensions and panel occasions are independent
+        in these benchmarks, rather than restricted fits of the full kernel.
+    average_correct_probability : float
+        Arithmetic mean fitted probability of the observed outcome (the joint
+        category combination for ordinal models). In panels, average across
+        occasions within each person, then across persons. It is not the
+        exponential of the mean log-likelihood or a classification hit rate.
+        These diagnostics are ``nan`` without fitting data.
     n_obs : int
         Number of observations.
     n_ind : int
@@ -178,6 +189,11 @@ class MORPFlexResults:
     data_path: str = ""
     message: str | None = None
     mixing_summary: MixingSummary | None = None
+
+    # Independent null benchmarks; not restricted fits of the full kernel.
+    loglik_constants: float = np.nan
+    loglik_zero: float = np.nan
+    average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MORPFlexResults, accepting both canonical and legacy kwargs.
@@ -280,6 +296,13 @@ class MORPFlexResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        for label, value in (
+            ("Mean LL(C)", self.loglik_constants),
+            ("Mean LL(0)", self.loglik_zero),
+            ("APCP", self.average_correct_probability),
+        ):
+            formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
+            lines.append(f"  {label:<23s}{formatted}")
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append(f"  Number of individuals  {self.n_ind:>14d}")
         lines.append("")
@@ -290,7 +313,7 @@ class MORPFlexResults:
         )
         header = (
             f"  {'Parameters':<{name_width}s} {'Estimates':>10s} {'Std. err.':>10s}"
-            f" {'Est./s.e.':>10s} {'Prob.':>10s}"
+            f" {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
         )
         lines.append(header)
         lines.append("  " + "-" * (len(header) - 2))
@@ -300,9 +323,10 @@ class MORPFlexResults:
             se = self.se[i] if i < len(self.se) else 0.0
             t = self.t_stat[i] if i < len(self.t_stat) else 0.0
             p = self.p_value[i] if i < len(self.p_value) else 0.0
+            g = self.gradient[i] if i < len(self.gradient) else 0.0
             lines.append(
                 f"  {name:<{name_width}s} {est:>10.4f} {se:>10.4f}"
-                f" {t:>10.3f} {p:>10.4f}"
+                f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
 
         mixing = self.mixing_summary
