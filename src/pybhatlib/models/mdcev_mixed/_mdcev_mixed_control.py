@@ -128,8 +128,8 @@ class MDCEVMixedControl:
     intordn1: int = 92
     spher: bool = False
     scal: float = 1.0
-    floor_pcomp: float = 1e-4
-    floor_z: float = 1e-4
+    floor_pcomp: float = 1e-10
+    floor_z: float = 1e-100
     draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------
