@@ -12,6 +12,8 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
+from pybhatlib.models._mnp_scaling import validate_scaling
+
 
 @dataclass
 class MNPControl:
@@ -38,6 +40,12 @@ class MNPControl:
     method : str
         MVNCD approximation method: "me", "ovus", "tvbs", "bme", "ovbs",
         "ssj", "scipy".
+    scaling : {"first", "sumsq"}
+        Differenced kernel-error identification: sum of squared scales fixed
+        at 1 (default), or first scale fixed at 1. Both use I-2 free
+        coordinates. In ``startb`` these are log scales for ``first`` and
+        logits of squared scales relative to the first for ``sumsq``.
+        Natural covariance inputs and reported scales use this normalization.
     spherical : bool
         If True, use spherical parameterization for correlation matrix.
     scal : float
@@ -93,7 +101,10 @@ class MNPControl:
     seed : int or None
         Random seed for reproducibility.
     startb : NDArray or None
-        User-supplied starting values for parameters.
+        User-supplied optimizer-space starting values. The kernel scale block
+        follows ``scaling``; the parameter order and length are unchanged.
+        Segment weights use unconstrained logits relative to segment 1;
+        final reporting transforms these into probabilities.
     active_mask : NDArray of bool or None
         Boolean mask of shape ``(n_params,)``.  ``True`` = parameter is
         estimated; ``False`` = parameter is frozen at its ``startb`` value
@@ -145,3 +156,8 @@ class MNPControl:
     torch_compile: bool = False
     """If True, use torch.compile on GPU MVNCD kernels (requires device != "cpu").
     Adds ~5s one-time compilation cost, then 2-20x faster per iteration."""
+
+    scaling: Literal["first", "sumsq"] = "sumsq"
+
+    def __post_init__(self):
+        validate_scaling(self.scaling)

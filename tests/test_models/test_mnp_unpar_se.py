@@ -274,7 +274,7 @@ def test_se_no_jacobian_projection_for_beta_block(travelmode_path):
     unparameterized theta, without any Jacobian step. The only Jacobian
     that survives is the BHATLIB sigma_1 normalization (one scalar per block).
     """
-    ctrl = MNPControl(
+    ctrl = MNPControl(scaling="first",
         iid=False, maxiter=200, verbose=0, seed=42, se_method="bhhh",
     )
     model = MNPModel(
@@ -309,7 +309,7 @@ def test_bhhh_unpar_matches_paper_iid_a1(travelmode_path):
     Jacobian effects.  Pin that against the BHATLIB published SE targets to
     catch any silent regression of the unparameterized path.
     """
-    ctrl = MNPControl(
+    ctrl = MNPControl(scaling="first",
         iid=True, maxiter=200, verbose=0, seed=42, se_method="bhhh",
     )
     spec_iid = {
@@ -376,7 +376,7 @@ def _assert_bhhh_se_parity(
     each estimated parameter; exact SE parity for IID is in
     ``test_bhhh_unpar_matches_paper_iid_a1``.
     """
-    ctrl = MNPControl(
+    ctrl = MNPControl(scaling="first",
         maxiter=200, verbose=0, seed=42, se_method="bhhh", **control_kwargs,
     )
     model = MNPModel(
@@ -391,22 +391,29 @@ def _assert_bhhh_se_parity(
 
     coef = dict(zip(results.param_names, results.b_original))
     se = dict(zip(results.param_names, results.se))
+    # Published fixture names predate the descriptive differenced-error labels.
+    fixed_scale = f"kerscal[{ALTERNATIVES[1]}-{ALTERNATIVES[0]}] (fixed)"
+    free_scale = f"kerscal[{ALTERNATIVES[2]}-{ALTERNATIVES[0]}]"
+    correlation = (
+        f"corr[ker[{ALTERNATIVES[1]}-{ALTERNATIVES[0]}],"
+        f"ker[{ALTERNATIVES[2]}-{ALTERNATIVES[0]}]]"
+    )
 
     # First-diff-var=1 property: scale01 is pinned to 1.0 (fixed row, SE=NaN).
-    assert "scale01" in coef, f"{model_label}: scale01 not reported"
-    assert coef["scale01"] == pytest.approx(1.0, abs=1e-9), (
-        f"{model_label}: scale01 should be pinned to 1.0, got {coef['scale01']}"
+    assert fixed_scale in coef, f"{model_label}: scale01 not reported"
+    assert coef[fixed_scale] == pytest.approx(1.0, abs=1e-9), (
+        f"{model_label}: scale01 should be pinned to 1.0, got {coef[fixed_scale]}"
     )
-    assert np.isnan(se["scale01"]), (
+    assert np.isnan(se[fixed_scale]), (
         f"{model_label}: SE for the fixed scale01 row should be NaN, "
-        f"got {se['scale01']}"
+        f"got {se[fixed_scale]}"
     )
 
     for param, tdata in target["params"].items():
         if tdata["status"] != "estimated":
             continue
         # Published "scale01" (relative alt-3 scale) maps to reported scale02.
-        result_key = "scale02" if param.startswith("scale") else param
+        result_key = {"scale01": free_scale, "parker01": correlation, "CovCOv01": "scal[OVTT]"}.get(param, param)
         got = coef.get(result_key)
         assert got is not None, (
             f"{model_label}: param {param} (->{result_key}) missing"
@@ -415,7 +422,9 @@ def _assert_bhhh_se_parity(
         assert s is not None and np.isfinite(s) and s > 0, (
             f"{model_label}: SE for {result_key} not positive-finite: {s}"
         )
-        expected, actual = tdata["coef"], got
+        # The paper stores the RC variance; scal[OVTT] reports its SD.
+        expected = np.sqrt(tdata["coef"]) if param == "CovCOv01" else tdata["coef"]
+        actual = got
         assert abs(actual - expected) < tol, (
             f"{model_label} coef mismatch for {param} (->{result_key}): "
             f"reported {actual:.4f}, published {expected:.4f}"
@@ -504,7 +513,7 @@ def test_report_names_length_matches_values_mixed():
     n_omega = len(ranvar_indices) * (len(ranvar_indices) + 1) // 2
     theta_par = np.concatenate([
         rng.standard_normal(n_beta) * 0.3,
-        np.array([0.5, 0.1, 0.4]),  # valid Cholesky (lower-tri)
+        np.array([0.5, 0.1, 0.4]),  # radial correlation, log SD(v0), log SD(v1)
     ])
 
     names = model._build_report_names()
@@ -514,16 +523,11 @@ def test_report_names_length_matches_values_mixed():
     assert len(names) == len(values), (
         f"Mixed: len(names)={len(names)} != len(values)={len(values)}"
     )
-    # Verify CovCOv entries appear exactly n_rand*(n_rand+1)/2 times
-    cov_names = [n for n in names if n.startswith("CovCOv")]
-    assert len(cov_names) == n_omega, (
-        f"Expected {n_omega} CovCOv entries, got {len(cov_names)}: {cov_names}"
-    )
-    # CovCOv01 corresponds to Omega[0,0] (diagonal, must be positive for valid Omega)
-    cov01_idx = names.index("CovCOv01")
-    assert values[cov01_idx] > 0, (
-        f"CovCOv01 (Omega[0,0]) should be positive, got {values[cov01_idx]}"
-    )
+    distribution_names = [n for n in names if n.startswith(("scal[", "corr["))]
+    assert len(distribution_names) == n_omega
+    np.testing.assert_allclose(values[names.index("scal[v0]")], np.exp(0.1))
+    np.testing.assert_allclose(values[names.index("scal[v1]")], np.exp(0.4))
+    np.testing.assert_allclose(values[names.index("corr[v0,v1]")], np.tanh(0.25))
 
 
 @pytest.mark.slow

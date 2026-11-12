@@ -26,6 +26,7 @@ from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd, mvncd_log_batch
 from pybhatlib.matgradient._spherical import theta_to_corr
 from pybhatlib.models.mnp._mnp_control import MNPControl
+from pybhatlib.models._mnp_scaling import kernel_scales, direct_kernel_scales
 from pybhatlib.models.mnp._mnp_grad_analytic import mnp_analytic_gradient
 from pybhatlib.utils._safe_reparam import safe_cholesky, safe_exp
 
@@ -534,7 +535,7 @@ def _unpack_params(
             # Diagonal: just n_rand variance params
             n_omega = n_rand
         else:
-            # Full Cholesky: n_rand*(n_rand+1)/2
+            # Correlations + log SDs: n_rand*(n_rand+1)/2
             n_omega = n_rand * (n_rand + 1) // 2
         params["omega_params"] = theta[idx: idx + n_omega]
         idx += n_omega
@@ -599,14 +600,16 @@ def _build_lambda(
 ) -> np.ndarray:
     """Build the (I-1) x (I-1) DIFFERENCED kernel error covariance ``K``.
 
-    GAUSS homogeneous "first-differenced-variance = 1" form (lpr1):
+    ``control.scaling="first"`` selects the GAUSS lpr1 form:
         xscal     = [1] + exp(free_log_scales)   (length I-1, first pinned to 1)
         W1        = diag(xscal)
         omegastar = unit-diagonal (I-1)x(I-1) correlation
         K         = W1 @ omegastar @ W1           (so K[0,0] == 1)
 
-    The number of FREE scales is I-2 (the first is pinned), and the number of
-    correlations is (I-1)(I-2)/2. IID returns the identity directly.
+    With ``sumsq``, scales are sqrt(softmax([0, free_coordinates])) instead.
+    Both have I-2 free scales and (I-1)(I-2)/2 correlations. IID keeps the
+    existing differenced IID correlation (0.5 off diagonal) and uses unit
+    scales for ``first`` or 1/sqrt(I-1) for ``sumsq``.
     """
     I = n_alts
     dim = I - 1  # differenced dimension
@@ -618,19 +621,18 @@ def _build_lambda(
         # off-diagonal correlation 0.5. This matches GAUSS startker =
         # 0.5*eye(nc-1) + 0.5*ones(nc-1) (MNP_TRAVELMODE.gss line 119), which
         # is frozen for IID. No free kernel params.
-        return 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+        kernel = 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+        return kernel / dim if control.scaling == "sumsq" else kernel
 
     n_scale = max(dim - 1, 0)  # I-2 free scales (first diff variance pinned)
 
     if control.heteronly:
         # Heteroscedastic only: xscal = [1, exp(free_1), ...]; corr = I.
-        free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
-        xscal = np.concatenate([[1.0], free])
+        xscal = kernel_scales(lambda_params[:n_scale], control.scaling)
         return np.diag(xscal ** 2)
 
     # Full covariance: free scales + correlations via spherical parameterization.
-    free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
-    xscal = np.concatenate([[1.0], free])
+    xscal = kernel_scales(lambda_params[:n_scale], control.scaling)
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params) > n_scale:
@@ -650,21 +652,9 @@ def _build_omega_cholesky(
     control: MNPControl,
 ) -> np.ndarray:
     """Build the Cholesky factor L of the random coefficient covariance Omega = LL'."""
-    n_rand = len(ranvar_indices)
+    from pybhatlib.models.mnp._mnp_random import random_covariance
 
-    if control.randdiag:
-        # Diagonal: L = diag(exp(params))
-        return np.diag(safe_exp(omega_params[:n_rand]))
-
-    # Full lower triangular Cholesky
-    L = np.zeros((n_rand, n_rand), dtype=np.float64)
-    idx = 0
-    for i in range(n_rand):
-        for j in range(i + 1):
-            L[i, j] = omega_params[idx]
-            idx += 1
-
-    return L
+    return random_covariance(omega_params, len(ranvar_indices), control)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -720,7 +710,8 @@ def _build_lambda_direct(
 
     if control.iid or lambda_params_unpar is None:
         # IID kernel: GAUSS frozen startker = 0.5*(eye + ones); K[0,0] == 1.
-        return 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+        kernel = 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+        return kernel / dim if control.scaling == "sumsq" else kernel
 
     # GAUSS homogeneous form (lpr1): xscal = [1] + free_scales (free length I-2),
     # so the first differenced variance K[0,0] is pinned to 1. The direct
@@ -731,12 +722,12 @@ def _build_lambda_direct(
     if control.heteronly:
         # Heteroscedastic only: lambda_params_unpar = [free_scale_1, ...].
         free = lambda_params_unpar[:n_scale] if n_scale > 0 else np.empty(0)
-        xscal = np.concatenate([[1.0], free])
+        xscal = direct_kernel_scales(free, control.scaling)
         return np.diag(xscal ** 2)
 
     # Full: free scales (length I-2) + strict-upper correlations (length n_corr).
     free = lambda_params_unpar[:n_scale] if n_scale > 0 else np.empty(0)
-    xscal = np.concatenate([[1.0], free])
+    xscal = direct_kernel_scales(free, control.scaling)
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params_unpar) > n_scale:
@@ -859,8 +850,8 @@ def _param_to_unpar(
     """Translate a parameterized theta vector to its unparameterized form.
 
     Parameterized theta uses unconstrained spherical Cholesky factors for
-    correlation matrices and lower-triangular Cholesky factors for random-
-    coefficient covariances. The unparameterized form uses direct entries:
+    kernel correlation matrices and radial correlations plus log standard
+    deviations for random-coefficient covariances. The unparameterized form uses direct entries:
     correlations in [-1, 1] and covariances with positive variances.
 
     Round-trip property: ``mnp_loglik(theta_par) == mnp_loglik_unpar(theta_unpar)``
@@ -898,7 +889,7 @@ def _param_to_unpar(
         lam = params.get("lambda_params")
         out.append(_lambda_par_to_unpar(lam, n_alts, control))
 
-    # Omega (segment 1): parameterized lower-tri Cholesky entries
+    # Omega (segment 1): radial correlations and log standard deviations
     # -> unparameterized upper-tri (incl diagonal) Omega entries.
     if control.mix and ranvar_indices is not None and "omega_params" in params:
         out.append(_omega_par_to_unpar(
@@ -931,8 +922,9 @@ def _lambda_par_to_unpar(
 ) -> np.ndarray:
     """Convert parameterized lambda block to direct [free_scales, corrs_upper].
 
-    GAUSS homogeneous form: the first differenced scale is pinned to 1, so the
-    block carries only I-2 FREE scales (then the strict-upper correlations).
+    The block carries I-2 natural free scales, then strict-upper correlations.
+    The omitted first scale is 1 under ``first`` or sqrt(1-sum(free^2)) under
+    ``sumsq``; this matches the unparameterized likelihood/SE coordinates.
     """
     I = n_alts
     dim = I - 1
@@ -942,11 +934,11 @@ def _lambda_par_to_unpar(
     n_scale = max(dim - 1, 0)  # I-2 free scales
 
     if control.heteronly:
-        scales = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+        scales = kernel_scales(lambda_params[:n_scale], control.scaling)[1:]
         return scales
 
     # Full: log free-scales + angle-thetas -> free-scales + corrs.
-    scales = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+    scales = kernel_scales(lambda_params[:n_scale], control.scaling)[1:]
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params) > n_scale:
@@ -964,7 +956,7 @@ def _omega_par_to_unpar(
     ranvar_indices: list[int],
     control: MNPControl,
 ) -> np.ndarray:
-    """Convert parameterized omega block (Cholesky) to direct Omega entries."""
+    """Convert correlation/log-SD coordinates to direct Omega entries."""
     n_rand = len(ranvar_indices)
     if control.randdiag:
         # Diagonal: par stores log(stddev), unpar stores variance.

@@ -62,7 +62,6 @@ from pybhatlib.models.mnpkercp._mnpkercp_results import (
     mixing_summary_from_state,
 )
 from pybhatlib.optim._scipy_optim import minimize_scipy
-from pybhatlib.utils._logistic import logitmod
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
 
@@ -261,6 +260,7 @@ class MNPKerCPModel(BaseModel):
         )
         kernel = MvncdKernel(
             self.n_alts, spec.nrndcoef, copula=ctrl.copula, scal=ctrl.scal,
+            scaling=ctrl.scaling,
             iid=ctrl.iid,
             active_corr_pairs=spec.active_corr_pairs,
             method=ctrl.method,
@@ -305,7 +305,7 @@ class MNPKerCPModel(BaseModel):
         ``beta`` becomes the sign-reparameterized coefficients, ``rcor`` the
         joint correlation off-diagonal entries (row-based upper-triangular),
         ``scal`` the scale (std-dev) vector ``exp(xscalrand)``, ``kern`` the
-        natural free kernel-error scales ``sqrt(logitmod([0,xscalker]))[1:]``, and
+        natural free kernel-error scales under ``control.scaling``, and
         ``lam`` the Yeo-Johnson powers ``2 cdlogit(xlam)`` in ``(0, 2)``.
         """
         rc = space.unpack(theta, spec, want_grad=False)
@@ -333,11 +333,9 @@ class MNPKerCPModel(BaseModel):
                     rcor_r[pos] = omega_vec[pos]
         scal_r = np.asarray(rc.wscalrand, dtype=np.float64).reshape(-1)
         if layout.n_kern:
-            kernel_logits = np.concatenate([
-                np.zeros(1, dtype=np.float64),
-                np.asarray(theta[sl["kern"]], dtype=np.float64),
-            ])
-            kern_r = np.sqrt(logitmod(kernel_logits))[1:]
+            from pybhatlib.models._mnp_scaling import kernel_scales
+
+            kern_r = kernel_scales(theta[sl["kern"]], self.control.scaling)[1:]
         else:
             kern_r = np.zeros(0, dtype=np.float64)
         lam_r = np.asarray(rc.xlamrnd, dtype=np.float64).reshape(-1)
@@ -563,8 +561,9 @@ class MNPKerCPModel(BaseModel):
             joint_corr=kernel_state.omegastar,
             copula=est.kernel.copula,
             note=(
-                "ker[A-B] denotes epsilon[A] - epsilon[B]; kernel scales have "
-                "sum of squares = 1."
+                "ker[A-B] denotes epsilon[A] - epsilon[B]; "
+                + ("kernel scales have sum of squares = 1."
+                   if ctrl.scaling == "sumsq" else "first kernel scale = 1.")
             ),
         )
         ll_c, ll_0 = baseline_loglikelihoods(

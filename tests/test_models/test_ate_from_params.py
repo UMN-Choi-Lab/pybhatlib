@@ -125,14 +125,44 @@ def test_mnp_atresult_alias():
     assert ATEResult is MNPATEResult
 
 
-def test_mnp_from_estimates_iid_roundtrip():
+@pytest.mark.parametrize("scaling", ["first", "sumsq"])
+def test_mnp_from_estimates_iid_roundtrip(scaling):
     from pybhatlib.models.mnp import MNPControl, mnp_ate, mnp_ate_from_params
 
-    ctrl = MNPControl(iid=True)
+    ctrl = MNPControl(iid=True, scaling=scaling)
     X = np.random.default_rng(0).standard_normal((40, I, N_BETA))
     a_ref = mnp_ate(_mk_mnp_results(BETA.copy(), ctrl), X=X)
     a_par = mnp_ate_from_params(BETA, control=ctrl, n_alts=I, X=X)
     np.testing.assert_allclose(a_par.predicted_shares, a_ref.predicted_shares, atol=1e-12)
+
+
+def test_mnp_from_estimates_iid_beta_is_in_control_scaling_units():
+    """IID has no covariance to infer scale from: GAUSS (first) betas map to
+    sumsq betas divided by sqrt(I-1)."""
+    from pybhatlib.models.mnp import MNPControl, mnp_ate_from_params
+
+    X = np.random.default_rng(1).standard_normal((40, I, N_BETA))
+    first = mnp_ate_from_params(BETA, control=MNPControl(iid=True, scaling="first"),
+                                n_alts=I, X=X)
+    sumsq = mnp_ate_from_params(BETA / np.sqrt(I - 1),
+                                control=MNPControl(iid=True, scaling="sumsq"),
+                                n_alts=I, X=X)
+    np.testing.assert_allclose(sumsq.predicted_shares, first.predicted_shares, atol=1e-10)
+
+
+def test_mnp_from_estimates_noniid_is_scaling_invariant():
+    """With a covariance, the (beta, kernel_cov) pair fixes the utility scale,
+    so either control.scaling gives the same predictions."""
+    from pybhatlib.models.mnp import MNPControl, mnp_ate_from_params
+
+    Lambda = np.array([[1.0, 0.6], [0.6, 2.25]])  # arbitrary, first-normalized
+    X = np.random.default_rng(2).standard_normal((40, I, N_BETA))
+    shares = [
+        mnp_ate_from_params(BETA, kernel_cov=Lambda, n_alts=I, X=X,
+                            control=MNPControl(iid=False, scaling=s)).predicted_shares
+        for s in ("first", "sumsq")
+    ]
+    np.testing.assert_allclose(shares[1], shares[0], atol=1e-6)
 
 
 def test_mnp_from_estimates_flexible_roundtrip():
@@ -160,7 +190,7 @@ def test_mnp_from_estimates_heteronly_roundtrip():
     from pybhatlib.models.mnp import MNPControl, MNPResults
     from pybhatlib.models.mnp._mnp_loglik import _build_lambda
 
-    ctrl = MNPControl(iid=False, heteronly=True)
+    ctrl = MNPControl(iid=False, heteronly=True, scaling="first")
     # GAUSS first-diff-var=1 kernel: the first differenced variance K[0,0] is
     # pinned to 1.0; only the remaining I-2 scales are free. For I=3 the only
     # free heteronly scale is K[1,1]. The encoded kernel must therefore have

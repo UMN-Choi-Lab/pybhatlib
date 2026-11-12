@@ -222,6 +222,10 @@ class MNPKerCPResults(FitMetricsMixin):
         params : ndarray, shape (n_params,)
             Reporting-space parameter vector in the GAUSS ``b`` layout
             ``[beta | rcor | scal | kern | lam]``.
+            ``kern`` contains natural scales for differenced errors 2..I-1,
+            under ``control.scaling``. The first scale is implicit: 1 for
+            ``first`` or sqrt(1-sum(kern**2)) for ``sumsq``. These are reporting
+            values, not the log-scale/logit coordinates used by ``startb``.
         param_names : list[str] or None
             Names for each element of *params*.  Defaults to
             ``["b1", "b2", ...]`` when not provided.
@@ -347,8 +351,13 @@ class MNPKerCPResults(FitMetricsMixin):
                 )
             has_kernel = mixing.n_random < len(mixing.names)
             if has_kernel:
+                normalization = (
+                    "sum of squared differenced scales fixed to 1.000"
+                    if getattr(self.control, "scaling", "sumsq") == "sumsq"
+                    else "first differenced scale fixed to 1.000"
+                )
                 lines.extend([
-                    "", "  Kernel-error (differenced) scales and shapes",
+                    "", f"  Kernel-error scales (differenced; {normalization})",
                     f"  {'Coefficient':<{width}s} {'Scale':>12s} {'Shape':>12s}",
                     "  " + "-" * (width + 26),
                 ])

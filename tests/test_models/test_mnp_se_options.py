@@ -25,7 +25,7 @@ SPEC_BASE = {
 
 def _fit_iid(travelmode_path: str, se_method: str):
     """Fit IID Model (a)(i) with the given se_method."""
-    ctrl = MNPControl(
+    ctrl = MNPControl(scaling="first",
         iid=True,
         maxiter=200,
         verbose=0,
