@@ -42,6 +42,12 @@ def _as_1d(a: object) -> NDArray[np.float64]:
     return np.atleast_1d(np.asarray(a, dtype=np.float64)).ravel()
 
 
+def _yj_abs(lam1: NDArray[np.float64], log_x4: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``((1+|x|)**lam1 - 1) / lam1`` via expm1, with its ``lam1 -> 0`` limit."""
+    return np.divide(np.expm1(lam1 * log_x4), lam1,
+                     out=log_x4.copy(), where=lam1 != 0.0)
+
+
 def yjnonp(lam: object, x: object, *, xp=None) -> NDArray[np.float64]:
     """Forward Yeo-Johnson transform (non-parameterized lambda).
 
@@ -72,8 +78,7 @@ def yjnonp(lam: object, x: object, *, xp=None) -> NDArray[np.float64]:
     x2 = 2.0 * x1 - 1.0
     x3 = np.abs(x)
     lam1 = (2.0 - lam) * (1.0 - x1) + lam * x1
-    g = x2 * (((x3 + 1.0) ** lam1 - 1.0) / lam1)
-    return g
+    return x2 * _yj_abs(lam1, np.log1p(x3))
 
 
 def gyjnonp(
@@ -111,9 +116,18 @@ def gyjnonp(
     x3 = np.abs(x)
     x4 = x3 + 1.0
     lam1 = (2.0 - lam) * (1.0 - x1) + lam * x1
-    g = x2 * (((x3 + 1.0) ** lam1 - 1.0) / lam1)
-    g1 = np.abs(g)
-    glam_diag = ((x4 ** lam1) * np.log(x4) - g1) / lam1
+    log_x4 = np.log1p(x3)
+    g1 = _yj_abs(lam1, log_x4)
+    g = x2 * g1
+    # d g1 / d lam1 = log_x4**2 * (u e^u - expm1(u)) / u**2 with u = lam1*log_x4.
+    # The direct form cancels as u -> 0 (lam near 0, or 2 for x < 0); use the
+    # series 1/2 + u/3 + u^2/8 + u^3/30 + u^4/144 + u^5/840 there.
+    u = lam1 * log_x4
+    small = np.abs(u) < 1e-3
+    series = 0.5 + u * (1/3 + u * (1/8 + u * (1/30 + u * (1/144 + u / 840))))
+    direct = np.divide(np.exp(u) * log_x4 - g1, lam1,
+                       out=np.zeros_like(u), where=~small)
+    glam_diag = np.where(small, log_x4 * log_x4 * series, direct)
     gx_diag = x4 ** (x2 * (lam - 1.0))
     glam = np.diag(glam_diag)
     gx = np.diag(gx_diag)
@@ -169,14 +183,17 @@ def yjinvnonp(
     mask_neg = newx < 0.0
 
     # newx < 0 branch: base = 1 - (2 - lam) * newx  (positive where mask_neg).
-    base_neg = 1.0 - (2.0 - lam_c) * newx
-    safe_base_neg = np.where(mask_neg, base_neg, 1.0)
-    zl0 = 1.0 - safe_base_neg ** (1.0 / (2.0 - lam_c))
+    # log1p/expm1 avoid cancellation; lambda=2 uses the exponential limit.
+    t_neg = np.where(mask_neg, -(2.0 - lam_c) * newx, 0.0)
+    exponent = np.divide(np.log1p(t_neg), 2.0 - lam_c,
+                         out=np.where(mask_neg, -newx, 0.0), where=lam_c != 2.0)
+    zl0 = -np.expm1(exponent)
 
     # newx >= 0 branch: base = 1 + lam * newx  (positive where ~mask_neg).
-    base_pos = 1.0 + lam_c * newx
-    safe_base_pos = np.where(mask_neg, 1.0, base_pos)
-    znew = safe_base_pos ** (1.0 / lam_c) - 1.0
+    t_pos = np.where(mask_neg, 0.0, lam_c * newx)
+    exponent = np.divide(np.log1p(t_pos), lam_c,
+                         out=np.where(mask_neg, 0.0, newx), where=lam_c != 0.0)
+    znew = np.expm1(exponent)
 
     zf = np.where(mask_neg, zl0, znew)
     if squeeze:
@@ -216,25 +233,27 @@ def _gyjinvnonp_diag(
     for i in range(e1):
         newxelem = newx[i]
         if newxelem < 0.0:
-            z1 = 1.0 - (2.0 - lam[i]) * newxelem
-            z2 = 1.0 / (2.0 - lam[i])
-            y = z1 ** z2
-            z[i] = 1.0 - y
-            y1 = (z2 / z1) * newxelem + (z2 ** 2) * np.log(z1)
-            glam_diag[i] = -y1 * y
-            gx_diag[i] = w[i] * (y / z1)
-            gw[i] = x_v[i] * (y / z1)
-            gmu_diag[i] = y / z1
+            power = 2.0 - lam[i]
+            sign = -1.0
         else:
-            z1 = 1.0 + lam[i] * newxelem
-            z2 = 1.0 / lam[i]
-            y = z1 ** z2
-            z[i] = y - 1.0
-            y1 = (z2 / z1) * newxelem - (z2 ** 2) * np.log(z1)
-            glam_diag[i] = y1 * y
-            gx_diag[i] = w[i] * (y / z1)
-            gw[i] = x_v[i] * (y / z1)
-            gmu_diag[i] = y / z1
+            power = lam[i]
+            sign = 1.0
+        a = abs(newxelem)
+        t = power * a
+        logbase = np.log1p(t)
+        exponent = logbase / power if power != 0.0 else a
+        y = np.exp(exponent)
+        z[i] = sign * np.expm1(exponent)
+        # d[log1p(power*a)/power]/dp: use its series to avoid
+        # subtraction of almost equal terms at lambda near 0 or 2.
+        if abs(t) < 1e-3:
+            slope = a*a*(-.5 + t*(2/3 + t*(-3/4 + t*(4/5 + t*(-5/6 + t*6/7)))))
+        else:
+            slope = (t/(1+t) - logbase)/(power*power)
+        glam_diag[i] = y * slope  # both sign reversals cancel on negative branch
+        gmu_diag[i] = np.exp(exponent - logbase)
+        gx_diag[i] = w[i] * gmu_diag[i]
+        gw[i] = x_v[i] * gmu_diag[i]
 
     return z, gmu_diag, gw, glam_diag, gx_diag
 

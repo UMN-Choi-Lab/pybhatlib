@@ -209,12 +209,16 @@ class MixMNLResults:
         lines.append(f"  Number of individuals  {self.n_ind:>14d}")
         lines.append("")
 
+        name_width = max(
+            16,
+            max((len(name) for name in self.param_names), default=16) + 1,
+        )
         header = (
-            f"  {'Parameters':<16s} {'Estimates':>10s} {'Std. err.':>10s}"
+            f"  {'Parameters':<{name_width}s} {'Estimates':>10s} {'Std. err.':>10s}"
             f" {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
         )
         lines.append(header)
-        lines.append("  " + "-" * 78)
+        lines.append("  " + "-" * (len(header) - 2))
 
         for i, name in enumerate(self.param_names):
             est = self.params[i] if i < len(self.params) else 0.0
@@ -223,7 +227,7 @@ class MixMNLResults:
             p = self.p_value[i] if i < len(self.p_value) else 0.0
             g = self.gradient[i] if i < len(self.gradient) else 0.0
             lines.append(
-                f"  {name:<16s} {est:>10.4f} {se:>10.4f}"
+                f"  {name:<{name_width}s} {est:>10.4f} {se:>10.4f}"
                 f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
 

@@ -267,6 +267,7 @@ class MDCEVModel(BaseModel):
                 tol=ctrl.tol,
                 verbose=ctrl.verbose,
                 jac=True,
+                param_names=list(self.param_names) + list(self.gamma_names) + ["sigma"],
             )
         else:
             res = minimize_scipy(
@@ -277,6 +278,7 @@ class MDCEVModel(BaseModel):
                 tol=ctrl.tol,
                 verbose=ctrl.verbose,
                 jac=False,
+                param_names=list(self.param_names) + list(self.gamma_names) + ["sigma"],
             )
 
         x_opt_active = res.x

@@ -149,6 +149,7 @@ class MNPResults:
     se_bhhh: NDArray | None = None
     se_hessian: NDArray | None = None
     se_sandwich: NDArray | None = None
+    alternatives: list[str] | None = None
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MNPResults, accepting both canonical and legacy kwargs.
@@ -169,6 +170,7 @@ class MNPResults:
         ranvar_indices: list[int] | None = None,
         param_names: list[str] | None = None,
         n_alts: int | None = None,
+        alternatives: list[str] | None = None,
     ) -> "MNPResults":
         """Build a results object from final (natural-space) coefficients.
 
@@ -204,6 +206,8 @@ class MNPResults:
         n_alts : int, optional
             Number of alternatives ``I``.  Inferred from ``kernel_cov`` shape
             (``I-1``) when not given.
+        alternatives : list of str, optional
+            Alternative names.
 
         Returns
         -------
@@ -271,6 +275,7 @@ class MNPResults:
             return_code=0,
             control=control,
             ranvar_indices=ranvar_indices,
+            alternatives=alternatives,
         )
 
     def summary(self) -> str:
@@ -302,9 +307,17 @@ class MNPResults:
         lines.append("  Cross-product of first derivatives")
         lines.append("")
 
-        header = f"  {'Parameters':<14s} {'Estimates':>10s} {'Std. err.':>10s} {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
+        name_width = max(
+            14,
+            max((len(name) for name in self.param_names), default=14),
+        )
+        header = (
+            f"  {'Parameters':<{name_width}s} {'Estimates':>10s} "
+            f"{'Std. err.':>10s} {'Est./s.e.':>10s} "
+            f"{'Prob.':>10s} {'Gradient':>10s}"
+        )
         lines.append(header)
-        lines.append("  " + "-" * 66)
+        lines.append("  " + "-" * (len(header) - 2))
 
         for i, name in enumerate(self.param_names):
             est = self.b_original[i] if i < len(self.b_original) else self.params[i]
@@ -313,10 +326,53 @@ class MNPResults:
             p = self.p_value[i] if i < len(self.p_value) else 0.0
             g = self.gradient[i] if i < len(self.gradient) else 0.0
             lines.append(
-                f"  {name:<14s} {est:>10.4f} {se:>10.4f} {t:>10.3f} {p:>10.4f} {g:>10.4f}"
+                f"  {name:<{name_width}s} {est:>10.4f} {se:>10.4f}"
+                f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
 
         lines.append("")
+
+        # The stored kernel is the covariance of differenced errors (I - 1
+        # dimensions), not the unidentified covariance of the original errors.
+        if self.lambda_hat is not None:
+            kernel_cov = np.asarray(self.lambda_hat, dtype=np.float64)
+            scales = np.sqrt(np.maximum(np.diag(kernel_cov), 0.0))
+            scale_outer = np.outer(scales, scales)
+            kernel_corr = np.full_like(kernel_cov, np.nan)
+            np.divide(
+                kernel_cov,
+                scale_outer,
+                out=kernel_corr,
+                where=scale_outer > 0,
+            )
+            
+            reference_alt = (
+                self.alternatives[0] if self.alternatives else "first alternative"
+            )
+            lines.append(
+                "  Estimated error correlation matrix "
+                f"(differenced relative to {reference_alt})"
+            )
+            for i in range(kernel_corr.shape[0]):
+                row_vals = [f"{kernel_corr[i, j]:>7.3f}" for j in range(kernel_corr.shape[1])]
+                lines.append("  " + " ".join(row_vals))
+
+            lines.append("")
+            lines.append(
+                "  Estimated scales "
+                f"(differenced relative to {reference_alt}; first differenced scale fixed to 1.000)"
+            )
+            lines.append("  " + " ".join(f"{scale:>7.3f}" for scale in scales))
+
+            lines.append("")
+            lines.append(
+                            "  Implied error covariance matrix "
+                            f"(differenced relative to {reference_alt}; first differenced scale fixed to 1.000)"
+                        )
+            for i in range(kernel_cov.shape[0]):
+                row_vals = [f"{kernel_cov[i, j]:>7.3f}" for j in range(kernel_cov.shape[1])]
+                lines.append("  " + " ".join(row_vals))
+            lines.append("")
 
         # Correlation matrix
         n_params = len(self.param_names)

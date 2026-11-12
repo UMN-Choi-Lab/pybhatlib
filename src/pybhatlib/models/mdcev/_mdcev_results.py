@@ -244,12 +244,16 @@ class MDCEVResults:
         lines.append(f"  {method_desc.get(primary_method, 'Unknown method')}")
         lines.append("")
 
+        name_width = max(
+            16,
+            max((len(name) for name in self.param_names), default=16) + 1,
+        )
         header = (
-            f"  {'Parameters':<16s} {'Estimates':>10s} {'Std. err.':>10s}"
+            f"  {'Parameters':<{name_width}s} {'Estimates':>10s} {'Std. err.':>10s}"
             f" {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
         )
         lines.append(header)
-        lines.append("  " + "-" * 68)
+        lines.append("  " + "-" * (len(header) - 2))
 
         for i, name in enumerate(self.param_names):
             est = self.b_reported[i] if i < len(self.b_reported) else 0.0
@@ -265,7 +269,7 @@ class MDCEVResults:
                 p_str  = f"{p:>10.4f}"
                 g_str  = f"{g:>10.4f}"
             lines.append(
-                f"  {name:<16s} {est:>10.4f} {se_str}{t_str}{p_str}{g_str}"
+                f"  {name:<{name_width}s} {est:>10.4f} {se_str}{t_str}{p_str}{g_str}"
             )
 
         lines.append("")
