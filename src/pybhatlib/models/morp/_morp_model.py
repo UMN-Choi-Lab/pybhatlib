@@ -351,6 +351,7 @@ class MORPModel(BaseModel):
         ll_c, ll_0 = baseline_loglikelihoods(self.y, self.n_categories)
         return MORPResults(
             loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=self.n_params,
             average_correct_probability=objective.get(theta_hat),
             params=theta_hat,
             se=se,

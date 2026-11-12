@@ -251,7 +251,7 @@ def _batch_loglik_shared_cov(
             diff_V_group[:, k] = V_group[:, c] - V_group[:, j]
 
         log_probs = mvncd_log_batch(diff_V_group, Lambda_diff_c, method="me")
-        record_probabilities(np.exp(log_probs))
+        record_probabilities(log_probs, log=True)
         total_ll += float(np.sum(log_probs))
 
     return total_ll
@@ -370,7 +370,7 @@ def _batch_loglik_mixed(
         log_probs = mvncd_log_batch(
             diff_V_group, sigma_all[0], method="me", per_obs_sigma=sigma_all,
         )
-        record_probabilities(np.exp(log_probs))
+        record_probabilities(log_probs, log=True)
         total_ll += float(np.sum(log_probs))
 
     return total_ll

@@ -529,6 +529,7 @@ class MORPFlexModel(BaseModel):
         return MORPFlexResults(
             mixing_summary=mixing_summary,
             loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=int(theta_hat.size),
             average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,

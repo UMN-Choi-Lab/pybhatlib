@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 import pandas as pd
 from numpy.typing import NDArray
 
@@ -30,7 +31,7 @@ _MNLRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MNLResults:
+class MNLResults(FitMetricsMixin):
     """Results from MNL model estimation.
 
     Attributes
@@ -112,6 +113,7 @@ class MNLResults:
     # Independent null benchmarks; not restricted fits of the full kernel.
     loglik_constants: float = np.nan
     loglik_zero: float = np.nan
+    n_free_params: int = -1
     average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:
@@ -211,6 +213,7 @@ class MNLResults:
         ):
             formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
             lines.append(f"  {label:<23s}{formatted}")
+        lines.extend(self.rho2_summary_lines())
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 

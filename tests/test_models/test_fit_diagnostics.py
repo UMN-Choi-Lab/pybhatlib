@@ -209,3 +209,55 @@ def test_morp_final_exact_evaluation_supplies_joint_probability():
         result.params, model.X, model.y, model.n_dims, model.n_categories, model.n_beta, exact,
     )
     assert result.average_correct_probability == pytest.approx(np.exp(ll).mean(), abs=1e-8)
+
+
+def test_rho_squared_hand_computed_with_adjustment():
+    from pybhatlib.models._fit_diagnostics import rho_squared
+
+    # n=10 cases: totals LL=-6, LL(C)=-8, LL(0)=-10, K=2 (means /10).
+    r0, rc, radj = rho_squared(-0.6, -0.8, -1.0, 2, 10)
+    assert r0 == pytest.approx(0.4)
+    assert rc == pytest.approx(0.25)
+    assert radj == pytest.approx(1 - (-6 - 2) / -10)  # 0.2
+    assert np.isnan(rho_squared(-0.6, np.nan, np.nan, 2, 10)[1])
+    assert np.isnan(rho_squared(-0.6, -0.8, -1.0, -1, 10)[2])
+
+
+def test_results_rho2_uses_panel_normalization_and_free_params():
+    from pybhatlib.models._fit_diagnostics import FitMetricsMixin
+    from pybhatlib.models.mixmnl import MixMNLResults
+
+    assert issubclass(MixMNLResults, FitMetricsMixin)
+
+    class Res(FitMetricsMixin):
+        params = np.zeros(5)
+        loglik, loglik_constants, loglik_zero = -0.6, -0.8, -1.0
+        n_obs, n_ind, n_free_params = 100, 10, 2
+
+    res = Res()
+    assert res.rho2_zero == pytest.approx(0.4)
+    assert res.rho2_adjusted == pytest.approx(0.2)  # K/n_ind, not K/n_obs
+    assert "Adj. rho2" in "\n".join(res.rho2_summary_lines())
+
+
+def test_lazy_log_recording_equals_eager_and_skips_exp_without_recorder(monkeypatch):
+    calls = []
+    real_exp = np.exp
+    monkeypatch.setattr(np, "exp", lambda *a, **k: calls.append(1) or real_exp(*a, **k))
+    logp = np.log(np.array([0.2, 0.5, 0.8]))
+    record_probabilities(logp, log=True)
+    assert not calls  # no recorder: never exponentiated
+
+    cache = ProbabilityCache(lambda t: record_probabilities(logp, log=True), 3)
+    cache(np.zeros(1))
+    assert cache.get(np.zeros(1)) == pytest.approx(0.5)
+
+
+def test_cache_is_bounded_and_keeps_recent_entries():
+    cache = ProbabilityCache(lambda t: record_probabilities(np.full(2, float(t[0]))), 2,
+                             max_entries=3)
+    for v in range(10):
+        cache(np.array([float(v)]))
+    assert len(cache.values) == 3
+    assert cache.get(np.array([9.0])) == 9.0
+    assert np.isnan(cache.get(np.array([0.0])))

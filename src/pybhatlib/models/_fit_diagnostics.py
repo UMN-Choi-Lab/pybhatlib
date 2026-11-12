@@ -9,17 +9,25 @@ import numpy as np
 _probability_recorder = ContextVar("fit_probability_recorder", default=None)
 
 
-def record_probabilities(values):
-    """Observe already-computed chosen-outcome probabilities when requested."""
+def record_probabilities(values, *, log=False):
+    """Observe already-computed chosen-outcome probabilities when requested.
+
+    With ``log=True`` ``values`` are log-probabilities and are exponentiated
+    only if a recorder is active. On the GPU path the running sum stays a
+    device tensor (no host sync); :class:`ProbabilityCache` converts it lazily.
+    """
     recorder = _probability_recorder.get()
     if recorder is None:
         return
-    if hasattr(values, "detach"):  # GPU: transfer just a sum, not the tensor.
-        recorder[0] += float(values.detach().sum().item())
+    if hasattr(values, "detach"):  # GPU: keep the sum on-device.
+        v = values.detach()
+        recorder[0] = recorder[0] + (v.exp() if log else v).sum()
         recorder[1] += values.numel()
     else:
         values = np.asarray(values)
-        recorder[0] += float(values.sum())
+        if log:
+            values = np.exp(values)
+        recorder[0] = recorder[0] + values.sum()
         recorder[1] += values.size
 
 
@@ -34,11 +42,17 @@ def pause_probability_recording():
 
 
 class ProbabilityCache:
-    """Cache an arithmetic mean per evaluated parameter vector, without refits."""
+    """Cache an arithmetic mean per evaluated parameter vector, without refits.
 
-    def __init__(self, objective, n_obs):
+    Only the ``max_entries`` most recently evaluated vectors are kept (the
+    optimizer's final accepted point may be followed by line-search trials).
+    Values may be device tensors until read through :meth:`get`.
+    """
+
+    def __init__(self, objective, n_obs, max_entries=8):
         self.objective = objective
         self.n_obs = n_obs
+        self.max_entries = max_entries
         self.values = {}
 
     def __call__(self, theta):
@@ -52,11 +66,68 @@ class ProbabilityCache:
         finally:
             _probability_recorder.reset(token)
         if recorder[1] == self.n_obs:
-            self.values[np.asarray(theta, dtype=np.float64).tobytes()] = recorder[0] / self.n_obs
+            key = np.asarray(theta, dtype=np.float64).tobytes()
+            self.values.pop(key, None)  # re-evaluation refreshes recency
+            self.values[key] = recorder[0] / self.n_obs
+            while len(self.values) > self.max_entries:
+                self.values.pop(next(iter(self.values)))
         return result
 
     def get(self, theta):
-        return self.values.get(np.asarray(theta, dtype=np.float64).tobytes(), np.nan)
+        value = self.values.get(np.asarray(theta, dtype=np.float64).tobytes(), np.nan)
+        return float(value)
+
+
+def rho_squared(loglik, loglik_constants, loglik_zero, n_free, n_norm):
+    """Return ``(rho2_zero, rho2_constants, rho2_adjusted)``.
+
+    ``loglik``/``loglik_*`` are normalized by ``n_norm`` (cases, or individuals
+    for panel models). Adjusted rho2 is ``1 - (LL - K) / LL(0)`` on *total*
+    log likelihoods, i.e. ``K`` is divided by ``n_norm`` here. NaN-safe.
+    """
+    def ratio(num, den):
+        with np.errstate(all="ignore"):
+            r = 1.0 - num / den
+        return float(r) if np.isfinite(r) else np.nan
+
+    k = float(n_free) / n_norm if n_norm and n_free >= 0 else np.nan
+    return (
+        ratio(loglik, loglik_zero),
+        ratio(loglik, loglik_constants),
+        ratio(loglik - k, loglik_zero),
+    )
+
+
+class FitMetricsMixin:
+    """rho-squared properties/summary lines for results with LL(C)/LL(0)."""
+
+    @property
+    def rho_squared(self):
+        """``(rho2_zero, rho2_constants, adjusted_rho2_zero)``."""
+        k = self.n_free_params if self.n_free_params >= 0 else len(self.params)
+        n = getattr(self, "n_ind", 0) or self.n_obs
+        return rho_squared(self.loglik, self.loglik_constants, self.loglik_zero, k, n)
+
+    @property
+    def rho2_zero(self):
+        return self.rho_squared[0]
+
+    @property
+    def rho2_constants(self):
+        return self.rho_squared[1]
+
+    @property
+    def rho2_adjusted(self):
+        return self.rho_squared[2]
+
+    def rho2_summary_lines(self):
+        out = []
+        for label, value in zip(
+            ("Rho2 vs LL(0)", "Rho2 vs LL(C)", "Adj. rho2 vs LL(0)"), self.rho_squared
+        ):
+            formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
+            out.append(f"  {label:<23s}{formatted}")
+        return out
 
 
 def baseline_loglikelihoods(y, category_counts, *, availability=None,

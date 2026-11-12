@@ -718,6 +718,7 @@ class MNPModel(BaseModel):
         ll_c, ll_0 = baseline_loglikelihoods(self.y, [self.n_alts], availability=self.avail)
         return MNPResults(
             loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=int(active_mask.sum()) if active_mask is not None else self.n_params,
             average_correct_probability=_full_objective.get(theta_hat),
             params=theta_hat,
             b_original=b_report,
