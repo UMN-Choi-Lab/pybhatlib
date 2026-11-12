@@ -62,6 +62,40 @@ def _make_flexible_model(travelmode_path, **ctrl_kwargs):
     )
 
 
+@pytest.mark.parametrize(
+    "iid,heteronly,mix,randdiag",
+    [
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, False, False),
+        (True, False, True, True),
+        (False, False, True, True),
+    ],
+)
+def test_verbose_names_match_mnp_parameter_layout(
+    travelmode_path, iid, heteronly, mix, randdiag
+):
+    """Theta labels have one entry per optimizer coordinate across structures."""
+    ranvars = ["OVTT"] if mix else None
+    model = MNPModel(
+        data=travelmode_path,
+        alternatives=ALTERNATIVES,
+        availability="none",
+        spec=SPEC_BASE,
+        mix=mix,
+        ranvars=ranvars,
+        control=MNPControl(
+            iid=iid,
+            heteronly=heteronly,
+            randdiag=randdiag,
+            verbose=0,
+            maxiter=1,
+        ),
+    )
+
+    assert len(model._build_param_names()) == model.n_params
+
+
 # ===========================================================================
 # MNP-003 — Active-parameter mask
 # ===========================================================================
@@ -270,6 +304,20 @@ def test_verbose_3_format_with_param_names(travelmode_path, capsys):
         "verbose=3 output should contain parameter names or θ[k] labels; "
         f"got:\n{captured[:500]}"
     )
+
+
+def test_optimizer_rejects_mismatched_verbose_names():
+    """The wrapper must not silently print labels misaligned with x."""
+    from pybhatlib.optim._scipy_optim import minimize_scipy
+
+    with pytest.raises(ValueError, match="param_names has length 1.*vector has length 2"):
+        minimize_scipy(
+            lambda x: (float(np.dot(x, x)), 2.0 * x),
+            np.ones(2),
+            maxiter=1,
+            verbose=0,
+            param_names=["only_one"],
+        )
 
 
 def test_verbose_2_unchanged(travelmode_path, capsys):

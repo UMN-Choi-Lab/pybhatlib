@@ -122,6 +122,10 @@ class TestMixMNLControlRoundTrip:
         )
 
         assert layout.n_rcor == 0
+        optimizer_names = model._optimizer_param_names(spec, layout)
+        assert len(optimizer_names) == layout.n_theta
+        assert not any(name.startswith("corr_theta[") for name in optimizer_names)
+        assert len(model._param_names(spec)) > len(optimizer_names)
         np.testing.assert_array_equal(state.omegastar, np.eye(2))
 
         estimator = model._build_estimator(
