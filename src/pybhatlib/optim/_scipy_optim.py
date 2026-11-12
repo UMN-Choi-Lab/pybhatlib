@@ -63,6 +63,7 @@ def minimize_scipy(
     ftol: float | None = None,
     bounds=None,
     param_names: list[str] | None = None,
+    obj_scale: float | None = None,
 ) -> OptimResult:
     """Minimize a scalar function using scipy.optimize.minimize.
 
@@ -94,6 +95,15 @@ def minimize_scipy(
         Parameter names for verbose=3 display.  When None, labels fall back
         to ``θ[k]`` placeholders.  These are the *theta-space* names, so
         they may differ from the reporting-space names in MNPResults.
+    obj_scale : float or None
+        Set when ``func`` returns a *summed* objective over ``obj_scale``
+        units (e.g. the mixed-model engine sums -LL over individuals).
+        ``tol`` is then GAUSS MaxLik's ``gradtol``: the fit stops once
+        ``max_k |g_k| * max(|x_k|, 1) / max(|f|, 1) < tol`` on the per-unit
+        objective ``f / obj_scale``.  SciPy's own absolute ``gtol`` is
+        disabled because, on the summed scale, it sits below the simulation
+        noise floor and every fit ended in a line-search ("precision loss")
+        failure.  Only the stopping rule changes; the BFGS path is the same.
 
     Returns
     -------
@@ -149,6 +159,14 @@ def minimize_scipy(
             )
         print( " " )
 
+    def _gauss_relgrad(x, f, g):
+        """GAUSS MaxLik relative gradient on the per-unit objective."""
+        scale = obj_scale or 1.0
+        return float(
+            np.max(np.abs(g / scale) * np.maximum(np.abs(x), 1.0))
+            / max(abs(f / scale), 1.0)
+        )
+
     def callback(xk):
         iteration_count[0] += 1
         if verbose >= 3:
@@ -180,6 +198,12 @@ def minimize_scipy(
             else:
                 fval, _ = _get_fval_grad(xk)
             print(f"  Iter {iteration_count[0]:4d}: f = {fval:.6f}  ({elapsed:.1f}s)")
+        if (
+            obj_scale is not None and last_eval["g"] is not None
+            and np.array_equal(xk, last_eval["x"])
+            and _gauss_relgrad(xk, last_eval["f"], last_eval["g"]) < tol
+        ):
+            raise StopIteration  # scipy >= 1.11: ends the run, status 99
 
     if jac:
         # func returns (f, grad) — wrap for scipy and populate last_eval cache
@@ -206,7 +230,11 @@ def minimize_scipy(
         chosen_func = scipy_func_nojac
 
     tol_key = "xtol" if method == "Newton-CG" else "gtol"
-    _options = {"maxiter": maxiter, tol_key: tol, "disp": False}
+    _options = {
+        "maxiter": maxiter,
+        tol_key: 0.0 if obj_scale is not None else tol,
+        "disp": False,
+    }
     if method == "L-BFGS-B" and ftol is not None:
         _options["ftol"] = ftol
 
@@ -270,16 +298,30 @@ def minimize_scipy(
     # The 0.1 bound is a conservative sanity guard (observed floors are
     # <=9e-3); the raw scipy ``status`` is preserved on the result for callers
     # that need the distinction.
+    #
+    # With ``obj_scale`` the GAUSS criterion decides instead: a stop from the
+    # callback (status 99) is convergence, and a line-search stop counts only
+    # within 10x of ``tol``. The looser 0.1 guard let a mixed MDCEV fit stall
+    # 1.5 LL short of its optimum and still report "converged".
     _SOFT_RELGRAD_TOL = 0.1
-    rel_grad = (
-        float(np.max(np.abs(grad) / np.maximum(np.abs(result.x), 1.0)))
-        if grad.size
-        else 0.0
+    finite = (
+        np.isfinite(result.fun) and np.all(np.isfinite(result.x))
+        and np.all(np.isfinite(grad))
     )
+    if obj_scale is not None:
+        rel_grad = _gauss_relgrad(result.x, result.fun, grad) if grad.size else 0.0
+        converged = bool(finite and rel_grad < tol)
+        soft_tol, soft_methods = 10.0 * tol, ("BFGS", "L-BFGS-B")
+    else:
+        rel_grad = (
+            float(np.max(np.abs(grad) / np.maximum(np.abs(result.x), 1.0)))
+            if grad.size
+            else 0.0
+        )
+        soft_tol, soft_methods = _SOFT_RELGRAD_TOL, ("BFGS",)
     precision_limited = (
-        method == "BFGS" and not converged and status == 2
-        and np.isfinite(result.fun) and np.all(np.isfinite(grad))
-        and rel_grad < _SOFT_RELGRAD_TOL
+        method in soft_methods and not converged and status == 2
+        and finite and rel_grad < soft_tol
     )
     if precision_limited:
         converged = True

@@ -487,7 +487,7 @@ class MNPKerCPModel(BaseModel):
             method=method,
             maxiter=ctrl.maxiter,
             tol=ctrl.tol,
-            ftol=ctrl.tol if method == "L-BFGS-B" else None,
+            obj_scale=panel.n_ind,
             verbose=ctrl.verbose,
             param_names=self._optimizer_param_names(spec, layout),
         )

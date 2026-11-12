@@ -87,7 +87,9 @@ class MDCEVMixedControl:
     optimizer : {"bfgs", "lbfgsb"}
         Optimization method.
     tol : float
-        Optimizer tolerance passed to scipy.
+        GAUSS MaxLik ``gradtol``: stop once the relative gradient
+        ``max_k |g_k| * max(|x_k|, 1) / max(|f|, 1)`` of the per-individual
+        mean -LL falls below this (default 1e-5, the GAUSS default).
     tol_check : float
         Gradient-norm threshold used to flag convergence after the fit.
     want_covariance : bool
@@ -137,7 +139,7 @@ class MDCEVMixedControl:
     # --- optimizer -----------------------------------------------------------
     maxiter: int = 2000
     optimizer: Literal["bfgs", "lbfgsb"] = "bfgs"
-    tol: float = 1e-8
+    tol: float = 1e-5
     tol_check: float = 1e-5
     want_covariance: bool = True
     se_method: Literal["bhhh"] = "bhhh"
