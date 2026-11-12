@@ -45,6 +45,7 @@ _DATA_CANDIDATES = [
 ]
 
 _GAUSS_LL = -14979.9098285287
+_G_OUT = 12   # position of the outside-good gamma in the 27-param GAUSS b
 
 
 # SCAG baseline-utility design (GAUSS ivmt: nc=6 rows x nvarm=12 cols).
@@ -94,8 +95,9 @@ def _data_path() -> str:
     )
 
 
-def _build_model() -> MDCEVMixedModel:
+def _build_model(gauss_zero_floor: bool = True) -> MDCEVMixedModel:
     ctrl = MDCEVMixedControl(
+        gauss_zero_floor=gauss_zero_floor,
         utility="trad",
         logvar=("male_ho",),
         yjvar=("male_Soc",),
@@ -119,20 +121,28 @@ def _build_model() -> MDCEVMixedModel:
     )
 
 
+def _gauss_b_inside_goods() -> np.ndarray:
+    """GAUSS b with the outside-good gamma (G_Out, pinned at -1000) removed."""
+    b = np.loadtxt(os.path.join(_FIXTURE, "b.csv"))
+    assert b.shape == (27,)
+    assert b[_G_OUT] == -1000.0   # == MDCEVMixedControl.outside_good_gamma
+    return np.delete(b, _G_OUT)
+
+
 def test_mdcev_mixed_gauss_ll_parity():
     """Engine total LL at the fixture ``b`` == GAUSS -14979.9098285287."""
     model = _build_model()
     spec, layout = model._build_spec_layout()
 
-    # layout must reproduce the GAUSS b partition exactly.
-    assert layout.n_theta == 27
+    # Inside-goods layout: GAUSS b minus the pinned outside gamma (G_Out).
+    assert layout.n_theta == 26
     sl = layout.slices()
     assert (sl["beta"].start, sl["beta"].stop) == (0, 12)
-    assert (sl["gamma"].start, sl["gamma"].stop) == (12, 21)
-    assert (sl["rcor"].start, sl["rcor"].stop) == (21, 22)
-    assert (sl["kern"].start, sl["kern"].stop) == (22, 23)
-    assert (sl["scal"].start, sl["scal"].stop) == (23, 25)
-    assert (sl["lam"].start, sl["lam"].stop) == (25, 27)
+    assert (sl["gamma"].start, sl["gamma"].stop) == (12, 20)
+    assert (sl["rcor"].start, sl["rcor"].stop) == (20, 21)
+    assert (sl["kern"].start, sl["kern"].stop) == (21, 22)
+    assert (sl["scal"].start, sl["scal"].stop) == (22, 24)
+    assert (sl["lam"].start, sl["lam"].stop) == (24, 26)
 
     panel = PanelIndex.from_ids(model.person_ids)
     assert panel.n_ind == 1500 and panel.n_obs == 1500      # cross-sectional
@@ -140,8 +150,7 @@ def test_mdcev_mixed_gauss_ll_parity():
     draws = FixtureDrawSource(os.path.join(_FIXTURE, "ass.csv"))
     est = model.build_estimator(spec, layout, panel, draws=draws)
 
-    b = np.loadtxt(os.path.join(_FIXTURE, "b.csv"))
-    assert b.shape == (27,)
+    b = _gauss_b_inside_goods()
 
     ll, _ = est.simulated_loglik(b, want_grad=False)
     total = float(ll.sum())
@@ -156,3 +165,16 @@ def test_mdcev_mixed_gauss_ll_parity():
     assert ll_obs.shape == (1500,)
     worst = float(np.max(np.abs(ll - ll_obs)))
     assert worst < 1e-8, f"per-individual LL max|delta| = {worst:.3e}"
+
+
+def test_mdcev_mixed_without_gauss_zero_floor_is_lower():
+    """Without GAUSS's z <= 0 -> 1e-4 rule the exact log-space LL is lower,
+    because underflowed draws keep their true (tiny) probability."""
+    model = _build_model(gauss_zero_floor=False)
+    spec, layout = model._build_spec_layout()
+    panel = PanelIndex.from_ids(model.person_ids)
+    draws = FixtureDrawSource(os.path.join(_FIXTURE, "ass.csv"))
+    est = model.build_estimator(spec, layout, panel, draws=draws)
+    ll, _ = est.simulated_loglik(_gauss_b_inside_goods(), want_grad=False)
+    assert np.isfinite(ll).all()
+    assert float(ll.sum()) < _GAUSS_LL - 1.0

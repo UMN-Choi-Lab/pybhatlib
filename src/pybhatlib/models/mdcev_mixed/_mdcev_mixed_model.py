@@ -122,7 +122,8 @@ class MDCEVMixedModel(BaseModel):
         of column names (GAUSS ``ivmt``).
     gamma_spec : dict or NDArray
         Satiation (``gamma``) specification, same format as ``utility_spec``
-        (GAUSS ``ivgt``); the first parameter corresponds to the outside good.
+        but for inside goods only. Outside satiation is fixed by
+        ``control.outside_good_gamma`` and is not an estimated parameter.
     param_names : list of str or None
         Baseline-utility parameter names (GAUSS ``varnam``). Inferred from
         ``utility_spec`` keys when ``None``.
@@ -205,20 +206,35 @@ class MDCEVMixedModel(BaseModel):
             u_names = param_names or [
                 f"beta{i}" for i in range(self.utility_spec.shape[1])
             ]
+        # Match MDCEVModel: gamma covariates describe inside goods only.
         if isinstance(gamma_spec, dict):
-            self.gamma_spec, g_names = _spec_dict_to_array(
-                gamma_spec, self.alternatives
+            inside_gamma, g_names = _spec_dict_to_array(
+                gamma_spec, self.alternatives[1:]
             )
         else:
-            self.gamma_spec = np.asarray(gamma_spec, dtype=str)
-            g_names = gamma_names or [
-                f"gamma{i}" for i in range(self.gamma_spec.shape[1])
-            ]
-
+            inside_gamma = np.asarray(gamma_spec, dtype=str)
+            if inside_gamma.ndim != 2 or inside_gamma.shape[0] not in (
+                self.nc, self.nc - 1,
+            ):
+                raise ValueError(
+                    "gamma_spec must have one row per inside good or alternative"
+                )
+            if inside_gamma.shape[0] == self.nc:
+                inside_gamma = inside_gamma[1:, :]
+            g_names = [f"gamma{i}" for i in range(inside_gamma.shape[1])]
+        if gamma_names is not None:
+            if len(gamma_names) != inside_gamma.shape[1]:
+                raise ValueError("gamma_names must match the columns of gamma_spec")
+            g_names = list(gamma_names)
+        keep = ~np.all(np.char.lower(inside_gamma) == "sero", axis=0)
+        inside_gamma = inside_gamma[:, keep]
+        self.gamma_names = [name for name, active in zip(g_names, keep) if active]
+        # The kernel/forecast design retains an inert outside ROW, not a gamma
+        # PARAMETER. Its satiation value comes from control.outside_good_gamma.
+        self.gamma_spec = np.vstack([
+            np.full((1, inside_gamma.shape[1]), "sero", dtype=object), inside_gamma,
+        ]).astype(str)
         self.var_names = list(param_names) if param_names is not None else u_names
-        self.gamma_names = (
-            list(gamma_names) if gamma_names is not None else g_names
-        )
         self.nvarm = self.utility_spec.shape[1]
         self.nvargam = self.gamma_spec.shape[1]
 
@@ -292,7 +308,8 @@ class MDCEVMixedModel(BaseModel):
         ``[beta | gamma | rcor | kern | scal | lam]`` (``kern_before_scal``): the
         single MDCEV kernel error scale interleaves between the correlation block
         and the random-coefficient scales, matching GAUSS
-        ``b = b1 | -1000 | gamma_rest | startker | xscalker | xscalrand | xlam``.
+        ``[beta | gamma_inside | rcor | log_sigma | scal | lam]``.
+        The outside-good gamma is supplied by the control, not this vector.
         """
         ctrl = self.control
         spec = MixingSpec.from_var_names(
@@ -379,6 +396,7 @@ class MDCEVMixedModel(BaseModel):
                 outside_good_gamma=ctrl.outside_good_gamma,
             ),
             eqmatgam=np.eye(self.nvargam, dtype=np.float64),
+            gauss_zero_floor=ctrl.gauss_zero_floor,
         )
         cfg = MSLConfig(
             n_rep=ctrl.n_rep,
@@ -418,8 +436,9 @@ class MDCEVMixedModel(BaseModel):
     ) -> NDArray:
         """Map an estimation-space ``theta`` to natural reporting parameters.
 
-        ``beta`` becomes the sign-reparameterized coefficients; ``gamma`` and the
-        MDCEV kernel scale pass through unchanged; ``rcor`` becomes the
+        ``beta`` becomes the sign-reparameterized coefficients; ``gamma`` passes
+        through unchanged; the MDCEV kernel scale becomes
+        natural sigma via ``exp(log_sigma)``; ``rcor`` becomes the
         off-diagonal correlation entries (row-based upper-triangular); ``scal``
         the random-coefficient scale (std-dev) vector ``exp(xscalrand)``; and
         ``lam`` the Yeo-Johnson powers ``2 cdlogit(xlam)`` in ``(0, 2)``.
@@ -428,12 +447,12 @@ class MDCEVMixedModel(BaseModel):
         sl = layout.slices()
 
         beta_r = np.asarray(rc.xmu, dtype=np.float64).reshape(-1)
-        gamma_r = np.asarray(theta[sl["gamma"]], dtype=np.float64).reshape(-1)
+        gamma_r = np.asarray(theta[sl.get("gamma", slice(0, 0))], dtype=np.float64).reshape(-1)
         if layout.n_rcor > 0:
             rcor_r = vecndup(np.asarray(rc.omegastar, dtype=np.float64))
         else:
             rcor_r = np.zeros(0, dtype=np.float64)
-        kern_r = np.asarray(theta[sl["kern"]], dtype=np.float64).reshape(-1)
+        kern_r = np.exp(np.asarray(theta[sl["kern"]], dtype=np.float64).reshape(-1))
         scal_r = np.asarray(rc.wscalrand, dtype=np.float64).reshape(-1)
         lam_r = np.asarray(rc.xlamrnd, dtype=np.float64).reshape(-1)
         return np.concatenate([beta_r, gamma_r, rcor_r, kern_r, scal_r, lam_r])
@@ -467,10 +486,11 @@ class MDCEVMixedModel(BaseModel):
         names = list(self.var_names)
         names.extend(self.gamma_names)
         rc_names = [self.var_names[int(p)] for p in spec.mixpos]
-        for i in range(spec.nrndcoef):
-            for j in range(i + 1, spec.nrndcoef):
-                names.append(f"corr[{rc_names[i]},{rc_names[j]}]")
-        names.append("sig_ker")
+        if spec.nrndtcor:
+            for i in range(spec.nrndcoef):
+                for j in range(i + 1, spec.nrndcoef):
+                    names.append(f"corr[{rc_names[i]},{rc_names[j]}]")
+        names.append("sigma")
         names.extend(f"sd[{nm}]" for nm in rc_names)
         names.extend(f"lam[{nm}]" for nm in rc_names)
         return names
@@ -498,14 +518,8 @@ class MDCEVMixedModel(BaseModel):
         return names
 
     def _default_startb(self, spec: MixingSpec, layout: ParamLayout) -> NDArray:
-        """Zeros start with the outside-good gamma pinned (GAUSS ``b`` default)."""
-        theta = np.zeros(layout.n_theta, dtype=np.float64)
-        sl = layout.slices()
-        gslice = sl["gamma"]
-        # GAUSS: gamma = -1000 | zeros(nvargam-1); the outside-good satiation is
-        # fixed. We keep it pinned at the control's outside_good_gamma.
-        theta[gslice.start] = self.control.outside_good_gamma
-        return theta
+        """Zero starts; outside-good satiation is supplied by the control."""
+        return np.zeros(layout.n_theta, dtype=np.float64)
 
     # ------------------------------------------------------------------
     # fit
@@ -528,7 +542,6 @@ class MDCEVMixedModel(BaseModel):
         self._fitted_est = est
 
         n_theta = layout.n_theta
-        sl = layout.slices()
         if ctrl.startb is not None:
             theta0 = np.asarray(ctrl.startb, dtype=np.float64)
             if theta0.shape[0] != n_theta:
@@ -538,18 +551,29 @@ class MDCEVMixedModel(BaseModel):
         else:
             theta0 = self._default_startb(spec, layout)
 
-        # The outside-good satiation parameter is fixed (GAUSS _max_active pins
-        # gamma[0]); freeze it during optimization via a projected objective.
-        gamma0 = sl["gamma"].start
-        fixed_val = theta0[gamma0]
+        # All gamma parameters now belong to inside goods and are active.
+        last_finite_grad = None
 
-        def objective(free: NDArray):
-            theta = free.copy()
-            theta[gamma0] = fixed_val
-            neg_ll, neg_grad = est.objective(theta)
-            neg_grad = np.asarray(neg_grad, dtype=np.float64).copy()
-            neg_grad[gamma0] = 0.0
-            return neg_ll, neg_grad
+        def objective(theta: NDArray):
+            nonlocal last_finite_grad
+            try:
+                with np.errstate(over="raise", divide="raise", invalid="raise", under="ignore"):
+                    value, grad = est.objective(theta)
+                finite = np.isfinite(value) and np.all(np.isfinite(grad))
+            except FloatingPointError:
+                finite = False
+            if not finite:
+                if last_finite_grad is None:
+                    raise ValueError(
+                        "Mixed MDCEV starting likelihood/gradient is nonfinite; "
+                        "check the data and starting parameters"
+                    )
+                # Reject an unrepresentable trial, not the last finite point.
+                return float("inf"), last_finite_grad.copy()
+            last_finite_grad = np.asarray(grad, dtype=np.float64).copy()
+            return value, grad
+
+        objective(theta0)
 
         if ctrl.verbose >= 1:
             print(
@@ -571,7 +595,6 @@ class MDCEVMixedModel(BaseModel):
             param_names=self._optimizer_param_names(spec, layout),
         )
         theta_hat = np.asarray(res.x, dtype=np.float64)
-        theta_hat[gamma0] = fixed_val
         # cache the fitted estimation-space vector for predict / ate / forecast.
         self._fitted_theta = theta_hat
 
@@ -579,29 +602,23 @@ class MDCEVMixedModel(BaseModel):
         ll_total = float(ll_pi.sum())
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
-        grad_norm = float(np.linalg.norm(np.delete(g_sum, gamma0)))
+        grad_norm = float(np.linalg.norm(g_sum))
         converged = bool(res.converged) or grad_norm < ctrl.tol_check
 
         params_report = self._to_reporting(theta_hat, spec, layout, est.space)
+        J = self._reporting_jacobian(theta_hat, spec, layout, est.space)
+        gradient_report = g_sum @ np.linalg.pinv(J)
         if ctrl.want_covariance:
             if ctrl.se_method.lower() != "bhhh":
                 raise ValueError(
                     "Mixed MDCEV currently supports only se_method='bhhh'"
                 )
             S = np.asarray(score, dtype=np.float64)
-            # drop the frozen outside-good gamma column from the score.
-            keep = [j for j in range(n_theta) if j != gamma0]
-            S_free = S[:, keep]
-            B = S_free.T @ S_free
+            B = S.T @ S
             try:
-                cov_free = np.linalg.inv(B)
+                cov_est = np.linalg.inv(B)
             except np.linalg.LinAlgError:
-                cov_free = np.linalg.pinv(B)
-            cov_est = np.zeros((n_theta, n_theta), dtype=np.float64)
-            for ii, pi in enumerate(keep):
-                for jj, pj in enumerate(keep):
-                    cov_est[pi, pj] = cov_free[ii, jj]
-            J = self._reporting_jacobian(theta_hat, spec, layout, est.space)
+                cov_est = np.linalg.pinv(B)
             cov = J @ cov_est @ J.T
             se = np.sqrt(np.maximum(np.diag(cov), 0.0))
             with np.errstate(invalid="ignore"):
@@ -637,7 +654,7 @@ class MDCEVMixedModel(BaseModel):
             se=se,
             t_stat=t_stat,
             p_value=p_value,
-            gradient=g_sum,
+            gradient=gradient_report,
             loglik=ll_mean,
             n_obs=panel.n_obs,
             n_ind=panel.n_ind,

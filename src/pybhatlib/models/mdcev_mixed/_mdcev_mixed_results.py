@@ -43,8 +43,8 @@ class MDCEVMixedResults:
     params : NDArray
         Optimised parameter vector in *reporting* space, shape (n_params,).
         Layout ``[beta | gamma | rcor | kern | scal | lam]``: baseline-utility
-        coefficients, translation (``gamma``) parameters, random-coefficient
-        correlation entries, the MDCEV kernel error scale, the random-coefficient
+        coefficients, inside-good translation (``gamma``) parameters, random-coefficient
+        correlation entries, the natural MDCEV kernel error scale ``sigma``, the random-coefficient
         scale (std-dev) vector, and the Yeo-Johnson ``lambda`` values in
         ``(0, 2)``.
     se : NDArray
@@ -54,7 +54,7 @@ class MDCEVMixedResults:
     p_value : NDArray
         Two-sided p-values.
     gradient : NDArray
-        Final (summed) score vector at convergence, estimation space.
+        Final (summed) score vector at convergence, reporting space.
     loglik : float
         Mean simulated log-likelihood (per individual).
     n_obs : int
@@ -229,7 +229,7 @@ class MDCEVMixedResults:
         )
         header = (
             f"  {'Parameters':<{name_width}s} {'Estimates':>10s} {'Std. err.':>10s}"
-            f" {'Est./s.e.':>10s} {'Prob.':>10s}"
+            f" {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
         )
         lines.append(header)
         lines.append("  " + "-" * (len(header) - 2))
@@ -239,9 +239,10 @@ class MDCEVMixedResults:
             se = self.se[i] if i < len(self.se) else 0.0
             t = self.t_stat[i] if i < len(self.t_stat) else 0.0
             p = self.p_value[i] if i < len(self.p_value) else 0.0
+            g = self.gradient[i] if i < len(self.gradient) else 0.0
             lines.append(
                 f"  {name:<{name_width}s} {est:>10.4f} {se:>10.4f}"
-                f" {t:>10.3f} {p:>10.4f}"
+                f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
 
         mixing = self.mixing_summary
@@ -322,7 +323,7 @@ class MDCEVMixedResults:
         Returns
         -------
         df : pd.DataFrame
-            DataFrame with columns: Estimate, Std.Error, t-stat, p-value.
+            DataFrame with columns: Estimate, Std.Error, t-stat, p-value, Gradient.
         """
         n = len(self.param_names)
         return pd.DataFrame(
@@ -331,6 +332,7 @@ class MDCEVMixedResults:
                 "Std.Error": self.se[:n],
                 "t-stat": self.t_stat[:n],
                 "p-value": self.p_value[:n],
+                "Gradient": self.gradient[:n],
             },
             index=self.param_names,
         )
