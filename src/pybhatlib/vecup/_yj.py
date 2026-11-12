@@ -42,6 +42,12 @@ def _as_1d(a: object) -> NDArray[np.float64]:
     return np.atleast_1d(np.asarray(a, dtype=np.float64)).ravel()
 
 
+def _yj_abs(lam1: NDArray[np.float64], log_x4: NDArray[np.float64]) -> NDArray[np.float64]:
+    """``((1+|x|)**lam1 - 1) / lam1`` via expm1, with its ``lam1 -> 0`` limit."""
+    return np.divide(np.expm1(lam1 * log_x4), lam1,
+                     out=log_x4.copy(), where=lam1 != 0.0)
+
+
 def yjnonp(lam: object, x: object, *, xp=None) -> NDArray[np.float64]:
     """Forward Yeo-Johnson transform (non-parameterized lambda).
 
@@ -72,8 +78,7 @@ def yjnonp(lam: object, x: object, *, xp=None) -> NDArray[np.float64]:
     x2 = 2.0 * x1 - 1.0
     x3 = np.abs(x)
     lam1 = (2.0 - lam) * (1.0 - x1) + lam * x1
-    g = x2 * (((x3 + 1.0) ** lam1 - 1.0) / lam1)
-    return g
+    return x2 * _yj_abs(lam1, np.log1p(x3))
 
 
 def gyjnonp(
@@ -111,9 +116,18 @@ def gyjnonp(
     x3 = np.abs(x)
     x4 = x3 + 1.0
     lam1 = (2.0 - lam) * (1.0 - x1) + lam * x1
-    g = x2 * (((x3 + 1.0) ** lam1 - 1.0) / lam1)
-    g1 = np.abs(g)
-    glam_diag = ((x4 ** lam1) * np.log(x4) - g1) / lam1
+    log_x4 = np.log1p(x3)
+    g1 = _yj_abs(lam1, log_x4)
+    g = x2 * g1
+    # d g1 / d lam1 = log_x4**2 * (u e^u - expm1(u)) / u**2 with u = lam1*log_x4.
+    # The direct form cancels as u -> 0 (lam near 0, or 2 for x < 0); use the
+    # series 1/2 + u/3 + u^2/8 + u^3/30 + u^4/144 + u^5/840 there.
+    u = lam1 * log_x4
+    small = np.abs(u) < 1e-3
+    series = 0.5 + u * (1/3 + u * (1/8 + u * (1/30 + u * (1/144 + u / 840))))
+    direct = np.divide(np.exp(u) * log_x4 - g1, lam1,
+                       out=np.zeros_like(u), where=~small)
+    glam_diag = np.where(small, log_x4 * log_x4 * series, direct)
     gx_diag = x4 ** (x2 * (lam - 1.0))
     glam = np.diag(glam_diag)
     gx = np.diag(gx_diag)

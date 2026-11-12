@@ -114,6 +114,27 @@ def test_gyjnonp_gradients():
     assert np.allclose(np.diag(gx), dx, atol=1e-6)
 
 
+@pytest.mark.parametrize(
+    "lam, x, g_ref, glam_ref",
+    [
+        # 50-digit mpmath references. At lam1 = lam (x >= 0) or 2 - lam
+        # (x < 0) near 0 the direct formula cancels catastrophically.
+        (1e-9, 0.4, 0.3364722366778197, 0.05660678302113849),
+        (1e-7, 1.3, 0.8329091576219854, 0.3468688227949421),
+        (2 - 1e-8, -0.7, -0.5306282524700021, 0.1407831709106724),
+        (1e-5, 3.0, 1.386303970224573, 0.9609149085399564),
+        # Exact endpoints: g -> sign(x) log(1+|x|), dg/dlam -> log(1+|x|)^2 / 2.
+        (0.0, 1.0, np.log(2.0), np.log(2.0) ** 2 / 2),
+        (2.0, -1.0, -np.log(2.0), np.log(2.0) ** 2 / 2),
+    ],
+)
+def test_gyjnonp_stable_near_lambda_limits(lam, x, g_ref, glam_ref):
+    F, glam, _ = gyjnonp([lam], [x])
+    assert F[0] == pytest.approx(g_ref, rel=1e-13)
+    assert yjnonp([lam], [x])[0] == F[0]
+    assert glam[0, 0] == pytest.approx(glam_ref, rel=1e-12)
+
+
 def test_gyjinvnonp_gradients():
     mu = np.array([0.2, -0.5, 0.1])
     wdiag = np.diag([1.1, 0.9, 1.3])
