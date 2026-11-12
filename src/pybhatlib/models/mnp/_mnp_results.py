@@ -221,6 +221,11 @@ class MNPResults:
             beta are normalized together according to ``control.scaling``:
             first scale 1, or sum of squared differenced scales 1. Supplying
             an already normalized pair leaves its utility scale unchanged.
+            An IID model has no covariance to infer the scale from, so
+            ``beta`` is taken in ``control.scaling`` units: IID estimates
+            reported by GAUSS (first differenced variance 1) need
+            ``scaling="first"``; under ``"sumsq"`` they are ``sqrt(I-1)``
+            times too large.
         control : MNPControl, optional
             Control structure.  Defaults to ``MNPControl(iid=kernel_cov is
             None)``.  Its ``heteronly`` flag selects the variance-only
