@@ -447,7 +447,7 @@ class MORPFlexModel(BaseModel):
             method=method,
             maxiter=ctrl.maxiter,
             tol=ctrl.tol,
-            ftol=ctrl.tol if method == "L-BFGS-B" else None,
+            obj_scale=panel.n_ind,
             verbose=ctrl.verbose,
             param_names=self._param_names(spec, layout),
         )
