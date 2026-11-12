@@ -26,70 +26,13 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from pybhatlib.models._results_common import (
+    MixingSummary,
     attach_deprecated_aliases,
     attach_ll_total_alias,
     legacy_init,
+    mixing_summary_from_state,
 )
 from pybhatlib.models.morp_flex._morp_flex_control import MORPFlexControl
-
-
-@dataclass
-class MixingSummary:
-    """Reported locations, scales and shapes, with latent joint dependence.
-
-    Random coefficients precede kernel errors. Covariances are implied by
-    the reported scales and latent Gaussian correlation, before nonlinear
-    coefficient or kernel transformations.
-    """
-
-    names: list[str]
-    n_random: int
-    means: NDArray
-    scales: NDArray
-    shapes: NDArray
-    corr_matrix: NDArray
-    note: str = ""
-
-    @property
-    def cov_matrix(self) -> NDArray:
-        return np.outer(self.scales, self.scales) * self.corr_matrix
-
-
-def mixing_summary_from_state(
-    var_names, spec, state, *, kernel_names=(), kernel_scales=None,
-    kernel_shapes=None, joint_corr=None, copula=False, note="",
-) -> MixingSummary:
-    """Capture the fitted pipeline/kernel state without changing estimation."""
-    rc_names = [var_names[int(p)] for p in spec.mixpos]
-    k = len(rc_names)
-    names = rc_names + list(kernel_names)
-    nk = len(kernel_names)
-    corr = np.array(
-        state.omegastar if joint_corr is None else joint_corr,
-        dtype=np.float64, copy=True,
-    ).reshape(len(names), len(names))
-    if nk and not copula:
-        # The likelihood ignores RC/kernel dependence when copula is off.
-        corr[:k, k:] = 0.0
-        corr[k:, :k] = 0.0
-    return MixingSummary(
-        names=names,
-        n_random=k,
-        means=np.concatenate([
-            np.asarray(state.xmu)[np.asarray(spec.mixpos, dtype=np.intp)],
-            np.zeros(nk),
-        ]),
-        scales=np.concatenate([
-            np.asarray(state.wscalrand).reshape(-1),
-            np.ones(nk) if kernel_scales is None else kernel_scales,
-        ]),
-        shapes=np.concatenate([
-            np.asarray(state.xlamrnd).reshape(-1),
-            np.ones(nk) if kernel_shapes is None else kernel_shapes,
-        ]),
-        corr_matrix=corr,
-        note=note,
-    )
 
 
 # Legacy construction kwargs -> canonical field names.
