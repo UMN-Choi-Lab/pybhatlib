@@ -58,6 +58,11 @@ class MDCEVMixedControl:
         Fixed satiation value forced on the outside good (GAUSS
         ``u[.,1] = -1000``); passed through to the kernel's MDCEV control.
         It is excluded from ``gamma_spec``, optimization, and reported parameters.
+    gauss_zero_floor : bool
+        Match GAUSS: a per-draw kernel probability that underflows to zero is
+        replaced by ``1e-4`` (default ``True``). ``False`` keeps the exact
+        log-space probability, which can give a lower LL than GAUSS at the
+        same parameters.
     n_rep : int
         Number of MSL replications (GAUSS ``nrep``, default 10 for the SCAG
         driver).
@@ -132,6 +137,7 @@ class MDCEVMixedControl:
     scal: float = 1.0
     floor_pcomp: float = 1e-10
     floor_z: float = 1e-100
+    gauss_zero_floor: bool = True
     draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------

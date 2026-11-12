@@ -18,17 +18,27 @@ from pybhatlib.mixed._kernel import KernelObsResult, KernelState
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 
 
+_GAUSS_ZERO_FLOOR = 1e-4  # value GAUSS substitutes for a per-draw z <= 0
+
+
 class LogitJacobianKernel:
     """MDCEV kernel with inside-good gamma parameters and a log-sigma scale.
 
     ``eqmatgam`` maps the supplied gamma parameters to satiation coefficients.
     Outside-good satiation is fixed by ``control.outside_good_gamma``.
+
+    ``gauss_zero_floor=True`` reproduces GAUSS's ``z <= 0 -> 1e-4`` rule: a
+    per-draw probability that underflows to zero in double precision is set
+    to ``1e-4`` (with zero score), so the likelihood matches GAUSS output.
+    ``False`` keeps the exact log-space probability.
     """
 
     def __init__(self, n_util: int, nvargam: int, *,
                  control: MDCEVControl | None = None,
-                 eqmatgam: NDArray | None = None) -> None:
+                 eqmatgam: NDArray | None = None,
+                 gauss_zero_floor: bool = True) -> None:
         self.n_util = int(n_util)
+        self.gauss_zero_floor = bool(gauss_zero_floor)
         self.nvargam = int(nvargam)
         self.control = control or MDCEVControl(utility="trad")
         self.eqmatgam = np.asarray(
@@ -126,6 +136,10 @@ class LogitJacobianKernel:
                  - (n_con + 1.0) * log_d)
         log_p = log_l + np.where(n_con > 0, sat["log_c"], 0.0)
         p = np.exp(log_p)
+        zeroed = (p <= 0.0) if self.gauss_zero_floor else None
+        if zeroed is not None and zeroed.any():
+            log_p = np.where(zeroed, np.log(_GAUSS_ZERO_FLOOR), log_p)
+            p = np.exp(log_p)
         if not want_grad:
             return KernelObsResult(
                 p_obs=p, log_p_obs=log_p, dlogp_dV=np.zeros_like(v),
@@ -142,6 +156,10 @@ class LogitJacobianKernel:
             "qk,qkj->qj", gamma_util, np.asarray(obs.gamma_design)[:, 1:, :],
         ) @ self.eqmatgam.T
         score_kernel = np.column_stack([score_gamma, score_sigma])
+        if zeroed is not None and zeroed.any():
+            # The floored value is a constant: no gradient flows through it.
+            score_v[zeroed] = 0.0
+            score_kernel[zeroed] = 0.0
         return KernelObsResult(
             p_obs=p, log_p_obs=log_p, score_dV=score_v,
             score_dkparams=score_kernel, dlogp_dV=p[:, None] * score_v,
