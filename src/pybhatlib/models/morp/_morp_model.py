@@ -18,6 +18,7 @@ from pybhatlib.backend._array_api import get_backend
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import ProbabilityCache, baseline_loglikelihoods
 from pybhatlib.models.morp._morp_control import MORPControl
 from pybhatlib.models.morp._morp_grad_analytic import morp_analytic_gradient
 from pybhatlib.models.morp._morp_loglik import (
@@ -241,6 +242,8 @@ class MORPModel(BaseModel):
                 self.n_beta, self.control, return_gradient=True, xp=xp,
             )
 
+        objective = ProbabilityCache(objective, self.N)
+
         # Optimize
         start_time = time.time()
 
@@ -268,10 +271,13 @@ class MORPModel(BaseModel):
                 self.control, method="scipy", analytic_grad=False,
             )
             t_exact = time.time()
-            f_exact = morp_loglik(
-                result.x, self.X, self.y, self.n_dims, self.n_categories,
-                self.n_beta, exact_control, return_gradient=False, xp=xp,
-            )
+
+            def exact_likelihood(theta):
+                return morp_loglik(
+                    theta, self.X, self.y, self.n_dims, self.n_categories,
+                    self.n_beta, exact_control, return_gradient=False, xp=xp,
+                )
+            f_exact = objective.evaluate(result.x, exact_likelihood)
             if self.control.verbose >= 1:
                 print(
                     f"  Re-evaluated LL with exact scipy CDF: "
@@ -342,7 +348,10 @@ class MORPModel(BaseModel):
             self.n_categories, self.control, param_names, self.dep_vars,
         )
 
+        ll_c, ll_0 = baseline_loglikelihoods(self.y, self.n_categories)
         return MORPResults(
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            average_correct_probability=objective.get(theta_hat),
             params=theta_hat,
             se=se,
             loglik=-result.fun,

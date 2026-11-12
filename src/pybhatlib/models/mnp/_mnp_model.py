@@ -21,6 +21,7 @@ from pybhatlib.backend._array_api import get_backend
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import ProbabilityCache, baseline_loglikelihoods
 from pybhatlib.models.mnp._mnp_control import MNPControl
 from pybhatlib.models.mnp._mnp_loglik import count_params, mnp_loglik
 from pybhatlib.models.mnp._mnp_results import MNPResults
@@ -509,6 +510,8 @@ class MNPModel(BaseModel):
                     self.ranvar_indices, return_gradient=True, xp=xp,
                 )
 
+        _full_objective = ProbabilityCache(_full_objective, self.N)
+
         # ------------------------------------------------------------------
         # MNP-003: wrap objective for active_mask if needed
         # ------------------------------------------------------------------
@@ -712,7 +715,10 @@ class MNPModel(BaseModel):
                 raw -= raw.max()
                 segment_probs = np.exp(raw) / np.exp(raw).sum()
 
+        ll_c, ll_0 = baseline_loglikelihoods(self.y, [self.n_alts], availability=self.avail)
         return MNPResults(
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            average_correct_probability=_full_objective.get(theta_hat),
             params=theta_hat,
             b_original=b_report,
             se=se,

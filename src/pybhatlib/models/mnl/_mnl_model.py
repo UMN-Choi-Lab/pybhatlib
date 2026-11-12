@@ -16,6 +16,7 @@ from scipy.special import ndtr
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import ProbabilityCache, baseline_loglikelihoods
 from pybhatlib.models.mnl._mnl_control import MNLControl
 from pybhatlib.models.mnl._mnl_loglik import mnl_loglik, mnl_gradient, mnl_hessian
 from pybhatlib.models.mnl._mnl_results import MNLResults
@@ -229,9 +230,13 @@ class MNLModel(BaseModel):
             corr = np.zeros((numunord, numunord))
 
         # ---- Final LL and gradient -----------------------------------
-        ll_obs_final = mnl_loglik(
-            x_opt, dta, indxivunord, davunord, dvunord, nc, numunord,
-        )
+        def final_likelihood(theta):
+            return mnl_loglik(
+                theta, dta, indxivunord, davunord, dvunord, nc, numunord,
+            )
+        probability_cache = ProbabilityCache(final_likelihood, n_obs)
+        ll_obs_final = probability_cache(x_opt)
+        ll_c, ll_0 = baseline_loglikelihoods(self.y, [nc], availability=self.avail)
         ll_total = float(ll_obs_final.sum())
         ll_mean  = ll_total / n_obs
 
@@ -258,6 +263,8 @@ class MNLModel(BaseModel):
             )
 
         return MNLResults(
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            average_correct_probability=probability_cache.get(x_opt),
             params=x_opt,
             se=se,
             t_stat=t_stat,

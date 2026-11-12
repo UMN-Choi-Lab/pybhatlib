@@ -20,6 +20,8 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from pybhatlib.models._fit_diagnostics import record_probabilities, pause_probability_recording
+
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd, mvncd_log_batch
 from pybhatlib.matgradient._spherical import theta_to_corr
@@ -139,10 +141,11 @@ def mnp_loglik(
 
     if return_gradient:
         # Numerical gradient fallback (analytic path handled above)
-        grad = _numerical_gradient(
-            theta_np, X_np, y_np, avail, n_alts, n_beta,
-            control, ranvar_indices, xp
-        )
+        with pause_probability_recording():
+            grad = _numerical_gradient(
+                theta_np, X_np, y_np, avail, n_alts, n_beta,
+                control, ranvar_indices, xp
+            )
         return nll, grad
 
     return nll
@@ -248,6 +251,7 @@ def _batch_loglik_shared_cov(
             diff_V_group[:, k] = V_group[:, c] - V_group[:, j]
 
         log_probs = mvncd_log_batch(diff_V_group, Lambda_diff_c, method="me")
+        record_probabilities(np.exp(log_probs))
         total_ll += float(np.sum(log_probs))
 
     return total_ll
@@ -366,6 +370,7 @@ def _batch_loglik_mixed(
         log_probs = mvncd_log_batch(
             diff_V_group, sigma_all[0], method="me", per_obs_sigma=sigma_all,
         )
+        record_probabilities(np.exp(log_probs))
         total_ll += float(np.sum(log_probs))
 
     return total_ll
@@ -449,6 +454,7 @@ def _sequential_loglik_single_segment(
             ranvar_indices, control, xp
         )
         prob_q = max(prob_q, 1e-300)
+        record_probabilities(prob_q)
         total_ll += np.log(prob_q)
 
     return total_ll
@@ -480,6 +486,7 @@ def _sequential_loglik_mixture(
             ranvar_indices, control, xp
         )
         prob_q = max(prob_q, 1e-300)
+        record_probabilities(prob_q)
         total_ll += np.log(prob_q)
 
     return total_ll
