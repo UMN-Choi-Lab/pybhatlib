@@ -64,8 +64,8 @@ class MixMNLControl:
     draw_method : {"scipy", "explicit"}
         Halton source; defaults to "scipy". "explicit" uses the deterministic
         GAUSS-style digit-permutation source up to 16 dimensions; above that it
-        prints a message and falls back to SciPy using draw_seed. Within the
-        explicit dimension limit, draw_seed is ignored. With no random coefficients a zero-width fixture is used.
+        warns and falls back to SciPy using draw_seed. Within the
+        explicit dimension limit, draw_seed is ignored: with the default corbreak=1, rantuff=0, rancolumn=0 the draws are fully deterministic (identical for every run and every draw_seed); randomized options would seed from the GAUSS formula 9_836_506 + (run-1)*40_000, not draw_seed. With no random coefficients a zero-width fixture is used.
     draw_seed : int or None
         Seed for the runtime scrambled-Halton draw source (default 13811).
     maxiter : int

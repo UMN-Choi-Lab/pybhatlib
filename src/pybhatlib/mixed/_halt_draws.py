@@ -24,6 +24,8 @@ seeded off the same seed formula as the original (offset by runno).
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 from numpy.typing import NDArray
 from scipy.special import ndtri
@@ -76,55 +78,33 @@ _XBRAT: NDArray = np.array([
 
 
 # ---------------------------------------------------------------------------
-# 3. Core Halton engine: digit initialization, digit
-#    incrementing, and radical-inverse computation.
+# 3. Core Halton engine: vectorized scrambled radical inverse.
 # ---------------------------------------------------------------------------
-def _halt_creat(s: int, maxdigit: int = _HALT_MAXDIGIT) -> tuple[NDArray, NDArray]:
-    """Initialize digit state for `s` dimensions."""
-    a = np.zeros((s, maxdigit), dtype=np.int64)
-    a[:, 0] = 1
-    b = np.ones(s, dtype=np.int64)
-    return a, b
-
-
-def _halt_digitize(s: int, c: NDArray, a: NDArray, b: NDArray) -> tuple[NDArray, NDArray]:
-    """Increment the mixed-radix digit counter (with carry) for `s` dims."""
-    for m in range(s):
-        l = 0
-        ret = 1
-        while ret == 1:
-            x = 1 if a[m, l] != (c[m] - 1) else 0
-            ret = ret - x
-            a[m, l] = (a[m, l] + 1) * x
-            b[m] = int(l == b[m]) + b[m]
-            l += 1
-    return a, b
-
-
-def _halt_inverse(s: int, c: NDArray, a: NDArray, b: NDArray, tbl: NDArray) -> NDArray:
-    """Scrambled radical inverse for the current digit state, all `s` dims."""
-    gg = np.zeros(s, dtype=np.float64)
-    for m in range(s):
-        xx = float(c[m])
-        for l in range(int(b[m])):
-            gg[m] += tbl[m, a[m, l]] / xx
-            xx *= c[m]
-    return gg
-
-
 def _halt_rawgen(n: int, s: int, tbl: NDArray) -> NDArray:
-    """Generate `n` raw (scrambled) Halton points in `s` dimensions, (n, s)."""
+    """Generate `n` raw (scrambled) Halton points in `s` dimensions, (n, s).
+
+    Vectorized radical inverse of the 1-based point indices 1..n: digits of
+    the index in base ``prim[m]`` are mapped through ``tbl[m]`` and summed
+    least-significant first with weights ``prim[m]**-(l+1)``. Summation order
+    and float operations match the original carry-counter loop, so the output
+    is bit-identical. (Every row of ``tbl`` maps digit 0 to 0, so digits
+    beyond the index's length contribute exactly zero.)
+    """
     primer = _HALT_PRIM[:s]
-    # Points are indexed 1..n. Base 2 needs the most digits; at n=2**22
-    # the old fixed 22-column buffer overflowed during the carry operation.
-    # Keep the original minimum capacity and size larger requests exactly.
     maxdigit = max(_HALT_MAXDIGIT, int(n).bit_length())
-    a, b = _halt_creat(s, maxdigit=maxdigit)
     h = np.zeros((n, s), dtype=np.float64)
-    h[0] = _halt_inverse(s, primer, a, b, tbl)
-    for i in range(1, n):
-        a, b = _halt_digitize(s, primer, a, b)
-        h[i] = _halt_inverse(s, primer, a, b, tbl)
+    for m in range(s):
+        c = int(primer[m])
+        idx = np.arange(1, n + 1, dtype=np.int64)
+        xx = float(c)
+        row = tbl[m]
+        acc = h[:, m]
+        for _ in range(maxdigit):
+            if not idx.any():
+                break
+            acc += row[idx % c] / xx
+            idx //= c
+            xx *= c
     return h
 
 
@@ -213,6 +193,13 @@ class ExplicitHaltonDrawSource:
     "first nrep rows = individual 1" layout), reshaped to the DrawSource
     contract `(n_rep, n_ind, n_rnd)`.
 
+    Determinism: with the default ``corbreak=1, rantuff=0, rancolumn=0`` the
+    draws are fully deterministic -- identical for every run and every
+    ``draw_seed``. The randomized options (``corbreak=2``, ``rantuff=1``,
+    ``rancolumn=1``) seed from the GAUSS formula
+    ``9_836_506 + (run - 1) * 40_000``, NOT from ``draw_seed``. ``seed`` only
+    affects the SciPy fallback used beyond the dimension limit.
+
     Parameters
     ----------
     corbreak, rantuff, rancolumn : int, default 1/0/0
@@ -238,11 +225,22 @@ class ExplicitHaltonDrawSource:
         if n_rnd > limit:
             if self._fallback is None:
                 from pybhatlib.mixed._draws import ScipyHaltonDrawSource
-                print(f"Explicit Halton supports at most {limit} dimensions with "
-                      f"corbreak={self.corbreak}; requested {n_rnd}. "
-                      "Reverting to ScipyHaltonDrawSource.")
+                warnings.warn(
+                    f"Explicit Halton supports at most {limit} dimensions with "
+                    f"corbreak={self.corbreak}; requested {n_rnd}. "
+                    "Reverting to ScipyHaltonDrawSource.",
+                    stacklevel=2,
+                )
                 self._fallback = ScipyHaltonDrawSource(seed=self.seed)
             return self._fallback.draws(n_ind, n_rnd, n_rep, run=run)
+
+        if run > 1 and self.corbreak != 2 and not (self.rantuff or self.rancolumn):
+            warnings.warn(
+                f"Explicit Halton draws are deterministic with corbreak="
+                f"{self.corbreak}, rantuff=0, rancolumn=0; run={run} reuses "
+                "exactly the same draws as run 1.",
+                stacklevel=2,
+            )
 
         rng = None
         if self.corbreak == 2 or self.rantuff == 1 or self.rancolumn == 1:
