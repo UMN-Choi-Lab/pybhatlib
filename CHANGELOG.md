@@ -41,6 +41,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the mixed MDCEV kernel -- and raise on any other length instead of silently
   reading the wrong columns. (#58 harmonization)
 
+## [0.4.0] - 2026-09-16
+
+### Added
+- **Linear regression (LR)** — `LRModel` / `LRControl` / `LRResults`: one
+  continuous outcome solved in closed form (SVD least squares) with classical,
+  White-robust, and BHHH standard errors; the residual standard deviation
+  `sigma` is reported as the trailing parameter (MDCEV convention);
+  `lr_predict`, `lr_ate` / `lr_ate_from_params` on the shared `scenarios=`
+  API; tutorial `t09a_lr`.
+- **Mixed (simulation-based) model family** — a shared maximum-simulated-
+  likelihood engine (Halton draws, panel broadcast, normal / log-normal /
+  Yeo-Johnson coefficient transforms, analytic scores through the
+  reparameterisation Jacobians), plus four models built on it:
+  `MixMNLModel` (mixed multinomial logit), `MNPKerCPModel` (mixed MNP
+  coupling random coefficients to the kernel error through a copula),
+  `MORPFlexModel` (mixed MORP with a flexible Yeo-Johnson
+  kernel and rectangle MVNCD), and `MDCEVMixedModel` (mixed MDCEV with a
+  vectorized per-draw kernel). These are new and still under active
+  refinement; the closed-form models above are the stable API.
+
+### Fixed
+- **MNP mixture-of-normals** — coefficients that are not random now stay shared
+  across segments instead of being re-estimated per segment.
+
 ## [0.3.2] - 2026-07-22
 
 First version available on PyPI. Identical in code to 0.3.1; released under a new
