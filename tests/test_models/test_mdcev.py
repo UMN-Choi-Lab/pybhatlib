@@ -6,7 +6,12 @@ import pytest
 
 from pybhatlib.models.mdcev._mdcev_model import MDCEVModel
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
-from pybhatlib.models.mdcev import mdcev_forecast, mdcev_predict_choice
+from pybhatlib.models.mdcev._mdcev_forecast import (
+    _mdcev_linear_forecast_allocation,
+    mdcev_forecast,
+    mdcev_predict,
+    mdcev_predict_choice,
+)
 
 @pytest.fixture
 def synthetic_mdcev_data():
@@ -42,9 +47,8 @@ class TestMDCEVModel:
             "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
         }
         gamma_spec = {
-            "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-            "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-            "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+            "g1": {"alt1": "uno", "alt2": "sero"},
+            "g2": {"alt1": "sero", "alt2": "uno"},
         }
         model = MDCEVModel(
             data=df,
@@ -55,7 +59,7 @@ class TestMDCEVModel:
         )
         assert model.n_alts == 3
         assert model.utility_spec.shape[1] == 3
-        assert model.gamma_spec.shape[1] == 3
+        assert model.gamma_spec.shape == (2, 2)
 
     def test_model_fit_smoke(self, synthetic_mdcev_data):
         df = synthetic_mdcev_data
@@ -66,9 +70,8 @@ class TestMDCEVModel:
             "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
         }
         gamma_spec = {
-            "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-            "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-            "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+            "g1": {"alt1": "uno", "alt2": "sero"},
+            "g2": {"alt1": "sero", "alt2": "uno"},
         }
         model = MDCEVModel(
             data=df,
@@ -178,7 +181,7 @@ class TestMDCEVModel:
         forecasts = mdcev_forecast(
             results=None,
             b_reported=raw_params,
-            sigma=None,
+            sigma=results.sigma,
             X_new=X_new,
             X_gam_new=X_gam_new,
             price_new=price_new,
@@ -190,6 +193,103 @@ class TestMDCEVModel:
         assert forecasts.shape == (2 * len(df), 3)
         assert np.all(forecasts >= 0)
 
+    def test_linear_allocation_solves_the_kkt_conditions(self):
+        """Independent check of the linear-MDCEV allocation (GAUSS ``forec``).
+
+        For the linear outside-good utility the KKT conditions give, with the
+        outside good as numeraire (``lambda = v_out``),
+        ``x_k = gamma_k * (v_k / lambda - 1)`` for every inside good with
+        ``v_k > lambda`` and ``x_k = 0`` otherwise; the outside good takes the
+        budget residual. The expected allocation is computed here from that
+        closed form, not from the implementation under test.
+        """
+        v = np.array([2.0, 5.0, 1.0, 3.0, 2.0])      # outside good first
+        f1 = np.array([0.0, 0.5, 2.0, 1.5, 0.7])     # gamma_k = exp(u_k)
+        prices = np.ones(5)
+        budget = 40.0
+
+        lam = v[0]
+        expected = np.zeros(5)
+        for k in range(1, 5):
+            if v[k] > lam:
+                expected[k] = f1[k] * (v[k] / lam - 1.0)
+        expected[0] = budget - expected[1:].sum()
+
+        out = _mdcev_linear_forecast_allocation(v, prices, f1, budget=budget, num_outside=1)
+        np.testing.assert_allclose(out, expected, rtol=1e-12, atol=1e-12)
+        assert out[2] == 0.0 and out[4] == 0.0       # v_k <= lambda: not consumed
+        assert np.isclose(out.sum(), budget)
+
+        # No inside good beats the outside good -> the whole budget is outside.
+        out_none = _mdcev_linear_forecast_allocation(
+            np.array([9.0, 1.0, 2.0]), np.ones(3), np.array([0.0, 1.0, 1.0]), budget=7.0,
+        )
+        np.testing.assert_allclose(out_none, [7.0, 0.0, 0.0])
+
+        # Output is in the original good order whatever the internal sort by v.
+        perm = np.array([0, 3, 1, 4, 2])
+        out_perm = _mdcev_linear_forecast_allocation(v[perm], prices[perm], f1[perm], budget=budget)
+        np.testing.assert_allclose(out_perm, expected[perm], rtol=1e-12, atol=1e-12)
+
+    def test_linear_predict_uses_observation_budget(self):
+        b_reported = np.array([0.2, -0.4, 0.3, 0.5, -0.2, 1.0], dtype=np.float64)
+        X_new = np.array(
+            [[[1.0, 0.2, 0.1], [0.8, -0.1, 0.4], [0.7, 0.3, -0.2]]],
+            dtype=np.float64,
+        )
+        X_gam_new = np.array(
+            [[[0.1, 0.2], [0.5, -0.1], [0.4, 0.2]]],
+            dtype=np.float64,
+        )
+        price_new = np.ones((1, 3), dtype=np.float64)
+
+        results_lin = __import__("pybhatlib.models.mdcev._mdcev_results", fromlist=["MDCEVResults"]).MDCEVResults.from_estimates(
+            b_reported=b_reported,
+            sigma=1.0,
+            control=MDCEVControl(utility="linear"),
+            param_names=["b0", "b1", "b2", "g1", "g2", "sigma"],
+        )
+
+        pred_low = mdcev_predict(results_lin, X_new, X_gam_new, price_new, n_draws=200, seed=7, budget=np.array([10.0]))
+        pred_high = mdcev_predict(results_lin, X_new, X_gam_new, price_new, n_draws=200, seed=7, budget=np.array([20.0]))
+
+        assert pred_low.shape == (1, 3)
+        assert np.all((pred_low >= 0.0) & (pred_low <= 1.0))
+        assert np.all((pred_high >= 0.0) & (pred_high <= 1.0))
+        assert np.any(pred_low < 1.0)
+        assert not np.allclose(pred_low, pred_high)
+
+    def test_linear_and_traditional_predict_paths_diverge(self):
+        b_reported = np.array([0.2, -0.4, 0.3, 0.2, -0.1, 1.0], dtype=np.float64)
+        X_new = np.array(
+            [[[1.0, 0.2, 0.1], [0.8, -0.1, 0.4], [0.7, 0.3, -0.2]]],
+            dtype=np.float64,
+        )
+        X_gam_new = np.array(
+            [[[0.1, 0.2], [0.5, -0.1], [0.4, 0.2]]],
+            dtype=np.float64,
+        )
+        price_new = np.ones((1, 3), dtype=np.float64)
+
+        results_trad = __import__("pybhatlib.models.mdcev._mdcev_results", fromlist=["MDCEVResults"]).MDCEVResults.from_estimates(
+            b_reported=b_reported,
+            sigma=1.0,
+            control=MDCEVControl(utility="trad"),
+            param_names=["b0", "b1", "b2", "g1", "g2", "sigma"],
+        )
+        results_lin = __import__("pybhatlib.models.mdcev._mdcev_results", fromlist=["MDCEVResults"]).MDCEVResults.from_estimates(
+            b_reported=b_reported,
+            sigma=1.0,
+            control=MDCEVControl(utility="linear"),
+            param_names=["b0", "b1", "b2", "g1", "g2", "sigma"],
+        )
+
+        trad_pred = mdcev_predict(results_trad, X_new, X_gam_new, price_new, n_draws=500, seed=7)
+        lin_pred = mdcev_predict(results_lin, X_new, X_gam_new, price_new, n_draws=500, seed=7)
+
+        assert np.isfinite(lin_pred).all()
+        assert not np.allclose(trad_pred.mean(axis=0), lin_pred.mean(axis=0), atol=1e-10)
+
 
 _ALTS = ["alt_out", "alt1", "alt2"]
 _USPEC = {
@@ -198,9 +298,8 @@ _USPEC = {
     "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
 }
 _GSPEC = {
-    "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-    "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-    "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+    "g1": {"alt1": "uno", "alt2": "sero"},
+    "g2": {"alt1": "sero", "alt2": "uno"},
 }
 
 

@@ -65,6 +65,7 @@ def make_mdcev_mixed_share_predict(
     n_draws: int = 1000,
     seed: int = 1234,
     outside_good_gamma: float = -1000.0,
+    utility: Optional[str] = None,
 ) -> KernelPredict:
     """Build a per-draw *participation-share* prediction hook for the MSL engine.
 
@@ -86,6 +87,11 @@ def make_mdcev_mixed_share_predict(
         prediction value-for-value.
     outside_good_gamma : float, default -1000.0
         Fixed satiation forced on the outside good (GAUSS ``u[.,1] = -1000``).
+    utility : {"trad", "linear"}, optional
+        Outside-good utility form forwarded to ``mdcev_predict``; ``None``
+        falls back to the shipped default (traditional). Pass the model's
+        ``control.utility`` so a linear mixed model predicts with the linear
+        allocation.
 
     Returns
     -------
@@ -119,8 +125,97 @@ def make_mdcev_mixed_share_predict(
             b_reported=b_rep,
             sigma=sigma,
             outside_good_gamma=outside_good_gamma,
+            utility=utility,
         )
         return np.asarray(shares, dtype=np.float64)
+
+    return _predict
+
+
+def make_mdcev_mixed_participation_predict(
+    *,
+    n_replications: int = 1000,
+    seed: int = 1234,
+    num_outside: int = 1,
+    outside_good_gamma: float = -1000.0,
+    utility: Optional[str] = None,
+) -> KernelPredict:
+    """Build a per-draw *participation-rate* prediction hook for the MSL engine.
+
+    The mixed analogue of what the fixed-coefficient
+    :func:`~pybhatlib.models.mdcev._mdcev_ate.mdcev_ate` reports: for one MSL
+    replication the drawn baseline utilities are fed through the shipped
+    :func:`~pybhatlib.models.mdcev._mdcev_forecast.mdcev_forecast` allocation
+    simulator (identity one-column design, see the module docstring) and the
+    hook returns, per observation and good, the share of the
+    ``n_replications`` simulated allocations with positive consumption. The
+    outside good is always consumed (rate 1). Averaged over the mixing draws
+    and the sample by the shared machinery, an ``nrndcoef == 0`` model
+    reproduces ``mdcev_ate`` value-for-value (same seed, same RNG path).
+
+    The per-observation budget is read from ``obs.budget`` (set by
+    :func:`make_mdcev_mixed_design_builder` from ``budget_col``); it falls back
+    to ones, exactly like
+    :func:`~pybhatlib.models.mdcev._mdcev_forecast.prepare_mdcev_forecast_data`.
+
+    Parameters
+    ----------
+    n_replications : int, default 1000
+        Allocation replications per observation inside ``mdcev_forecast``.
+    seed : int, default 1234
+        Monte-Carlo seed; held fixed across MSL replications.
+    num_outside : int, default 1
+        Number of outside goods.
+    outside_good_gamma : float, default -1000.0
+        Fixed satiation forced on the outside good (GAUSS ``u[.,1] = -1000``).
+    utility : {"trad", "linear"}, optional
+        Outside-good utility form forwarded to ``mdcev_forecast``.
+
+    Returns
+    -------
+    KernelPredict
+        Hook returning per-observation participation rates ``(n_obs, nc)`` for
+        one MSL replication.
+    """
+
+    def _predict(
+        kernel: Any,
+        Vsub: NDArray,
+        obs: Any,
+        kstate: Any,
+        rc_draw: NDArray,
+    ) -> NDArray:
+        Vsub = np.asarray(Vsub, dtype=np.float64)
+        n_obs, nc = Vsub.shape
+        gamma_raw = np.asarray(kstate.gamma_raw, dtype=np.float64)
+        sigma = float(np.exp(kstate.log_sigma))
+        gamma_design = np.asarray(obs.gamma_design, dtype=np.float64)  # (n_obs, nc, ng)
+        price = np.asarray(obs.price, dtype=np.float64)                # (n_obs, nc)
+        budget = getattr(obs, "budget", None)
+        budget_arr = (
+            np.ones(n_obs, dtype=np.float64) if budget is None
+            else np.asarray(budget, dtype=np.float64).reshape(-1)
+        )
+
+        x_eff = Vsub[:, :, None]                                       # (n_obs, nc, 1)
+        b_rep = np.concatenate([[1.0], gamma_raw])                    # nvarm==1
+        stacked = mdcev_forecast(
+            None,
+            x_eff,
+            gamma_design,
+            price,
+            budget_arr,
+            n_replications=n_replications,
+            seed=seed,
+            num_outside=num_outside,
+            b_reported=b_rep,
+            sigma=sigma,
+            outside_good_gamma=outside_good_gamma,
+            utility=utility,
+        )
+        # stacked is (n_replications * n_obs, nc), replication-major.
+        consumed = (np.asarray(stacked, dtype=np.float64) > 0.0)
+        return consumed.reshape(n_replications, n_obs, nc).mean(axis=0)
 
     return _predict
 
@@ -135,6 +230,7 @@ def _forecast_per_draw(
     seed: int,
     num_outside: int,
     outside_good_gamma: float,
+    utility: Optional[str] = None,
 ) -> NDArray:
     """Mean expenditure allocation ``(n_obs, nc)`` for one MSL replication.
 
@@ -164,6 +260,7 @@ def _forecast_per_draw(
         b_reported=b_rep,
         sigma=sigma,
         outside_good_gamma=outside_good_gamma,
+        utility=utility,
     )
     # stacked is (n_replications * n_obs, nc), replication-major.
     return stacked.reshape(n_replications, n_obs, nc).mean(axis=0)
@@ -173,7 +270,7 @@ def _forecast_per_draw(
 # design rebuild + component assembly
 # ---------------------------------------------------------------------------
 
-def make_mdcev_mixed_design_builder(model: Any):
+def make_mdcev_mixed_design_builder(model: Any, *, budget_col: str = "tot"):
     """Return a ``(data_frame, spec) -> DesignData`` closure for a mixed MDCEV model.
 
     Rebuilds the baseline / satiation design tensors and consumption / price
@@ -186,6 +283,10 @@ def make_mdcev_mixed_design_builder(model: Any):
     ----------
     model : MDCEVMixedModel
         The fitted model carrying the design specification.
+    budget_col : str, default "tot"
+        Column holding each observation's budget; attached to ``obs.budget``
+        for the allocation-based hooks (ones when the column is absent, as in
+        :func:`~pybhatlib.models.mdcev._mdcev_forecast.prepare_mdcev_forecast_data`).
 
     Returns
     -------
@@ -217,8 +318,12 @@ def make_mdcev_mixed_design_builder(model: Any):
                 gd[:, k, j] = col(gamma_spec[k, j])
         consumption = np.column_stack([col(a) for a in alternatives])
         price = np.column_stack([col(p) for p in price_cols])
+        budget = (
+            col(budget_col) if budget_col in df.columns
+            else np.ones(n_obs, dtype=np.float64)
+        )
         obs = SimpleNamespace(
-            consumption=consumption, price=price, gamma_design=gd
+            consumption=consumption, price=price, gamma_design=gd, budget=budget
         )
         return DesignData(X=X, obs=obs)
 
@@ -232,6 +337,8 @@ def build_mdcev_mixed_components(
     seed: int = 1234,
     alternative_names: Optional[list[str]] = None,
     draws: Optional[DrawSource] = None,
+    kernel_predict: Optional[KernelPredict] = None,
+    budget_col: str = "tot",
 ) -> MixedPredictComponents:
     """Assemble a :class:`~pybhatlib.mixed._predict.MixedPredictComponents` bundle.
 
@@ -253,6 +360,13 @@ def build_mdcev_mixed_components(
         Output labels; defaults to the model's ``alternatives``.
     draws : DrawSource, optional
         Override the fit-time draw source (e.g. more replications).
+    kernel_predict : KernelPredict, optional
+        Per-draw prediction hook; defaults to the participation-*share* hook
+        (:func:`make_mdcev_mixed_share_predict`). :func:`mdcev_mixed_ate`
+        passes the participation-*rate* hook
+        (:func:`make_mdcev_mixed_participation_predict`).
+    budget_col : str, default "tot"
+        Budget column forwarded to :func:`make_mdcev_mixed_design_builder`.
 
     Returns
     -------
@@ -272,11 +386,14 @@ def build_mdcev_mixed_components(
             "_fitted_layout for a fixed-theta evaluation)."
         )
     est = model._fitted_est
-    hook = make_mdcev_mixed_share_predict(
-        n_draws=n_draws,
-        seed=seed,
-        outside_good_gamma=model.control.outside_good_gamma,
-    )
+    hook = kernel_predict
+    if hook is None:
+        hook = make_mdcev_mixed_share_predict(
+            n_draws=n_draws,
+            seed=seed,
+            outside_good_gamma=model.control.outside_good_gamma,
+            utility=model.control.utility,
+        )
     names = alternative_names or list(model.alternatives)
     return MixedPredictComponents(
         theta=np.asarray(model._fitted_theta, dtype=np.float64),
@@ -287,7 +404,7 @@ def build_mdcev_mixed_components(
         kernel=est.kernel,
         layout=est.layout,
         config=est.config,
-        build_design=make_mdcev_mixed_design_builder(model),
+        build_design=make_mdcev_mixed_design_builder(model, budget_col=budget_col),
         design=est.design,
         kernel_predict=hook,
         alternative_names=names,
@@ -495,6 +612,7 @@ def mdcev_mixed_forecast(
             n_replications=n_replications, seed=seed,
             num_outside=num_outside,
             outside_good_gamma=model.control.outside_good_gamma,
+            utility=model.control.utility,
         )
         acc = alloc if acc is None else acc + alloc
 
@@ -506,6 +624,7 @@ def mdcev_mixed_forecast(
 
 __all__ = [
     "make_mdcev_mixed_share_predict",
+    "make_mdcev_mixed_participation_predict",
     "make_mdcev_mixed_design_builder",
     "build_mdcev_mixed_components",
     "mdcev_mixed_predict",

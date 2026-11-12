@@ -42,9 +42,8 @@ def mdcev_fit():
         "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
     }
     gspec = {
-        "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-        "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-        "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+        "g1": {"alt1": "uno", "alt2": "sero"},
+        "g2": {"alt1": "sero", "alt2": "uno"},
     }
     model = MDCEVModel(data=df, alternatives=alts, utility_spec=uspec,
                        gamma_spec=gspec, control=MDCEVControl(maxiter=8, verbose=0))
@@ -52,7 +51,7 @@ def mdcev_fit():
     nc, nvarm, nvargam = 3, model.utility_spec.shape[1], model.gamma_spec.shape[1]
     N = 20
     X = rng.standard_normal((N, nc, nvarm))
-    Xg = rng.standard_normal((N, nc, nvargam))
+    Xg = rng.standard_normal((N, nc - 1, nvargam))
     price = np.abs(rng.standard_normal((N, nc))) + 0.5
     return res, X, Xg, price
 

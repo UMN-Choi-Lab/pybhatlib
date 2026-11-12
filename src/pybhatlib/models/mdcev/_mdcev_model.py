@@ -77,7 +77,7 @@ class MDCEVModel(BaseModel):
     ...     alternatives=["alt_out", "Esc", "Ho", "Soc", "AR", "Eo"],
     ...     availability=None,
     ...     utility_spec={"ASC_Esc": {...}, ...},
-    ...     gamma_spec={"G_Out": {...}, ...},
+    ...     gamma_spec={"G_Esc": {...}, ...},   # inside goods only
     ...     control=ctrl,
     ... )
     >>> results = model.fit()
@@ -126,12 +126,20 @@ class MDCEVModel(BaseModel):
             self.param_names = param_names or [f"param_{i}" for i in range(utility_spec.shape[1])]
 
         if isinstance(gamma_spec, dict):
+            gamma_alternatives = alternatives[1:] if len(alternatives) > 1 else []
             self.gamma_spec, self.gamma_names = self._spec_dict_to_array(
-                gamma_spec, alternatives
+                gamma_spec, gamma_alternatives
             )
         else:
-            self.gamma_spec = gamma_spec
-            self.gamma_names = gamma_names or [f"gamma_{i}" for i in range(gamma_spec.shape[1])]
+            self.gamma_spec = np.asarray(gamma_spec)
+            if self.gamma_spec.ndim == 2 and self.gamma_spec.shape[0] == len(alternatives):
+                self.gamma_spec = self.gamma_spec[1:, :]
+            self.gamma_names = gamma_names or [f"gamma_{i}" for i in range(self.gamma_spec.shape[1])]
+
+        if self.gamma_spec.ndim == 2:
+            keep = ~np.all(self.gamma_spec == "sero", axis=0)
+            self.gamma_spec = self.gamma_spec[:, keep]
+            self.gamma_names = [name for name, keep_col in zip(self.gamma_names, keep) if keep_col]
 
         # Override with explicit names if provided
         if param_names is not None:
@@ -207,19 +215,17 @@ class MDCEVModel(BaseModel):
         n_obs = dta.shape[0]
 
         # ---- Starting values -----------------------------------------
-        # GAUSS: b = zeros(nvarm,1) | -1000 | zeros(nvargam-1,1) | 0
-        # _max_active pins the outside-good gamma (index nvarm) to zero.
+        # GAUSS: b = zeros(nvarm,1) | zeros(nvargam,1) | 0
+        # The outside-good gamma is never part of the gamma_spec; it is fixed
+        # by MDCEVControl.outside_good_gamma and excluded from optimization.
         if ctrl.startb is not None:
             b0 = np.asarray(ctrl.startb, dtype=np.float64)
         else:
             b0 = np.zeros(nvarm + nvargam + 1, dtype=np.float64)
-            b0[nvarm] = ctrl.outside_good_gamma
 
-        # Active-parameter mask: beta all active, outside-good gamma
-        # fixed, remaining gammas active, log_sigma active.
-        # GAUSS: _max_active = ones(nvarm)|zeros(1)|ones(nvargam-1)|1
+        # Active-parameter mask: beta all active, all gammas active, log_sigma active.
+        # The outside-good gamma never appears in the gamma parameter vector.
         active = np.ones(nvarm + nvargam + 1, dtype=bool)
-        active[nvarm] = False
 
         # ---- Objective and gradient ----------------------------------
         def neg_ll(x_active: NDArray) -> float:
@@ -550,6 +556,10 @@ def _build_data_arrays(
         Column index of observation weights.
     """
     nc       = len(alternatives)
+    gamma_spec = np.asarray(gamma_spec)
+    if gamma_spec.ndim == 2 and gamma_spec.shape[0] == nc:
+        gamma_spec = gamma_spec[1:, :]
+    inside_count = max(0, gamma_spec.shape[0])
     nvarm    = utility_spec.shape[1]
     nvargam  = gamma_spec.shape[1]
     wt_col   = weight_var if weight_var else "uno"
@@ -580,7 +590,7 @@ def _build_data_arrays(
     )
     ivg = np.array(
         [col_idx[gamma_spec[k, j]]
-         for j in range(nvargam) for k in range(nc)],
+         for j in range(nvargam) for k in range(inside_count)],
         dtype=int,
     )
 

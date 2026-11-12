@@ -2,11 +2,14 @@
 
 Thin wrapper over the shared mixed / panel ATE machinery
 (:func:`pybhatlib.mixed._predict.mixed_ate`).  The mixed MDCEV ATE lifts the
-shipped fixed-coefficient MDCEV participation prediction
-(:func:`pybhatlib.models.mdcev._mdcev_forecast.mdcev_predict`) over the mixing
-draws and differences the sample-averaged shares between counterfactual
-scenarios, reusing the *same* mixing draws throughout so the ATE isolates the
-covariate effect.
+shipped fixed-coefficient MDCEV allocation simulator
+(:func:`pybhatlib.models.mdcev._mdcev_forecast.mdcev_forecast`, via
+:func:`~pybhatlib.models.mdcev_mixed._mdcev_mixed_forecast.make_mdcev_mixed_participation_predict`)
+over the mixing draws and differences the sample-averaged participation rates
+-- the share of simulated allocations with positive consumption, the same
+quantity the fixed-coefficient :func:`~pybhatlib.models.mdcev._mdcev_ate.mdcev_ate`
+reports -- between counterfactual scenarios, reusing the *same* mixing draws
+throughout so the ATE isolates the covariate effect.
 
 The result is a :class:`~pybhatlib.mixed._predict.MixedATEResult`, which is an
 :class:`~pybhatlib.models._ate_common.ATEResultMixin` exposing the harmonized
@@ -33,6 +36,7 @@ from pybhatlib.mixed._reparam import ReportingSpace
 from pybhatlib.models._ate_common import ScenarioSpec
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_forecast import (
     build_mdcev_mixed_components,
+    make_mdcev_mixed_participation_predict,
 )
 from pybhatlib.vecup._panel import PanelIndex
 
@@ -47,13 +51,16 @@ def mdcev_mixed_ate(
     alternative_names: Optional[list[str]] = None,
     draws: Optional[DrawSource] = None,
     xp=None,
+    budget_col: str = "tot",
 ) -> MixedATEResult:
     """Draw-integrated ATE across counterfactual scenarios for a mixed MDCEV model.
 
-    Computes baseline participation shares (observed covariates) and, for each
-    scenario, the draw-integrated shares under that scenario's covariate
-    overrides, delegating to the shared
-    :func:`~pybhatlib.mixed._predict.mixed_ate`.
+    Computes baseline participation rates (observed covariates) and, for each
+    scenario, the draw-integrated participation rates under that scenario's
+    covariate overrides, delegating to the shared
+    :func:`~pybhatlib.mixed._predict.mixed_ate`. "Shares" are participation
+    rates -- the fraction of simulated allocations with positive consumption --
+    exactly as in the fixed-coefficient :func:`~pybhatlib.models.mdcev.mdcev_ate`.
 
     Parameters
     ----------
@@ -66,7 +73,7 @@ def mdcev_mixed_ate(
         Scenario specification, normalised via
         :func:`~pybhatlib.models._ate_common.scenarios_to_dict`.
     n_draws : int, default 1000
-        Monte-Carlo error draws per observation.
+        Allocation replications per observation (Monte-Carlo error draws).
     seed : int, default 1234
         Monte-Carlo seed (shared across scenarios and MSL replications).
     alternative_names : list of str, optional
@@ -75,6 +82,8 @@ def mdcev_mixed_ate(
         Override the fit-time mixing-draw source (shared across scenarios).
     xp : backend, optional
         Array backend used to wrap the result arrays. Defaults to NumPy.
+    budget_col : str, default "tot"
+        Budget column of ``data`` (ones when absent), as in ``mdcev_ate``.
 
     Returns
     -------
@@ -82,8 +91,16 @@ def mdcev_mixed_ate(
         Baseline ``predicted_shares`` plus ``shares_per_scenario`` and the
         ``.comparison()`` / ``.summary()`` surface.
     """
+    hook = make_mdcev_mixed_participation_predict(
+        n_replications=n_draws,
+        seed=seed,
+        num_outside=1,
+        outside_good_gamma=model.control.outside_good_gamma,
+        utility=model.control.utility,
+    )
     components = build_mdcev_mixed_components(
-        model, n_draws=n_draws, seed=seed, alternative_names=alternative_names
+        model, n_draws=n_draws, seed=seed, alternative_names=alternative_names,
+        kernel_predict=hook, budget_col=budget_col,
     )
     data_use = model.data if data is None else data
     return mixed_ate(
@@ -158,6 +175,7 @@ def mdcev_mixed_ate_from_params(
     alternative_names: Optional[list[str]] = None,
     draws: Optional[DrawSource] = None,
     xp=None,
+    budget_col: str = "tot",
 ) -> MixedATEResult:
     """Draw-integrated mixed-MDCEV ATE from externally supplied reporting params.
 
@@ -219,6 +237,7 @@ def mdcev_mixed_ate_from_params(
         alternative_names=alternative_names,
         draws=draws,
         xp=xp,
+        budget_col=budget_col,
     )
 
 

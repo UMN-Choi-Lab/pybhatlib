@@ -93,17 +93,19 @@ utility_spec = {
     "Lin_Eo": {"alt_out": "sero", "Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "Lin"},
     "Min_Eo": {"alt_out": "sero", "Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "Min"},
 }
-# Satiation (gamma) utility: one gamma per good plus a few male interactions.
+# Satiation (gamma) utility: one gamma per INSIDE good plus a few male
+# interactions. The outside good has no gamma parameter -- its satiation is
+# pinned to MDCEVControl.outside_good_gamma (GAUSS ``u[.,1] = -1000``) -- so
+# the spec lists the inside goods only.
 gamma_spec = {
-    "G_Out":{"alt_out": "uno", "Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "sero"},
-    "G_Esc":{"alt_out": "sero", "Esc": "uno", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "sero"},
-    "G_ho": {"alt_out": "sero", "Esc": "sero", "Ho": "uno", "Soc": "sero", "AR": "sero", "Eo": "sero"},
-    "G_Soc":{"alt_out": "sero", "Esc": "sero", "Ho": "sero", "Soc": "uno", "AR": "sero", "Eo": "sero"},
-    "G_AR": {"alt_out": "sero", "Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "uno", "Eo": "sero"},
-    "G_Eo": {"alt_out": "sero", "Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "uno"},
-    "male_ho": {"alt_out": "sero", "Esc": "sero", "Ho": "gend1", "Soc": "sero", "AR": "sero", "Eo": "sero"},
-    "male_Soc": {"alt_out": "sero", "Esc": "sero", "Ho": "sero", "Soc": "gend1", "AR": "sero", "Eo": "sero"},
-    "male_Eo": {"alt_out": "sero", "Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "gend1"},
+    "G_Esc":{"Esc": "uno", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "sero"},
+    "G_ho": {"Esc": "sero", "Ho": "uno", "Soc": "sero", "AR": "sero", "Eo": "sero"},
+    "G_Soc":{"Esc": "sero", "Ho": "sero", "Soc": "uno", "AR": "sero", "Eo": "sero"},
+    "G_AR": {"Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "uno", "Eo": "sero"},
+    "G_Eo": {"Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "uno"},
+    "male_ho": {"Esc": "sero", "Ho": "gend1", "Soc": "sero", "AR": "sero", "Eo": "sero"},
+    "male_Soc": {"Esc": "sero", "Ho": "sero", "Soc": "gend1", "AR": "sero", "Eo": "sero"},
+    "male_Eo": {"Esc": "sero", "Ho": "sero", "Soc": "sero", "AR": "sero", "Eo": "gend1"},
 }
 
 print(f"  utility_spec: {len(utility_spec)} baseline coefficients")
@@ -178,25 +180,25 @@ print(f"\n  Number of reported parameters : {len(results.b_reported)}")
 # GAUSS cross-check. The validated GAUSS estimates are hard-coded in the
 # Bhat-team forecasting driver (the `bmdcev` vector inside
 # "Gauss Files and Comparison/MDCEV Traditional/Forecasting TradMDCEV.gss"),
-# which uses exactly this Workshop_SCAG estimation result.
+# which uses exactly this Workshop_SCAG estimation result. The GAUSS vector
+# carries a -1000 placeholder for the pinned outside-good gamma; pybhatlib has
+# no such parameter, so that entry is omitted here.
 print("\n  GAUSS cross-check (bmdcev vector from Forecasting TradMDCEV.gss):")
 gauss_bmdcev = {
     "ASC_Esc": -7.39239, "ASC_ho": -6.42058, "ASC_Soc": -7.44907,
     "ASC_AR": -7.85216, "ASC_Eo": -7.65862, "male_Esc": -0.16493,
     "male_ho": -0.40753, "male_Soc": 0.30726, "Lin_Esc": -0.21468,
     "Lin_ho": -0.47719, "Lin_Eo": 0.15036, "Min_Eo": 0.19853,
-    "G_Out": -1000.0, "G_Esc": 3.21384, "G_ho": 5.77560,
+    "G_Esc": 3.21384, "G_ho": 5.77560,
     "G_Soc": 5.17502, "G_AR": 2.71833, "G_Eo": 3.35770,
     "male_ho ": -0.76811, "male_Soc ": 0.30558, "male_Eo": 0.21766,
     "sigma": 0.60838,
 }
+assert len(gauss_bmdcev) == len(results.b_reported)
 print(f"  {'Parameter':<12}{'PyBhatLib':>12}{'GAUSS':>12}{'|diff|':>10}")
 print("  " + "-" * 46)
 for name, est, g in zip(results.param_names, results.b_reported, gauss_bmdcev.values()):
-    if g == -1000.0:
-        print(f"  {name:<12}{est:>12.4f}{g:>12.1f}{'(fixed)':>10}")
-    else:
-        print(f"  {name:<12}{est:>12.4f}{g:>12.5f}{abs(est - g):>10.5f}")
+    print(f"  {name:<12}{est:>12.4f}{g:>12.5f}{abs(est - g):>10.5f}")
 
 print(f"\n  PyBhatLib LL : {results.loglik * results.n_obs:.3f}")
 print("  (no published-table LL for this dataset; GAUSS reports the same")
