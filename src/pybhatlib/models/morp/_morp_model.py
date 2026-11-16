@@ -190,7 +190,10 @@ class MORPModel(BaseModel):
                 print("  Error structure: Heteroscedastic only")
             else:
                 print("  Error structure: Full covariance")
-
+        
+        # Build parameter names
+        param_names = self._build_param_names()
+        
         # GAUSS-parity dispatch: match BHATLIB's ``cdorrectmvn`` (gradients
         # mvn.src lines 712-721), which routes K=2 → cdfbvn, K=3 → cdftvn,
         # K=4 → cdfqvn (exact closed-form CDFs) and only falls back to the
@@ -253,6 +256,7 @@ class MORPModel(BaseModel):
             tol=self.control.tol,
             verbose=self.control.verbose,
             jac=True,
+            param_names=param_names,
         )
 
         # GAUSS-parity LL re-evaluation: substitute the exact CDF value
@@ -292,9 +296,6 @@ class MORPModel(BaseModel):
 
         theta_hat = result.x
         hess_inv = result.hess_inv
-
-        # Build parameter names
-        param_names = self._build_param_names()
 
         # Compute all three SE estimators at the converged MLE so summary()
         # can print the diagnostic block. Each may be None on failure

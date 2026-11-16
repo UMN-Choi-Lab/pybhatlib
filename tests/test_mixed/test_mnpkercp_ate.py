@@ -94,6 +94,9 @@ class TestCollapseToFixedCoefMNP:
         assert spec.nrndcoef == 2
         assert spec.nrndtcor == 0
         assert layout.n_rcor == 0
+        optimizer_names = model._optimizer_param_names(spec, layout)
+        assert len(optimizer_names) == layout.n_theta
+        assert not any(name.startswith("corr_theta[") for name in optimizer_names)
         state = model._build_estimator(
             spec, layout, PanelIndex.from_ids(model.person_ids)
         ).kernel.prepare(np.zeros(layout.n_theta), layout)

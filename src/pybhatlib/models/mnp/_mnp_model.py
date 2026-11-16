@@ -738,6 +738,7 @@ class MNPModel(BaseModel):
             se_bhhh=se_by_method.get("bhhh"),
             se_hessian=se_by_method.get("hessian"),
             se_sandwich=se_by_method.get("sandwich"),
+            alternatives=list(self.alternatives),
         )
 
     # ------------------------------------------------------------------
@@ -859,12 +860,16 @@ class MNPModel(BaseModel):
 
         if not self.control.iid:
             dim = self.n_alts - 1
-            for i in range(dim):
-                names.append(f"scale{i + 1:02d}")
+            kernel_names = [
+                            f"ker[{self.alternatives[d + 1]}-{self.alternatives[0]}]"
+                            for d in range(dim)
+                        ]
+            for i in range(dim-1):
+                names.append(f"ker[{self.alternatives[i + 2]}-{self.alternatives[0]}]")
             if not self.control.heteronly:
                 for i in range(dim):
                     for j in range(i + 1, dim):
-                        names.append(f"parker{i + 1:02d}")
+                        names.append(f"corr[{kernel_names[i]},{kernel_names[j]}]")
 
         if self.control.mix and self.ranvar_indices is not None:
             n_rand = len(self.ranvar_indices)
@@ -1175,17 +1180,20 @@ class MNPModel(BaseModel):
         dim = self.n_alts - 1
 
         if not self.control.iid:
-            # Parker (correlations)
+            dim = self.n_alts - 1
+            kernel_names = [
+                f"ker[{self.alternatives[d + 1]}-{self.alternatives[0]}]"
+                for d in range(dim)
+            ]
+
             if not self.control.heteronly:
-                idx = 0
                 for i in range(dim):
                     for j in range(i + 1, dim):
-                        idx += 1
-                        names.append(f"parker{idx:02d}")
+                        names.append(f"corr[{kernel_names[i]},{kernel_names[j]}]")
 
-            # All I-1 kernel scales (sum of squares == 1); none absorbed.
-            for i in range(dim):
-                names.append(f"scale{i + 1:02d}")
+            for i, kernel_name in enumerate(kernel_names):
+                fixed = " (fixed)" if i == 0 else ""
+                names.append(f"kerscal[{kernel_name[4:-1]}]{fixed}")
 
         if self.control.mix and self.ranvar_indices is not None:
             n_rand = len(self.ranvar_indices)
@@ -1496,7 +1504,7 @@ class MNPModel(BaseModel):
                 hasattr(self.control, "active_mask")
                 and self.control.active_mask is not None
             ):
-                G[:, ~self.control.active_mask] = 0.0
+                G[:, ~active_mask] = 0.0
 
             B = G.T @ G
 

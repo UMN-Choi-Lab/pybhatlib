@@ -11,7 +11,7 @@ over ``nrndtot = nrndcoef + (nc - 1)`` random elements), the parameter layout in
 GAUSS ``b`` order ``[beta | rcor | scal | kern | lam]`` (the kernel-scale block
 interleaves **between** ``scal`` and ``lam``), the random-coefficient pipeline,
 the MVNCD kernel and :class:`~pybhatlib.mixed._engine.MixedMSLEstimator`; runs
-``scipy.optimize.minimize(jac=True)``; and performs a reporting-space BHHH
+the shared SciPy optimizer; and performs a reporting-space BHHH
 standard-error pass.
 
 Copula / gradient scope
@@ -41,7 +41,6 @@ import time
 
 import numpy as np
 import pandas as pd
-import scipy.optimize as sopt
 from numpy.typing import NDArray
 from scipy.special import ndtr
 
@@ -57,6 +56,7 @@ from pybhatlib.models._base import BaseModel
 from pybhatlib.models.mnpkercp._mnpkercp_control import MNPKerCPControl
 from pybhatlib.models.mnpkercp._mnpkercp_kernel import MvncdKernel
 from pybhatlib.models.mnpkercp._mnpkercp_results import MNPKerCPResults
+from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.utils._logistic import logitmod
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
@@ -393,6 +393,32 @@ class MNPKerCPModel(BaseModel):
             )
         return names
 
+    def _optimizer_param_names(
+        self, spec: MixingSpec, layout: ParamLayout
+    ) -> list[str]:
+        """Names aligned to the possibly restricted optimizer-space vector."""
+        rc_names = [self.var_names[int(p)] for p in spec.mixpos]
+        joint_names = list(rc_names) + [
+            f"ker[{self.alternatives[d + 1]}-{self.alternatives[0]}]"
+            for d in range(spec.kernel_dim)
+        ]
+        correlations = [
+            f"corr_theta[{joint_names[i]},{joint_names[j]}]"
+            for i, j in spec.active_corr_pairs
+        ]
+        scales = [f"scal_theta[{name}]" for name in rc_names]
+        kernel_scales = [
+            f"kern_theta[{self.alternatives[i + 2]}-{self.alternatives[0]}]"
+            for i in range(spec.n_kern)
+        ]
+        lambdas = [f"lam_theta[{name}]" for name in rc_names]
+        names = list(self.var_names) + correlations + scales + kernel_scales + lambdas
+        if len(names) != layout.n_theta:
+            raise RuntimeError(
+                "MNPKerCP optimizer names do not cover the estimation-space layout"
+            )
+        return names
+
     # ------------------------------------------------------------------
     # fit
     # ------------------------------------------------------------------
@@ -447,28 +473,16 @@ class MNPKerCPModel(BaseModel):
 
         method_map = {"bfgs": "BFGS", "lbfgsb": "L-BFGS-B", "newton": "BFGS"}
         method = method_map.get(ctrl.optimizer, "BFGS")
-        options: dict = {"maxiter": ctrl.maxiter, "gtol": ctrl.tol,
-                         "disp": ctrl.verbose >= 2}
-        if method == "L-BFGS-B":
-            options["ftol"] = ctrl.tol
-
-        iter_count = [0]
-
-        def _iter_callback(theta_k: NDArray) -> None:
-            if ctrl.verbose < 2:
-                return
-            obj_val, grad = est.objective(theta_k)
-            grad_norm = float(np.linalg.norm(np.asarray(grad, dtype=np.float64)))
-            print(
-                f"  iter={iter_count[0]:4d}  f={float(obj_val):+.12f}  "
-                f"||g||={grad_norm:.3e}"
-            )
-            print(theta_k)
-            iter_count[0] += 1
-
-
-        res = sopt.minimize(
-            est.objective, theta0, jac=True, method=method, options=options, callback = _iter_callback if ctrl.verbose >= 2 else None,
+        res = minimize_scipy(
+            est.objective,
+            theta0,
+            jac=True,
+            method=method,
+            maxiter=ctrl.maxiter,
+            tol=ctrl.tol,
+            ftol=ctrl.tol if method == "L-BFGS-B" else None,
+            verbose=ctrl.verbose,
+            param_names=self._optimizer_param_names(spec, layout),
         )
         theta_hat = np.asarray(res.x, dtype=np.float64)
 
@@ -477,7 +491,7 @@ class MNPKerCPModel(BaseModel):
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
         grad_norm = float(np.linalg.norm(g_sum))
-        converged = bool(res.success) or grad_norm < ctrl.tol_check
+        converged = bool(res.converged) or grad_norm < ctrl.tol_check
 
         params_report = self._to_reporting(theta_hat, spec, layout, est.space)
         if ctrl.want_covariance:
@@ -508,7 +522,7 @@ class MNPKerCPModel(BaseModel):
         p_value = 2.0 * (1.0 - ndtr(np.abs(t_stat)))
 
         t_elapsed = (time.time() - t_start) / 60.0
-        n_iter = int(getattr(res, "nit", 0))
+        n_iter = res.n_iter
 
         if ctrl.verbose >= 1:
             msg = "converged" if converged else "NOT converged"
@@ -544,7 +558,7 @@ class MNPKerCPModel(BaseModel):
             return_code=0 if converged else 1,
             control=ctrl,
             data_path=self.data_path,
-            message=getattr(res, "message", None),
+            message=res.message,
         )
 
     # ------------------------------------------------------------------

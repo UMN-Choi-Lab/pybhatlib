@@ -59,6 +59,8 @@ def minimize_scipy(
     tol: float = 1e-5,
     verbose: int = 1,
     jac: bool = True,
+    hess=None,
+    ftol: float | None = None,
     bounds=None,
     param_names: list[str] | None = None,
 ) -> OptimResult:
@@ -72,7 +74,7 @@ def minimize_scipy(
     x0 : ndarray
         Initial parameter vector.
     method : str
-        "BFGS", "L-BFGS-B", or "Nelder-Mead".
+        "BFGS", "L-BFGS-B", "Newton-CG", or "Nelder-Mead".
     maxiter : int
         Maximum iterations.
     tol : float
@@ -82,6 +84,10 @@ def minimize_scipy(
         3=per-iteration NLL + parameter/gradient/rel-gradient table.
     jac : bool
         Whether func returns (f, grad) tuple.
+    hess : callable or None
+        Optional Hessian function, used by methods such as "Newton-CG".
+    ftol : float or None
+        Optional function tolerance for "L-BFGS-B", passed alongside ``tol``.
     bounds : list of tuples or None
         Parameter bounds for L-BFGS-B.
     param_names : list of str or None
@@ -95,6 +101,11 @@ def minimize_scipy(
     """
     x0 = np.asarray(x0, dtype=np.float64)
     n_params = len(x0)
+    if param_names is not None and len(param_names) != n_params:
+        raise ValueError(
+            f"param_names has length {len(param_names)}, but the optimizer "
+            f"vector has length {n_params}"
+        )
 
     iteration_count = [0]
     start_time = time.time()
@@ -114,11 +125,12 @@ def minimize_scipy(
 
     def _print_param_table(xk, fval, grad):
         """Print per-iteration parameter/gradient/rel-gradient table (verbose=3)."""
-        # Build labels: use param_names if available, else theta[k]
-        if param_names is not None and len(param_names) == len(xk):
-            labels = param_names
-        else:
-            labels = [f"theta[{k}]" for k in range(len(xk))]
+        # Names are validated against x0 before optimization; keep a fallback
+        # for the public wrapper's optional-name behavior.
+        labels = (
+            param_names if param_names is not None
+            else [f"theta[{k}]" for k in range(len(xk))]
+        )
 
         # Relative gradient: |g_k| / max(|x_k|, 1)
         rel_grad = np.abs(grad) / np.maximum(np.abs(xk), 1.0)
@@ -135,6 +147,7 @@ def minimize_scipy(
             print(
                 f"  {lb:<{col_w_name}s}  {v:>+14.6f}  {g:>+14.6f}  {rg:>14.6f}"
             )
+        print( " " )
 
     def callback(xk):
         iteration_count[0] += 1
@@ -192,18 +205,24 @@ def minimize_scipy(
 
         chosen_func = scipy_func_nojac
 
-    _options = {"maxiter": maxiter, "gtol": tol, "disp": False}
+    tol_key = "xtol" if method == "Newton-CG" else "gtol"
+    _options = {"maxiter": maxiter, tol_key: tol, "disp": False}
+    if method == "L-BFGS-B" and ftol is not None:
+        _options["ftol"] = ftol
 
     def _minimize_from(x_init):
-        return minimize(
-            chosen_func,
-            x_init,
-            method=method,
-            jac=jac,
-            options=_options,
-            bounds=bounds,
-            callback=callback,
-        )
+        minimize_kwargs = {
+            "fun": chosen_func,
+            "x0": x_init,
+            "method": method,
+            "jac": jac,
+            "options": _options,
+            "bounds": bounds,
+            "callback": callback,
+        }
+        if hess is not None:
+            minimize_kwargs["hess"] = hess
+        return minimize(**minimize_kwargs)
 
     result = _minimize_from(x0)
 

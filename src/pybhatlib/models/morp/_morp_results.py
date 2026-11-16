@@ -267,6 +267,26 @@ class MORPResults:
                 "  consider a richer covariance specification or se_method='sandwich'."
             )
 
+        # Correlation matrix of parameter estimates, derived from cov_matrix.
+        if self.cov_matrix is not None:
+            n_params = min(
+                len(self.param_names),
+                self.cov_matrix.shape[0],
+                self.cov_matrix.shape[1],
+            )
+            if n_params:
+                cov = self.cov_matrix[:n_params, :n_params]
+                se = np.sqrt(np.maximum(np.diag(cov), 0.0))
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    param_corr = cov / np.outer(se, se)
+                param_corr = np.nan_to_num(param_corr, nan=0.0)
+
+                lines.append("")
+                lines.append("  Correlation matrix of the parameters")
+                for i in range(n_params):
+                    row_vals = [f"{param_corr[i, j]:>7.3f}" for j in range(n_params)]
+                    lines.append("  " + " ".join(row_vals)) 
+
         lines.append("")
         lines.append(f"  Number of iterations   {self.n_iter:>10d}")
         lines.append(f"  Minutes to convergence {self.convergence_time:>10.5f}")
