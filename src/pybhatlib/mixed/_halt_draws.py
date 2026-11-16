@@ -129,6 +129,9 @@ def gethalton(
     Returns an (nobs*nrep) x ndim matrix: the first `nrep` rows correspond
     to the first observation, the next `nrep` rows to the second
     observation, and so on (same convention as the original).
+
+    The first 10 Halton points are always skipped automatically, once per
+    generated sequence. This fixed burn-in matches the GAUSS implementation.
     """
     if ndim > 48:
         raise ValueError("gethalton: ndim cannot exceed 48 (only 48 primes are tabulated).")
@@ -192,6 +195,10 @@ class ExplicitHaltonDrawSource:
     position in the scrambled Halton sequence (matching GAUSS's
     "first nrep rows = individual 1" layout), reshaped to the DrawSource
     contract `(n_rep, n_ind, n_rnd)`.
+
+    The first 10 Halton points are always skipped automatically, once per
+    generated sequence, before assigning draws to individuals. This burn-in
+    is fixed and is not a control option.
 
     Determinism: with the default ``corbreak=1, rantuff=0, rancolumn=0`` the
     draws are fully deterministic -- identical for every run and every

@@ -10,6 +10,10 @@ import pytest
 
 from pybhatlib.mixed._draws import ScipyHaltonDrawSource
 from pybhatlib.mixed._halt_draws import ExplicitHaltonDrawSource, gethalton
+from pybhatlib.models.mdcev_mixed import MDCEVMixedControl
+from pybhatlib.models.mixmnl import MixMNLControl
+from pybhatlib.models.mnpkercp import MNPKerCPControl
+from pybhatlib.models.morp_flex import MORPFlexControl
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "mixed" / "halton" / "gethalton_baseline.npz"
 CASES = [(5, 4, 3, 1), (7, 10, 5, 0), (4, 5, 16, 1), (3, 4, 48, 0)]  # nrep, nobs, ndim, corbreak
@@ -82,12 +86,25 @@ def test_run_gt_1_warns_when_deterministic():
         ExplicitHaltonDrawSource().draws(3, 2, 4, run=2)
 
 
-def test_invalid_draw_method_raises():
+@pytest.mark.parametrize("control_class", [
+    MixMNLControl, MNPKerCPControl, MORPFlexControl, MDCEVMixedControl,
+])
+def test_invalid_draw_method_raises(control_class):
+    with pytest.raises(ValueError, match="draw_method"):
+        control_class(draw_method="bogus")
+
+
+@pytest.mark.parametrize("control_class", [
+    MixMNLControl, MNPKerCPControl, MORPFlexControl, MDCEVMixedControl,
+])
+@pytest.mark.parametrize("draw_method", ["scipy", "explicit"])
+def test_valid_draw_method_constructs(control_class, draw_method):
+    assert control_class(draw_method=draw_method).draw_method == draw_method
+
+
+def test_explicit_draw_source_selected():
     from pybhatlib.models.mixmnl._mixmnl_model import MixMNLModel
 
     model = object.__new__(MixMNLModel)
-    model.control = SimpleNamespace(draw_method="bogus", draw_seed=1)
-    with pytest.raises(ValueError, match="draw_method"):
-        model._make_draw_source(2, 5, 3)
     model.control = SimpleNamespace(draw_method="explicit", draw_seed=1)
     assert isinstance(model._make_draw_source(2, 5, 3), ExplicitHaltonDrawSource)
