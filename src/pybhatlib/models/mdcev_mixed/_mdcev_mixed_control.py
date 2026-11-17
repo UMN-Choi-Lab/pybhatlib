@@ -112,6 +112,11 @@ class MDCEVMixedControl:
         ``[beta | gamma | rcor | kern | scal | lam]`` order). If None, defaults
         to zeros. The outside-good gamma is supplied by ``outside_good_gamma``
         and is not part of the parameter vector.
+        The ``kern`` entry is ``log(sigma)``, not the natural ``sigma`` stored
+        in ``MDCEVMixedResults.params`` and accepted by
+        ``mdcev_mixed_ate_from_params``. A zero kernel start therefore means
+        ``sigma = 1``. Do not pass the reported vector directly as ``startb``:
+        the other transformed blocks also require optimizer-space values.
     """
 
     utility: Literal["trad", "linear"] = "trad"

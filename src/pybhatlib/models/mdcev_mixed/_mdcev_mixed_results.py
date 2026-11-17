@@ -100,10 +100,16 @@ class MDCEVMixedResults:
     params : NDArray
         Optimised parameter vector in *reporting* space, shape (n_params,).
         Layout ``[beta | gamma | rcor | kern | scal | lam]``: baseline-utility
-        coefficients, inside-good translation (``gamma``) parameters, random-coefficient
-        correlation entries, the natural MDCEV kernel error scale ``sigma``, the random-coefficient
-        scale (std-dev) vector, and the Yeo-Johnson ``lambda`` values in
-        ``(0, 2)``.
+        coefficients, inside-good translation (``gamma``) parameters,
+        random-coefficient correlation entries, the natural MDCEV kernel error
+        scale ``sigma``, the random-coefficient scale (std-dev) vector, and the
+        Yeo-Johnson ``lambda`` values in ``(0, 2)``.
+        The kernel-scale entry is now reported as natural ``sigma`` rather
+        than ``log(sigma)``. Older saved reporting vectors must exponentiate
+        that entry before use with the current external-estimate ATE helper;
+        also align their layout with the inside-good-only gamma block.
+        This does not change ``control.startb``, which still requires
+        optimizer-space values, including ``log(sigma)`` in the kernel slot.
     se : NDArray
         Standard errors aligned with ``params``.
     t_stat : NDArray
@@ -210,6 +216,9 @@ class MDCEVMixedResults:
         params : ndarray, shape (n_params,)
             Parameter estimates, in the model's reporting-space layout
             ``[beta | gamma | rcor | kern | scal | lam]``.
+            The ``kern`` entry is natural ``sigma``, not ``log(sigma)``;
+            ``gamma`` contains inside-good coefficients only. Older saved
+            reporting vectors require conversion to this convention.
         param_names : list[str] or None
             Names for each element of *params*.  Defaults to
             ``["p1", "p2", ...]`` when not provided.
