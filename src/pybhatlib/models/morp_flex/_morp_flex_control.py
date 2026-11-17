@@ -58,9 +58,9 @@ class MORPFlexControl:
         Kernel-scale reparameterization.  MORP fixes ``wker = ones`` (GAUSS
         line 617), so there is no free kernel-scale block (``"none"`` only).
     n_rep : int
-        Number of MSL replications (GAUSS ``nrep``).
+        Number of MSL replications (GAUSS ``nrep``), default 125.
     intordn1 : int
-        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``).
+        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``), default 92.
     spher : bool
         Spherical (True) vs radial (False) correlation-Cholesky
         parameterization.  Only the radial path is implemented downstream.
@@ -68,10 +68,10 @@ class MORPFlexControl:
         Scaling constant in ``newcholparmscaled`` (GAUSS ``scal``).
     floor_pcomp : float
         Per-observation kernel-probability floor applied before the log
-        (GAUSS ``w1``).
+        (GAUSS ``w1``), default ``1e-10``.
     floor_z : float
         Per-person simulated-probability floor after averaging over draws
-        (GAUSS ``w2``).
+        (GAUSS ``w2``), default ``1e-100``.
     draw_method : {"scipy", "explicit"}
         Halton source; defaults to "scipy". Both sources always automatically
         skip the first 10 Halton points once per generated sequence, before
@@ -138,8 +138,8 @@ class MORPFlexControl:
     intordn1: int = 92
     spher: bool = False
     scal: float = 1.0
-    floor_pcomp: float = 1e-4
-    floor_z: float = 1e-4
+    floor_pcomp: float = 1e-10
+    floor_z: float = 1e-100
     draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------

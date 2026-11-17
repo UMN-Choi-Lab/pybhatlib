@@ -58,10 +58,9 @@ class MDCEVMixedControl:
         Fixed satiation value forced on the outside good (GAUSS
         ``u[.,1] = -1000``); passed through to the kernel's MDCEV control.
     n_rep : int
-        Number of MSL replications (GAUSS ``nrep``, default 10 for the SCAG
-        driver).
+        Number of MSL replications (GAUSS ``nrep``), default 125.
     intordn1 : int
-        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``).
+        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``), default 92.
     spher : bool
         Spherical (True) vs radial (False) correlation-Cholesky parameterization.
         Only the radial path is implemented downstream.
@@ -131,8 +130,8 @@ class MDCEVMixedControl:
     intordn1: int = 92
     spher: bool = False
     scal: float = 1.0
-    floor_pcomp: float = 1e-4
-    floor_z: float = 1e-4
+    floor_pcomp: float = 0.0
+    floor_z: float = 0.0
     draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------
