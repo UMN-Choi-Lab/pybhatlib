@@ -7,6 +7,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **Mixed models (MixMNL, MNPKerCP, MORPFlex, MDCEVMixed) stop on GAUSS's
+  relative-gradient rule.** `control.tol` is now MaxLik's `gradtol`
+  (default `1e-5`, was a scipy `gtol` of `1e-8` on the summed -LL): the fit
+  stops once `max|g|·max(|x|,1)/max(|f|,1)` of the per-individual mean -LL
+  falls below it. The BFGS path is unchanged; only the stop moves. Before,
+  the absolute gtol sat below the simulation noise floor, so most fits ended in
+  a line-search "precision loss" failure. Now they stop cleanly, in about half
+  the evaluations, at the same optimum. A line-search stop is
+  reported as converged only within 10× of `tol` (was a 0.1 guard), and
+  L-BFGS-B no longer receives `ftol=tol`, which ended fits early. Requires
+  `scipy>=1.11`.
 - **MNP random-coefficient and mixture coordinates/reporting change together
   with scaling in #71.**
   - Full random-coefficient covariance optimizer blocks now contain radial
