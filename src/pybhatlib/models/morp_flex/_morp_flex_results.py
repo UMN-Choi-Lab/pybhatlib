@@ -127,9 +127,9 @@ class MORPFlexResults(FitMetricsMixin):
         Mean simulated log-likelihood (per individual).
     loglik_constants, loglik_zero : float
         Mean independent empirical-share and uniform null log-likelihoods,
-        normalized like ``loglik``. Shares are conditional on the available
-        choice set; ordinal dimensions and panel occasions are independent
-        in these benchmarks, rather than restricted fits of the full kernel.
+        normalized like ``loglik``. LL(C) is the analytic independent
+        threshold-only benchmark, not a correlated MORP null fit. Category
+        dimensions and panel occasions are independent in these benchmarks.
     average_correct_probability : float
         Arithmetic mean fitted probability of the observed outcome (the joint
         category combination for ordinal models). In panels, average across
@@ -195,6 +195,8 @@ class MORPFlexResults(FitMetricsMixin):
     loglik_constants: float = np.nan
     loglik_zero: float = np.nan
     n_free_params: int = -1
+    n_constants_params: int = -1
+    """Parameter count of the unmixed LL(C) baseline; -1 when unavailable."""
     average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:

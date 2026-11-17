@@ -570,11 +570,13 @@ class MNPKerCPModel(BaseModel):
         ll_c, ll_0 = baseline_loglikelihoods(
             self.y, [self.n_alts], availability=self.avail,
             row_to_person=panel.row_to_person, person_weights=est.weightind,
+            family="mnp",
         )
         return MNPKerCPResults(
             mixing_summary=mixing_summary,
             loglik_constants=ll_c, loglik_zero=ll_0,
             n_free_params=int(theta_hat.size),
+            n_constants_params=self.n_alts - 1,
             average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,
