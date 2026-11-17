@@ -364,13 +364,14 @@ def _assert_bhhh_se_parity(
     """Validate the GAUSS first-differenced-variance=1 kernel against the
     published BHATLIB Table-2 values.
 
-    pybhatlib reports on the GAUSS homogeneous kernel convention: the first
+    This test selects the GAUSS homogeneous kernel convention: the first
     differenced error variance is pinned to 1, so ``scale01 == 1.0`` exactly (a
     FIXED reporting row with SE = NaN) and the remaining scale (``scale02``) is
     the relative variance of alt-3's differenced error term — exactly what the
     published table reports as its "scale01" entry. Under this convention the
     reported coefficients equal the published ones DIRECTLY (no un-normalization
-    factor; the old sum-of-squared-scales transform is gone):
+    factor, because the control explicitly selects "first" rather than the
+    library's "sumsq" default):
     beta/parker/CovCOv/segunpar == published verbatim, and published "scale01"
     == reported ``scale02``. SE *validity* (positive, finite) is asserted for
     each estimated parameter; exact SE parity for IID is in

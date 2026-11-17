@@ -136,18 +136,30 @@ def test_mnp_from_estimates_iid_roundtrip(scaling):
     np.testing.assert_allclose(a_par.predicted_shares, a_ref.predicted_shares, atol=1e-12)
 
 
-def test_mnp_from_estimates_iid_beta_is_in_control_scaling_units():
+@pytest.mark.parametrize("n_alts", [2, 3, 4])
+@pytest.mark.parametrize("use_default_control", [False, True])
+def test_mnp_from_estimates_iid_beta_is_in_control_scaling_units(
+    n_alts, use_default_control,
+):
     """IID has no covariance to infer scale from: GAUSS (first) betas map to
     sumsq betas divided by sqrt(I-1)."""
-    from pybhatlib.models.mnp import MNPControl, mnp_ate_from_params
+    from pybhatlib.models.mnp import MNPControl, MNPResults, mnp_ate_from_params
 
-    X = np.random.default_rng(1).standard_normal((40, I, N_BETA))
+    X = np.random.default_rng(1).standard_normal((40, n_alts, N_BETA))
     first = mnp_ate_from_params(BETA, control=MNPControl(iid=True, scaling="first"),
-                                n_alts=I, X=X)
-    sumsq = mnp_ate_from_params(BETA / np.sqrt(I - 1),
-                                control=MNPControl(iid=True, scaling="sumsq"),
-                                n_alts=I, X=X)
+                                n_alts=n_alts, X=X)
+    ctrl = None if use_default_control else MNPControl(iid=True)
+    converted = BETA / np.sqrt(n_alts - 1)
+    external = MNPResults.from_estimates(converted, control=ctrl, n_alts=n_alts)
+    assert external.control.scaling == "sumsq"
+    np.testing.assert_array_equal(external.params, converted)
+    sumsq = mnp_ate_from_params(converted, control=ctrl, n_alts=n_alts, X=X)
     np.testing.assert_allclose(sumsq.predicted_shares, first.predicted_shares, atol=1e-10)
+    if n_alts > 2:
+        # The API must not silently assume that an unlabelled vector is GAUSS.
+        unconverted = mnp_ate_from_params(BETA, control=ctrl, n_alts=n_alts, X=X)
+        assert not np.allclose(unconverted.predicted_shares, first.predicted_shares,
+                               atol=1e-6, rtol=1e-5)
 
 
 def test_mnp_from_estimates_noniid_is_scaling_invariant():

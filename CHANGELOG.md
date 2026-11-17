@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Changed
+- **MNP defaults to `scaling="sumsq"`.** The squared differenced kernel-error
+  scales sum to one, replacing the earlier implicit first-scale-equals-one
+  normalization. `MNPKerCPControl` retains its existing `sumsq` default.
+  Use `MNPControl(scaling="first")` for direct comparisons with GAUSS BHATLIB
+  coefficients and standard errors. The two identifications represent the
+  same probabilities after consistent parameter conversion; reported values
+  and optimizer starting coordinates are not interchangeable across them.
+  Externally supplied IID GAUSS coefficients require `scaling="first"`, or
+  division by `sqrt(J - 1)` for the default `sumsq` convention (`J` alternatives).
+  Non-IID external beta/covariance pairs are normalized together. (#71)
 - **MDCEV `gamma_spec` no longer includes the outside good.** Satiation specs
   list the inside goods only; the outside good's gamma is pinned to
   `MDCEVControl.outside_good_gamma` (GAUSS `u[.,1] = -1000`) and is no longer a

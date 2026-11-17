@@ -183,7 +183,7 @@ def _assert_bhhh_se_parity(
     the relative variance of alt-3's differenced error term — which is precisely
     what the published table reports under its "scale01" entry. Under this
     convention the reported coefficients equal the published ones DIRECTLY (no
-    un-normalization factor; the old sum-of-squared-scales transform is gone):
+    un-normalization factor, because this test explicitly selects "first"):
 
       * beta / parker / CovCOv / segunpar : reported == published (verbatim)
       * published "scale01" (rel. alt-3 variance) == reported ``scale02``

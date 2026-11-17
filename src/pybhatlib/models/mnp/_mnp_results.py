@@ -213,7 +213,13 @@ class MNPResults:
         Parameters
         ----------
         beta : array-like, shape (n_beta,)
-            Slope coefficients in the model's coefficient order.
+            Reported slope coefficients in the model's coefficient order.
+            Without ``kernel_cov`` (IID), these must already use the selected
+            ``control.scaling`` convention; the default is ``"sumsq"``.
+            For unconverted GAUSS IID coefficients, pass
+            ``MNPControl(iid=True, scaling="first")``. Alternatively, divide
+            GAUSS IID coefficients by ``sqrt(I - 1)`` for ``"sumsq"``.
+            There is no automatic inference of the source coefficient scale.
         kernel_cov : array-like, shape (I-1, I-1), optional
             Differenced kernel error covariance ``Lambda`` (the quantity
             :func:`~pybhatlib.models.mnp._mnp_loglik._build_lambda` returns).
@@ -221,11 +227,8 @@ class MNPResults:
             beta are normalized together according to ``control.scaling``:
             first scale 1, or sum of squared differenced scales 1. Supplying
             an already normalized pair leaves its utility scale unchanged.
-            An IID model has no covariance to infer the scale from, so
-            ``beta`` is taken in ``control.scaling`` units: IID estimates
-            reported by GAUSS (first differenced variance 1) need
-            ``scaling="first"``; under ``"sumsq"`` they are ``sqrt(I-1)``
-            times too large.
+            This automatic joint normalization applies only to non-IID models
+            with a covariance; it cannot infer the units of an IID beta vector.
         control : MNPControl, optional
             Control structure.  Defaults to ``MNPControl(iid=kernel_cov is
             None)``.  Its ``heteronly`` flag selects the variance-only
@@ -271,9 +274,9 @@ class MNPResults:
                 raise ValueError(f"kernel_cov must be square, got {Lambda.shape}")
             if n_alts is None:
                 n_alts = dim + 1
-            # GAUSS homogeneous form: kernel_cov is the differenced kernel K with
-            # K[0,0] PINNED to 1. Encode only the I-2 FREE scales (scales[1:]) as
-            # log-scales; the first scale is implicit (pinned to 1).
+            # The natural covariance supplies the utility scale. Encode its
+            # I-2 free scale coordinates using the selected identification;
+            # the reference scale is fixed (first) or implied (sumsq).
             scales = np.sqrt(np.clip(np.diag(Lambda), 1e-300, None))
             from pybhatlib.models._mnp_scaling import encode_kernel_scales
 

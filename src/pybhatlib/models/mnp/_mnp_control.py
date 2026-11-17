@@ -46,6 +46,12 @@ class MNPControl:
         coordinates. In ``startb`` these are log scales for ``first`` and
         logits of squared scales relative to the first for ``sumsq``.
         Natural covariance inputs and reported scales use this normalization.
+        The ``sumsq`` default intentionally differs from the earlier implicit
+        GAUSS BHATLIB normalization. Use ``scaling="first"`` to reproduce
+        GAUSS's first-differenced-scale-equals-one coefficients and standard
+        errors. Changing identification rescales coefficients/covariances;
+        it does not change probabilities when parameters are converted
+        consistently. Optimizer ``startb`` must use the selected coordinates.
     spherical : bool
         If True, use spherical parameterization for correlation matrix.
     scal : float

@@ -128,6 +128,25 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 
 ## Verification
 
+For external IID MNP estimates, `MNPResults.from_estimates` and
+`mnp_ate_from_params` interpret beta in `control.scaling` units. The default
+remains `"sumsq"`; the coefficient vector alone cannot identify its original
+normalization. For `J` alternatives, these two inputs give equivalent ATEs:
+
+```python
+# GAUSS IID coefficients, kept in first-scale-equals-one units:
+gauss_ate = mnp_ate_from_params(
+    beta_gauss, X=X, n_alts=J,
+    control=MNPControl(iid=True, scaling="first"),
+)
+# Equivalent coefficients in the library's default sumsq units:
+default_ate = mnp_ate_from_params(beta_gauss / np.sqrt(J - 1), X=X, n_alts=J)
+```
+
+For coefficients from a fitted pybhatlib model, reuse its scaling control.
+For non-IID external inputs, provide the matching `beta` and `kernel_cov` pair;
+the constructor normalizes them together without changing predictions.
+
 pybhatlib reproduces Table 1 of the BHATLIB GAUSS reference implementation using
 the TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 
@@ -141,6 +160,13 @@ the TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 
 Models (a)–(c) reproduce the GAUSS estimates and BHHH standard errors to ≤0.001
 on every parameter (verified end-to-end against GAUSS 26.1.1 + MaxLik 5.0.9).
+Direct GAUSS coefficient/SE comparisons use `MNPControl(scaling="first")`.
+The default is now `scaling="sumsq"` (squared differenced kernel scales sum to
+one), matching MNPKerCP's existing default. This changes reported units;
+equivalent, consistently rescaled parameters give the same probabilities.
+Use `scaling="first"` for externally supplied IID GAUSS coefficients.
+`startb` always uses the selected optimizer coordinates; choosing `first`
+does not undo other parameter-layout changes in this release.
 Model (d) is multi-modal — the Python optimum is a slightly better local mode
 than the GAUSS one.
 
