@@ -325,8 +325,6 @@ class MDCEVMixedModel(BaseModel):
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
         if self.control.draw_method == "explicit":
             return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
-        if self.control.draw_method != "scipy":
-            raise ValueError("draw_method must be 'scipy' or 'explicit'")
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def build_estimator(

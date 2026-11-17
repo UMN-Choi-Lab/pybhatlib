@@ -80,7 +80,7 @@ class TestMixMNLControlRoundTrip:
         ctrl = MixMNLControl()
         assert ctrl.n_rep == 125
         assert ctrl.randdiag is False
-        assert ctrl.intordn1 == 20
+        assert ctrl.intordn1 == 92
         assert ctrl.spher is False
         assert ctrl.scal == 1.0
         assert ctrl.person_id is None
