@@ -64,10 +64,9 @@ class MDCEVMixedControl:
         log-space probability, which can give a lower LL than GAUSS at the
         same parameters.
     n_rep : int
-        Number of MSL replications (GAUSS ``nrep``, default 10 for the SCAG
-        driver).
+        Number of MSL replications (GAUSS ``nrep``), default 125.
     intordn1 : int
-        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``).
+        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``), default 92.
     spher : bool
         Spherical (True) vs radial (False) correlation-Cholesky parameterization.
         Only the radial path is implemented downstream.
@@ -81,10 +80,13 @@ class MDCEVMixedControl:
         Per-person simulated-probability floor after averaging over draws (GAUSS
         ``w2``). Defaults to ``0.0`` (GAUSS ``w2 = 0``).
     draw_method : {"scipy", "explicit"}
-        Halton source; defaults to "scipy". "explicit" uses the deterministic
+        Halton source; defaults to "scipy". Both sources always automatically
+        skip the first 10 Halton points once per generated sequence, before
+        assigning draws to individuals.
+        "explicit" uses the deterministic
         GAUSS-style digit-permutation source up to 16 dimensions; above that it
-        prints a message and falls back to SciPy using draw_seed. Within the
-        explicit dimension limit, draw_seed is ignored. With no random coefficients a zero-width fixture is used.
+        warns and falls back to SciPy using draw_seed. Within the
+        explicit dimension limit, draw_seed is ignored: with the default corbreak=1, rantuff=0, rancolumn=0 the draws are fully deterministic (identical for every run and every draw_seed); randomized options would seed from the GAUSS formula 9_836_506 + (run-1)*40_000, not draw_seed. With no random coefficients a zero-width fixture is used.
     draw_seed : int or None
         Seed for the runtime scrambled-Halton draw source (default 13811).
     maxiter : int
@@ -140,8 +142,8 @@ class MDCEVMixedControl:
     intordn1: int = 92
     spher: bool = False
     scal: float = 1.0
-    floor_pcomp: float = 1e-10
-    floor_z: float = 1e-100
+    floor_pcomp: float = 0.0
+    floor_z: float = 0.0
     gauss_zero_floor: bool = True
     draw_seed: int | None = 13811
 
@@ -156,3 +158,8 @@ class MDCEVMixedControl:
     seed: int | None = 14287
     startb: NDArray | None = None
     draw_method: Literal["scipy", "explicit"] = "scipy"
+
+    def __post_init__(self) -> None:
+        from pybhatlib.mixed._draws import _validate_draw_method
+
+        _validate_draw_method(self.draw_method)
