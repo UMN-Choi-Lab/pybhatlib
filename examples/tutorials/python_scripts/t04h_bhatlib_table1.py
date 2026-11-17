@@ -137,7 +137,7 @@ model_ai = MNPModel(
     data=data_path,
     alternatives=alternatives,
     spec=spec_5var,
-    control=MNPControl(iid=True, maxiter=100, verbose=0, seed=42),
+    control=MNPControl(scaling="first", iid=True, maxiter=100, verbose=0, seed=42),
 )
 res_ai = model_ai.fit()
 t_ai = time.perf_counter() - t0
@@ -179,7 +179,7 @@ model_aii = MNPModel(
     data=data_path,
     alternatives=alternatives,
     spec=spec_5var,
-    control=MNPControl(iid=False, maxiter=100, verbose=0, seed=42),
+    control=MNPControl(scaling="first", iid=False, maxiter=100, verbose=0, seed=42),
 )
 res_aii = model_aii.fit()
 t_aii = time.perf_counter() - t0
@@ -223,7 +223,7 @@ model_b = MNPModel(
     data=data_path,
     alternatives=alternatives,
     spec=spec_7var,
-    control=MNPControl(iid=False, maxiter=200, verbose=0, seed=42),
+    control=MNPControl(scaling="first", iid=False, maxiter=200, verbose=0, seed=42),
 )
 res_b = model_b.fit()
 t_b = time.perf_counter() - t0
@@ -270,7 +270,7 @@ model_c = MNPModel(
     spec=spec_7var,
     mix=True,
     ranvars=["OVTT"],
-    control=MNPControl(iid=False, maxiter=200, verbose=0, seed=42),
+    control=MNPControl(scaling="first", iid=False, maxiter=200, verbose=0, seed=42),
 )
 res_c = model_c.fit()
 t_c = time.perf_counter() - t0
@@ -319,7 +319,7 @@ model_d = MNPModel(
     data=data_path,
     alternatives=alternatives,
     spec=spec_7var,
-    control=MNPControl(iid=False, nseg=2, maxiter=200, verbose=0, seed=42),
+    control=MNPControl(scaling="first", iid=False, nseg=2, maxiter=200, verbose=0, seed=42),
     ranvars=["OVTT"],   # paper Model (d): OVTT varies by segment
 )
 res_d = model_d.fit()
@@ -351,7 +351,7 @@ print("""
   policy work you also need the estimated coefficients with standard
   errors.  We report Model (b) here as a representative specification.
 
-  Reporting convention: pybhatlib reports on the GAUSS first-differenced-
+  Reporting convention: this tutorial selects the GAUSS first-differenced-
   variance=1 scale.
 
     - results.params     : the estimated parameter vector used internally

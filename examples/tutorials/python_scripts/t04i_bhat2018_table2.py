@@ -265,6 +265,7 @@ for H in H_VALUES:
     ctrl = MNPControl(
         iid=True,
         method="tvbs",
+        scaling="first",  # GAUSS comparison units; the library defaults to sumsq.
         maxiter=MAXITER,
         verbose=0,
         seed=SEED,
@@ -288,7 +289,7 @@ for H in H_VALUES:
     print(f"    LL = {results.loglik * results.n_obs:.3f}")
     print(f"    Converged: {results.converged} ({results.n_iter} iterations)")
     print(f"    Time: {elapsed:.1f}s")
-    # pybhatlib reports on the GAUSS first-differenced-variance=1 scale, so
+    # This tutorial selects the GAUSS first-differenced-variance=1 scale, so
     # results.b_original (the readable reported view) matches the GAUSS Bhat-2018
     # Table 2 reference; it shares one scale with results.params.
     print(f"    Parameters (reported): ", end="")
@@ -347,6 +348,7 @@ for H in H_VALUES:
                 ctrl = MNPControl(
                     iid=True,
                     method="me",
+                    scaling="first",
                     maxiter=MAXITER,
                     verbose=0,
                     seed=SEED,
@@ -380,6 +382,7 @@ for H in H_VALUES:
             ctrl = MNPControl(
                 iid=True,
                 method=method,
+                scaling="first",
                 maxiter=MAXITER,
                 verbose=0,
                 seed=SEED,
@@ -557,7 +560,7 @@ print("""
     (a)(i)  IID kernel       -> LL = -670.956
     (a)(ii) Flexible kernel  -> LL = -661.111
 
-  Reporting note: pybhatlib reports on the GAUSS first-differenced-
+  Reporting note: this tutorial selects the GAUSS first-differenced-
   variance=1 scale, so results.b_original and results.params share one
   scale and are equal for the mean coefficients.  We print b_original
   because it additionally spells out the readable kernel block (the
@@ -615,7 +618,7 @@ for label, ref in gauss_reference.items():
         alternatives=travelmode_alts,
         availability="none",
         spec=travelmode_spec,
-        control=MNPControl(iid=ref["iid"], maxiter=200, verbose=0, seed=SEED),
+        control=MNPControl(scaling="first", iid=ref["iid"], maxiter=200, verbose=0, seed=SEED),
     )
     results = model.fit()
     py_ll = results.loglik * results.n_obs

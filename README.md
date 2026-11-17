@@ -151,6 +151,54 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 
 ## Verification
 
+MNP parameter-vector migration in #71:
+
+- `results.params` / `startb` use optimizer coordinates. Each full random-
+  coefficient covariance block is now `[radial correlation coordinates | log
+  SDs]`, replacing lower-Cholesky entries. Diagonal blocks still use log SDs.
+  The vector length alone does not establish compatibility. Convert every
+  segment's block; setting `scaling="first"` does not restore the old layout.
+- To migrate an old full covariance block, reconstruct `Omega = L_old @
+  L_old.T`, obtain `sd = sqrt(diag(Omega))` and `R = Omega / outer(sd, sd)`,
+  and encode its correlation factor with
+  `revnewcholparmscaled(np.linalg.cholesky(R).T, control.scal)` from
+  `pybhatlib.matgradient._radial`. Append `log(sd)`. This assumes positive SDs
+  and the same utility normalization; account separately for a change to
+  `sumsq`. Zero-variance blocks need a positive starting value before encoding.
+- `b_original` reports correlations and SDs (`corr[...]`, `scal[...]`) rather
+  than the old `CovCOv*` variances/covariances. `omega_hat` and `segment_covs`
+  retain covariance semantics. Convert old variances to SDs and off-diagonal
+  covariances to correlations using the full covariance matrix. Reported
+  uncertainty must be transformed too; an old variance SE is not an SD SE.
+- Optimizer segment coordinates remain logits relative to segment 1. Reporting
+  now uses probabilities: `segunpar` is the second-segment probability, and
+  `segunpar_sN` identifies segments 2..N. Convert old reported logits with
+  `softmax([0, logits...])`; convert probabilities back to optimizer logits
+  with `log(p_segment / p_reference)`. `segment_probs` contains all weights.
+- Automatic starts now use SD `0.1` and zero correlations in every segment,
+  with equal mixture weights. In diagonal models this changes the SD start
+  from `1` to `0.1`. Supplied starts are not silently converted. Changes in
+  starting points may change the optimization path and local optimum.
+
+For external IID MNP estimates, `MNPResults.from_estimates` and
+`mnp_ate_from_params` interpret beta in `control.scaling` units. The default
+remains `"sumsq"`; the coefficient vector alone cannot identify its original
+normalization. For `J` alternatives, these two inputs give equivalent ATEs:
+
+```python
+# GAUSS IID coefficients, kept in first-scale-equals-one units:
+gauss_ate = mnp_ate_from_params(
+    beta_gauss, X=X, n_alts=J,
+    control=MNPControl(iid=True, scaling="first"),
+)
+# Equivalent coefficients in the library's default sumsq units:
+default_ate = mnp_ate_from_params(beta_gauss / np.sqrt(J - 1), X=X, n_alts=J)
+```
+
+For coefficients from a fitted pybhatlib model, reuse its scaling control.
+For non-IID external inputs, provide the matching `beta` and `kernel_cov` pair;
+the constructor normalizes them together without changing predictions.
+
 pybhatlib reproduces Table 1 of the BHATLIB GAUSS reference implementation using
 the TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 
@@ -164,6 +212,13 @@ the TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 
 Models (a)–(c) reproduce the GAUSS estimates and BHHH standard errors to ≤0.001
 on every parameter (verified end-to-end against GAUSS 26.1.1 + MaxLik 5.0.9).
+Direct GAUSS coefficient/SE comparisons use `MNPControl(scaling="first")`.
+The default is now `scaling="sumsq"` (squared differenced kernel scales sum to
+one), matching MNPKerCP's existing default. This changes reported units;
+equivalent, consistently rescaled parameters give the same probabilities.
+Use `scaling="first"` for externally supplied IID GAUSS coefficients.
+`startb` always uses the selected optimizer coordinates; choosing `first`
+does not undo other parameter-layout changes in this release.
 Model (d) is multi-modal — the Python optimum is a slightly better local mode
 than the GAUSS one.
 

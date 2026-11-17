@@ -32,6 +32,7 @@ from pybhatlib.mixed._draws import DrawSource
 from pybhatlib.mixed._predict import MixedATEResult, mixed_ate
 from pybhatlib.mixed._reparam import ReportingSpace
 from pybhatlib.models._ate_common import ScenarioSpec
+from pybhatlib.models._mnp_scaling import direct_kernel_scales, encode_kernel_scales
 from pybhatlib.models.mnpkercp._mnpkercp_control import MNPKerCPControl
 from pybhatlib.models.mnpkercp._mnpkercp_forecast import build_predict_components
 
@@ -144,7 +145,7 @@ def _prepare_at_params(
     )
     est = model._build_estimator(spec, layout, panel, draws=draws, space=space)
 
-    params_r = np.asarray(params, dtype=np.float64).ravel()
+    params_r = np.asarray(params, dtype=np.float64).ravel().copy()
     n_full_rcor = spec.nrndtot * (spec.nrndtot - 1) // 2
     full_reporting_n = (
         spec.n_beta + n_full_rcor + spec.nscale + spec.n_kern + spec.numlam
@@ -171,16 +172,12 @@ def _prepare_at_params(
         )
 
     if layout.n_kern:
-        # Fitted results report natural free scales w[1:]. The internal
-        # ReportingSpace/kernel path consumes the unconstrained logits, where
-        # softmax([0, logits]) == [1 - sum(w[1:]^2), w[1:]^2].
+        # Results report natural free scales w[1:]. Restore the implicit
+        # reference and encode the optimizer coordinates for this normalization.
         kern_sl = layout.slices()["kern"]
         free_scales = params_r[kern_sl]
-        probabilities = np.square(free_scales)
-        reference = 1.0 - float(probabilities.sum())
-        if reference <= 0.0 or np.any(probabilities <= 0.0):
-            raise ValueError("reported kernel scales must have positive squared-sum reference")
-        params_r[kern_sl] = np.log(probabilities / reference)
+        scales = direct_kernel_scales(free_scales, ctrl.scaling)
+        params_r[kern_sl] = encode_kernel_scales(scales, ctrl.scaling)
 
     model._theta_hat = params_r
     model._est = est
@@ -229,12 +226,11 @@ def mnpkercp_ate_from_params(
         semantics as the fitted ``MNPKerCPResults.params`` (fixed coefficients,
         the joint random-coefficient + differenced-kernel correlation
         off-diagonal entries, the random-coefficient scale/std-dev vector, the
-        kernel-scale parameters, and the Yeo-Johnson ``lambda`` values in
-        ``(0, 2)``).  When there are no random coefficients
-        (``normvar``/``logvar``/``yjvar`` empty) and no sign constraints, the
-        vector reduces to the ``beta`` block, which coincides with the reported
-        coefficients accepted by the fixed-coefficient
-        :func:`pybhatlib.models.mnp._mnp_ate.mnp_ate_from_params`.
+        kernel scales, and the Yeo-Johnson ``lambda`` values in ``(0, 2)``).
+        Kernel entries are natural free differenced-error scales under
+        ``control.scaling``; the reference scale is implicit. No random
+        coefficients removes the random-coefficient blocks, but flexible
+        kernel correlations/scales remain unless disabled by the control.
     data : pd.DataFrame
         Dataset the scenarios override.
     alternatives : list of str
