@@ -173,9 +173,10 @@ def test_second_segment_default_scale_has_nonzero_correct_gradient(travelmode_pa
 
 @pytest.mark.parametrize("scaling", ["first", "sumsq"])
 def test_one_random_coefficient_is_identical_for_both_randdiag_settings(travelmode_path, scaling):
-    from pybhatlib.models.mnp._mnp_loglik import mnp_loglik, mnp_loglik_unpar
+    from pybhatlib.models.mnp._mnp_loglik import mnp_loglik
 
     results = []
+    fitted = []
     starts = []
     for diagonal in (False, True):
         model = _make_model(SPEC_BASE, 2, ["OVTT"], travelmode_path,
@@ -186,14 +187,24 @@ def test_one_random_coefficient_is_identical_for_both_randdiag_settings(travelmo
         results.append(mnp_loglik(theta, model.X, model.y, model.avail,
                                   model.n_alts, model.n_beta, model.control,
                                   model.ranvar_indices, return_gradient=True))
-        natural_ll = mnp_loglik_unpar(model._unparametrize(theta), model.X,
-                                     model.y, model.avail, model.n_alts,
-                                     model.n_beta, model.control, model.ranvar_indices)
-        assert natural_ll == pytest.approx(results[-1][0], abs=1e-10)
+        # Exercise public fitting/reporting at the same coordinates, without
+        # optimizing away differences between the two parameterizations.
+        model.control.startb = theta.copy()
+        model.control.maxiter = 0
+        fit = model.fit()
+        fitted.append(fit)
+        np.testing.assert_array_equal(fit.params, theta)
+        assert fit.loglik == pytest.approx(-results[-1][0], abs=1e-10)
+        for covariance in fit.segment_covs:
+            np.testing.assert_allclose(covariance, [[0.1**2]], atol=1e-14)
         assert model._build_param_names()[-1] == "scal_theta[OVTT]_s2"
     np.testing.assert_array_equal(starts[0], starts[1])
     assert results[0][0] == pytest.approx(results[1][0], abs=1e-12)
     np.testing.assert_allclose(results[0][1], results[1][1], atol=1e-12)
+    assert fitted[0].param_names == fitted[1].param_names
+    np.testing.assert_allclose(fitted[0].b_original, fitted[1].b_original, atol=1e-12)
+    np.testing.assert_allclose(fitted[0].segment_probs, fitted[1].segment_probs, atol=1e-12)
+    np.testing.assert_allclose(fitted[0].segment_covs, fitted[1].segment_covs, atol=1e-12)
 
 
 @pytest.mark.parametrize("n_rand", [1, 2, 3])

@@ -890,13 +890,6 @@ class MNPModel(BaseModel):
 
         return names[:self.n_params]
 
-    def _unparametrize(self, theta: np.ndarray) -> np.ndarray:
-        """Decode optimizer coordinates into the natural likelihood layout."""
-        from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar
-
-        return _param_to_unpar(theta, self.n_beta, self.n_alts,
-                               self.control, self.ranvar_indices)
-
     # ------------------------------------------------------------------
     # BHATLIB-style normalized reporting
     # ------------------------------------------------------------------
