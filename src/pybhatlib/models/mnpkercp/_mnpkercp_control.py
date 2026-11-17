@@ -54,9 +54,9 @@ class MNPKerCPControl:
         scales for errors 2..nc-1. The first is implicit: sqrt(1-sum(free^2))
         for ``sumsq``, or 1 for ``first``. IID uses equal normalized scales.
     n_rep : int
-        Number of MSL replications (GAUSS ``nrep``, default 5 for MNPKERCP).
+        Number of MSL replications (GAUSS ``nrep``), default 125.
     intordn1 : int
-        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``).
+        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``), default 92.
     spher : bool
         Spherical (True) vs radial (False) correlation-Cholesky
         parameterization.  Only the radial path is implemented downstream.
@@ -64,15 +64,18 @@ class MNPKerCPControl:
         Scaling constant in ``newcholparmscaled`` (GAUSS ``scal``).
     floor_pcomp : float
         Per-observation kernel-probability floor applied before the log
-        (GAUSS ``w5`` / kernel prob floor).
+        (GAUSS ``w5`` / kernel prob floor), default ``1e-10``.
     floor_z : float
         Per-person simulated-probability floor after averaging over draws
-        (GAUSS ``w2``).
+        (GAUSS ``w2``), default ``1e-100``.
     draw_method : {"scipy", "explicit"}
-        Halton source; defaults to "scipy". "explicit" uses the deterministic
+        Halton source; defaults to "scipy". Both sources always automatically
+        skip the first 10 Halton points once per generated sequence, before
+        assigning draws to individuals.
+        "explicit" uses the deterministic
         GAUSS-style digit-permutation source up to 16 dimensions; above that it
-        prints a message and falls back to SciPy using draw_seed. Within the
-        explicit dimension limit, draw_seed is ignored. With no random coefficients a zero-width fixture is used.
+        warns and falls back to SciPy using draw_seed. Within the
+        explicit dimension limit, draw_seed is ignored: with the default corbreak=1, rantuff=0, rancolumn=0 the draws are fully deterministic (identical for every run and every draw_seed); randomized options would seed from the GAUSS formula 9_836_506 + (run-1)*40_000, not draw_seed. With no random coefficients a zero-width fixture is used.
     draw_seed : int or None
         Seed for the runtime scrambled-Halton draw source (default 13811).
     maxiter : int
@@ -147,7 +150,9 @@ class MNPKerCPControl:
     start_from_shares: bool = False
     draw_method: Literal["scipy", "explicit"] = "scipy"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        from pybhatlib.mixed._draws import _validate_draw_method
         from pybhatlib.models._mnp_scaling import validate_scaling
 
         validate_scaling(self.scaling)
+        _validate_draw_method(self.draw_method)

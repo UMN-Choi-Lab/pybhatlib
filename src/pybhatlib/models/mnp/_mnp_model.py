@@ -720,9 +720,13 @@ class MNPModel(BaseModel):
                 L = _build_omega_cholesky(omega_params, self.ranvar_indices, self.control)
                 segment_covs.append(L @ L.T)
 
-        ll_c, ll_0 = baseline_loglikelihoods(self.y, [self.n_alts], availability=self.avail)
+        ll_c, ll_0 = baseline_loglikelihoods(
+            self.y, [self.n_alts], availability=self.avail, family="mnp",
+        )
         return MNPResults(
             loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=int(active_mask.sum()) if active_mask is not None else self.n_params,
+            n_constants_params=self.n_alts - 1,
             average_correct_probability=_full_objective.get(theta_hat),
             params=theta_hat,
             b_original=b_report,

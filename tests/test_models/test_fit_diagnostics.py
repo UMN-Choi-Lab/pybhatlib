@@ -60,16 +60,101 @@ def test_independent_ordinal_nulls_and_unobserved_categories():
     assert ll_0 == pytest.approx(-np.log(12))
 
 
-def test_availability_specific_shares_and_panel_weight_normalization():
+@pytest.mark.parametrize("family", ["mnl", "mnp"])
+def test_shared_constants_and_panel_weight_normalization(family):
     y = np.array([0, 0, 1, 1])
     avail = np.array([[1, 0], [1, 1], [1, 1], [1, 1]])
     persons = np.array([0, 0, 1, 1])
     weights = np.array([2.0, 1.0])
     ll_c, ll_0 = baseline_loglikelihoods(
         y, [2], availability=avail, row_to_person=persons, person_weights=weights,
+        family=family,
     )
     assert ll_c == pytest.approx(4 * np.log(0.5) / 2)
     assert ll_0 == pytest.approx(-4 * np.log(2) / 2)
+
+
+def test_shared_constants_with_availability_matches_fitted_logit_not_group_shares():
+    y = np.array([0] * 60 + [1] * 30 + [2] * 10 + [0] * 10 + [1] * 90)
+    avail = np.ones((200, 3))
+    avail[100:, 2] = 0
+    ll_c, ll_0 = baseline_loglikelihoods(y, [3], availability=avail)
+    # Shared-ASC MLE: train receives 10% among the 100 eligible people;
+    # car:bus odds are 70:120 across both choice sets.
+    p_full = np.array([.9 * 7 / 19, .9 * 12 / 19, .1])
+    p_short = np.array([7 / 19, 12 / 19, 0])
+    expected = (np.log(p_full[y[:100]]).sum()
+                + np.log(p_short[y[100:]]).sum()) / 200
+    assert ll_c == pytest.approx(expected, abs=1e-9)
+    assert ll_0 == pytest.approx(-.5 * (np.log(3) + np.log(2)))
+    grouped_ll = (60*np.log(.6) + 30*np.log(.3) + 10*np.log(.1)
+                  + 10*np.log(.1) + 90*np.log(.9)) / 200
+    assert ll_c < grouped_ll
+
+
+@pytest.mark.parametrize("family", ["mnl", "mnp"])
+def test_availability_baseline_matches_basic_constants_model(family):
+    from pybhatlib.models.mnl import MNLControl, MNLModel
+    from pybhatlib.models.mnp import MNPControl, MNPModel
+    y = np.array([0, 0, 1, 1, 2, 0, 1, 1, 2, 2, 0, 1])
+    avail = np.ones((len(y), 3))
+    avail[[0, 2, 5, 7, 10], 2] = 0
+    df = pd.DataFrame({f"a{j}": (y == j).astype(int) for j in range(3)})
+    df["uno"] = 1.
+    for j in range(3):
+        df[f"av{j}"] = avail[:, j]
+    spec = {"C1": {"a1": "uno"}, "C2": {"a2": "uno"}}
+    cls, ctrl = (MNLModel, MNLControl(verbose=0, want_covariance=False))
+    if family == "mnp":
+        cls, ctrl = MNPModel, MNPControl(iid=True, method="ovus", verbose=0,
+                                       want_covariance=False)
+    fitted = cls(df, ["a0", "a1", "a2"], spec=spec, control=ctrl,
+                 availability=["av0", "av1", "av2"]).fit()
+    calculated, _ = baseline_loglikelihoods(y, [3], availability=avail, family=family)
+    assert calculated == pytest.approx(fitted.loglik, abs=1e-7)
+
+    # Identical row replication and person weights must produce the same fit
+    # and scale the final LL by cases/individuals, not by the sum of weights.
+    weights = np.array([1, 2] * 6, dtype=float)
+    repeated = np.repeat(np.arange(len(y)), weights.astype(int))
+    weighted, _ = baseline_loglikelihoods(y, [3], availability=avail,
+                                          person_weights=weights, family=family)
+    replicated, _ = baseline_loglikelihoods(y[repeated], [3],
+                                           availability=avail[repeated], family=family)
+    assert weighted == pytest.approx(replicated * len(repeated) / len(y), abs=1e-7)
+
+
+@pytest.mark.parametrize("family", ["mnl", "mnp"])
+def test_full_availability_retains_analytic_baseline(family, monkeypatch):
+    from pybhatlib.models import _fit_diagnostics as diagnostics
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Full availability must not fit an auxiliary model")
+
+    monkeypatch.setattr(diagnostics, "_choice_constants_loglik", unexpected)
+    y = np.array([0, 0, 1, 2])
+    for avail in (None, np.ones((4, 3))):
+        ll, _ = baseline_loglikelihoods(y, [3], availability=avail, family=family)
+        assert ll == pytest.approx(np.log([.5, .5, .25, .25]).mean())
+
+
+@pytest.mark.parametrize("family", ["mixmnl", "mnpkercp"])
+def test_mixed_availability_baseline_uses_basic_family(family, monkeypatch):
+    from pybhatlib.models import _fit_diagnostics as diagnostics
+    model = _model(family)
+    model.avail = np.ones((len(model.y), 3))
+    model.avail[0, 2] = 0
+    called = []
+    original = diagnostics._choice_constants_loglik
+
+    def capture(y, availability, weights, basic_family):
+        called.append(basic_family)
+        return original(y, availability, weights, basic_family)
+
+    monkeypatch.setattr(diagnostics, "_choice_constants_loglik", capture)
+    result = model.fit()
+    assert called == ["mnl" if family == "mixmnl" else "mnp"]
+    assert np.isfinite(result.loglik_constants)
 
 
 @pytest.mark.parametrize("family", ["mnl", "mnp", "morp", "mixmnl", "mnpkercp", "morp_flex"])
@@ -98,6 +183,12 @@ def test_fit_stores_nulls_and_actual_observed_probabilities(family, monkeypatch)
                      for d, k in enumerate(categories))
     n_ind = 6 if family in ("mixmnl", "mnpkercp", "morp_flex") else len(y)
     assert result.loglik_constants == pytest.approx(expected_c / n_ind)
+    expected_kc = sum(k - 1 for k in categories)
+    assert result.n_constants_params == expected_kc
+    assert result.rho2_adjusted_constants == pytest.approx(
+        1 - (result.loglik - (result.n_free_params - expected_kc) / n_ind)
+        / result.loglik_constants,
+    )
     assert result.loglik_zero == pytest.approx(-len(y) / n_ind * np.log(np.prod(categories)))
     assert np.isfinite(result.average_correct_probability)
     assert 0 <= result.average_correct_probability <= 1
@@ -209,3 +300,63 @@ def test_morp_final_exact_evaluation_supplies_joint_probability():
         result.params, model.X, model.y, model.n_dims, model.n_categories, model.n_beta, exact,
     )
     assert result.average_correct_probability == pytest.approx(np.exp(ll).mean(), abs=1e-8)
+
+
+def test_rho_squared_hand_computed_with_adjustment():
+    from pybhatlib.models._fit_diagnostics import rho_squared
+
+    # n=10 cases: totals LL=-6, LL(C)=-8, LL(0)=-10, K=2 (means /10).
+    r0, rc, radj, radj_c = rho_squared(-0.6, -0.8, -1.0, 2, 10, 1)
+    assert r0 == pytest.approx(0.4)
+    assert rc == pytest.approx(0.25)
+    assert radj == pytest.approx(1 - (-6 - 2) / -10)  # 0.2
+    assert radj_c == pytest.approx(1 - (-6 - (2 - 1)) / -8)  # 0.125
+    assert np.isnan(rho_squared(-0.6, np.nan, np.nan, 2, 10)[1])
+    assert np.isnan(rho_squared(-0.6, -0.8, -1.0, -1, 10)[2])
+    assert np.isnan(rho_squared(-0.6, -0.8, -1.0, 2, 10)[3])  # unknown Kc
+    assert np.isnan(rho_squared(-0.6, 0., 0., 2, 10, 1)).all()
+    # If the full model is the constants model, no extra penalty is applied.
+    assert rho_squared(-0.8, -0.8, -1., 2, 10, 2)[3] == pytest.approx(0.)
+
+
+def test_results_rho2_uses_panel_normalization_and_free_params():
+    from pybhatlib.models._fit_diagnostics import FitMetricsMixin
+    from pybhatlib.models.mixmnl import MixMNLResults
+
+    assert issubclass(MixMNLResults, FitMetricsMixin)
+
+    class Res(FitMetricsMixin):
+        params = np.zeros(5)
+        loglik, loglik_constants, loglik_zero = -0.6, -0.8, -1.0
+        n_obs, n_ind, n_free_params = 100, 10, 2
+        n_constants_params = 1
+
+    res = Res()
+    assert res.rho2_zero == pytest.approx(0.4)
+    assert res.rho2_adjusted == pytest.approx(0.2)  # K/n_ind, not K/n_obs
+    assert res.rho2_adjusted_constants == pytest.approx(0.125)
+    assert "Adj. rho2" in "\n".join(res.rho2_summary_lines())
+    assert "Adj. rho2 vs LL(C)" in "\n".join(res.rho2_summary_lines())
+
+
+def test_lazy_log_recording_equals_eager_and_skips_exp_without_recorder(monkeypatch):
+    calls = []
+    real_exp = np.exp
+    monkeypatch.setattr(np, "exp", lambda *a, **k: calls.append(1) or real_exp(*a, **k))
+    logp = np.log(np.array([0.2, 0.5, 0.8]))
+    record_probabilities(logp, log=True)
+    assert not calls  # no recorder: never exponentiated
+
+    cache = ProbabilityCache(lambda t: record_probabilities(logp, log=True), 3)
+    cache(np.zeros(1))
+    assert cache.get(np.zeros(1)) == pytest.approx(0.5)
+
+
+def test_cache_is_bounded_and_keeps_recent_entries():
+    cache = ProbabilityCache(lambda t: record_probabilities(np.full(2, float(t[0]))), 2,
+                             max_entries=3)
+    for v in range(10):
+        cache(np.array([float(v)]))
+    assert len(cache.values) == 3
+    assert cache.get(np.array([9.0])) == 9.0
+    assert np.isnan(cache.get(np.array([0.0])))

@@ -13,75 +13,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 import pandas as pd
 from numpy.typing import NDArray
 from scipy.special import ndtr  # noqa: F401 - kept for API symmetry with siblings
 
 from pybhatlib.models._results_common import (
+    MixingSummary,
     attach_deprecated_aliases,
     attach_ll_total_alias,
     legacy_init,
+    mixing_summary_from_state,
 )
 from pybhatlib.models.mnpkercp._mnpkercp_control import MNPKerCPControl
-
-
-@dataclass
-class MixingSummary:
-    """Reported locations, scales and shapes, with latent joint dependence.
-
-    Random coefficients precede kernel errors. Covariances are implied by
-    the reported scales and latent Gaussian correlation, before nonlinear
-    coefficient or kernel transformations.
-    """
-
-    names: list[str]
-    n_random: int
-    means: NDArray
-    scales: NDArray
-    shapes: NDArray
-    corr_matrix: NDArray
-    note: str = ""
-
-    @property
-    def cov_matrix(self) -> NDArray:
-        return np.outer(self.scales, self.scales) * self.corr_matrix
-
-
-def mixing_summary_from_state(
-    var_names, spec, state, *, kernel_names=(), kernel_scales=None,
-    kernel_shapes=None, joint_corr=None, copula=False, note="",
-) -> MixingSummary:
-    """Capture the fitted pipeline/kernel state without changing estimation."""
-    rc_names = [var_names[int(p)] for p in spec.mixpos]
-    k = len(rc_names)
-    names = rc_names + list(kernel_names)
-    nk = len(kernel_names)
-    corr = np.array(
-        state.omegastar if joint_corr is None else joint_corr,
-        dtype=np.float64, copy=True,
-    ).reshape(len(names), len(names))
-    if nk and not copula:
-        # The likelihood ignores RC/kernel dependence when copula is off.
-        corr[:k, k:] = 0.0
-        corr[k:, :k] = 0.0
-    return MixingSummary(
-        names=names,
-        n_random=k,
-        means=np.concatenate([
-            np.asarray(state.xmu)[np.asarray(spec.mixpos, dtype=np.intp)],
-            np.zeros(nk),
-        ]),
-        scales=np.concatenate([
-            np.asarray(state.wscalrand).reshape(-1),
-            np.ones(nk) if kernel_scales is None else kernel_scales,
-        ]),
-        shapes=np.concatenate([
-            np.asarray(state.xlamrnd).reshape(-1),
-            np.ones(nk) if kernel_shapes is None else kernel_shapes,
-        ]),
-        corr_matrix=corr,
-        note=note,
-    )
 
 
 # Legacy construction kwargs -> canonical field names.
@@ -93,7 +37,7 @@ _MNPKERCPRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MNPKerCPResults:
+class MNPKerCPResults(FitMetricsMixin):
     """Results from MNPKerCP (mixed-panel MNP) model estimation.
 
     Attributes
@@ -116,10 +60,12 @@ class MNPKerCPResults:
     loglik : float
         Mean simulated log-likelihood (per individual).
     loglik_constants, loglik_zero : float
-        Mean independent empirical-share and uniform null log-likelihoods,
-        normalized like ``loglik``. Shares are conditional on the available
-        choice set; ordinal dimensions and panel occasions are independent
-        in these benchmarks, rather than restricted fits of the full kernel.
+        Mean constants-only and uniform null log-likelihoods, normalized like
+        ``loglik``. Full availability uses analytic empirical shares. With
+        unavailable alternatives, LL(C) fits shared alternative constants via
+        the basic IID MNP likelihood, respecting each choice set; no random
+        mixing is retained. LL(0) is uniform over the available alternatives.
+        Panel occasions are independent in these benchmarks.
     average_correct_probability : float
         Arithmetic mean fitted probability of the observed outcome (the joint
         category combination for ordinal models). In panels, average across
@@ -184,6 +130,9 @@ class MNPKerCPResults:
     # Independent null benchmarks; not restricted fits of the full kernel.
     loglik_constants: float = np.nan
     loglik_zero: float = np.nan
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    """Parameter count of the unmixed LL(C) baseline; -1 when unavailable."""
     average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:
@@ -298,6 +247,7 @@ class MNPKerCPResults:
         ):
             formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
             lines.append(f"  {label:<23s}{formatted}")
+        lines.extend(self.rho2_summary_lines())
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append(f"  Number of individuals  {self.n_ind:>14d}")
         lines.append("")

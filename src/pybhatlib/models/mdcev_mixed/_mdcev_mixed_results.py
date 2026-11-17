@@ -17,70 +17,14 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from pybhatlib.models._results_common import (
+    MixingSummary,
     attach_deprecated_aliases,
     attach_ll_total_alias,
     legacy_init,
+    mixing_summary_from_state,
 )
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_control import MDCEVMixedControl
-
-
-@dataclass
-class MixingSummary:
-    """Reported locations, scales and shapes, with latent joint dependence.
-
-    Random coefficients precede kernel errors. Covariances are implied by
-    the reported scales and latent Gaussian correlation, before nonlinear
-    coefficient or kernel transformations.
-    """
-
-    names: list[str]
-    n_random: int
-    means: NDArray
-    scales: NDArray
-    shapes: NDArray
-    corr_matrix: NDArray
-    note: str = ""
-
-    @property
-    def cov_matrix(self) -> NDArray:
-        return np.outer(self.scales, self.scales) * self.corr_matrix
-
-
-def mixing_summary_from_state(
-    var_names, spec, state, *, kernel_names=(), kernel_scales=None,
-    kernel_shapes=None, joint_corr=None, copula=False, note="",
-) -> MixingSummary:
-    """Capture the fitted pipeline/kernel state without changing estimation."""
-    rc_names = [var_names[int(p)] for p in spec.mixpos]
-    k = len(rc_names)
-    names = rc_names + list(kernel_names)
-    nk = len(kernel_names)
-    corr = np.array(
-        state.omegastar if joint_corr is None else joint_corr,
-        dtype=np.float64, copy=True,
-    ).reshape(len(names), len(names))
-    if nk and not copula:
-        # The likelihood ignores RC/kernel dependence when copula is off.
-        corr[:k, k:] = 0.0
-        corr[k:, :k] = 0.0
-    return MixingSummary(
-        names=names,
-        n_random=k,
-        means=np.concatenate([
-            np.asarray(state.xmu)[np.asarray(spec.mixpos, dtype=np.intp)],
-            np.zeros(nk),
-        ]),
-        scales=np.concatenate([
-            np.asarray(state.wscalrand).reshape(-1),
-            np.ones(nk) if kernel_scales is None else kernel_scales,
-        ]),
-        shapes=np.concatenate([
-            np.asarray(state.xlamrnd).reshape(-1),
-            np.ones(nk) if kernel_shapes is None else kernel_shapes,
-        ]),
-        corr_matrix=corr,
-        note=note,
-    )
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 
 
 # Legacy construction kwargs → canonical field names.
@@ -92,7 +36,7 @@ _MDCEVMIXEDRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MDCEVMixedResults:
+class MDCEVMixedResults(FitMetricsMixin):
     """Results from mixed MDCEV model estimation.
 
     Attributes
@@ -100,10 +44,16 @@ class MDCEVMixedResults:
     params : NDArray
         Optimised parameter vector in *reporting* space, shape (n_params,).
         Layout ``[beta | gamma | rcor | kern | scal | lam]``: baseline-utility
-        coefficients, inside-good translation (``gamma``) parameters, random-coefficient
-        correlation entries, the natural MDCEV kernel error scale ``sigma``, the random-coefficient
-        scale (std-dev) vector, and the Yeo-Johnson ``lambda`` values in
-        ``(0, 2)``.
+        coefficients, inside-good translation (``gamma``) parameters,
+        random-coefficient correlation entries, the natural MDCEV kernel error
+        scale ``sigma``, the random-coefficient scale (std-dev) vector, and the
+        Yeo-Johnson ``lambda`` values in ``(0, 2)``.
+        The kernel-scale entry is now reported as natural ``sigma`` rather
+        than ``log(sigma)``. Older saved reporting vectors must exponentiate
+        that entry before use with the current external-estimate ATE helper;
+        also align their layout with the inside-good-only gamma block.
+        This does not change ``control.startb``, which still requires
+        optimizer-space values, including ``log(sigma)`` in the kernel slot.
     se : NDArray
         Standard errors aligned with ``params``.
     t_stat : NDArray
@@ -168,6 +118,15 @@ class MDCEVMixedResults:
     data_path: str = ""
     message: str | None = None
     mixing_summary: MixingSummary | None = None
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    loglik_constants: float = np.nan
+    """Mean per-individual LL of an unmixed, basic MDCEV constants-only fit.
+
+    Both utility and inside-good gamma have alternative constants; sigma is
+    estimated. Preserves prices, utility form and individual weights, assuming
+    independent occasions. NaN for external estimates or failed null fits.
+    """
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MDCEVMixedResults, accepting both canonical and legacy kwargs.
@@ -210,6 +169,9 @@ class MDCEVMixedResults:
         params : ndarray, shape (n_params,)
             Parameter estimates, in the model's reporting-space layout
             ``[beta | gamma | rcor | kern | scal | lam]``.
+            The ``kern`` entry is natural ``sigma``, not ``log(sigma)``;
+            ``gamma`` contains inside-good coefficients only. Older saved
+            reporting vectors require conversion to this convention.
         param_names : list[str] or None
             Names for each element of *params*.  Defaults to
             ``["p1", "p2", ...]`` when not provided.
@@ -276,6 +238,12 @@ class MDCEVMixedResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        ll_c = (
+            f"{self.loglik_constants:>14.6f}"
+            if np.isfinite(self.loglik_constants) else f"{'N/A':>14s}"
+        )
+        lines.append(f"  Mean LL(C)             {ll_c}")
+        lines.extend(self.rho2_summary_lines(include_zero=False))
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append(f"  Number of individuals  {self.n_ind:>14d}")
         lines.append("")

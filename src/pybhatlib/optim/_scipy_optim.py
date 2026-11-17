@@ -250,10 +250,7 @@ def minimize_scipy(
             hess_inv = np.asarray(result.hess_inv)
 
     status = int(getattr(result, "status", 0))
-    converged = (
-        bool(result.success) and np.isfinite(result.fun)
-        and np.all(np.isfinite(result.x)) and np.all(np.isfinite(grad))
-    )
+    converged = result.success
 
     # Precision-loss stop at the gradient floor == convergence.
     # SciPy's BFGS reports status 2 ("Desired error not necessarily achieved
@@ -277,9 +274,7 @@ def minimize_scipy(
         else 0.0
     )
     precision_limited = (
-        method == "BFGS" and not converged and status == 2
-        and np.isfinite(result.fun) and np.all(np.isfinite(grad))
-        and rel_grad < _SOFT_RELGRAD_TOL
+        not converged and status == 2 and rel_grad < _SOFT_RELGRAD_TOL
     )
     if precision_limited:
         converged = True

@@ -48,6 +48,7 @@ from pybhatlib.mixed._rc_pipeline import RandomCoefPipeline
 from pybhatlib.mixed._reparam import EstimationSpace, ParamLayout
 from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import mdcev_constants_loglik
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_control import MDCEVMixedControl
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_kernel import LogitJacobianKernel
@@ -342,8 +343,6 @@ class MDCEVMixedModel(BaseModel):
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
         if self.control.draw_method == "explicit":
             return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
-        if self.control.draw_method != "scipy":
-            raise ValueError("draw_method must be 'scipy' or 'explicit'")
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def build_estimator(
@@ -396,6 +395,7 @@ class MDCEVMixedModel(BaseModel):
                 outside_good_gamma=ctrl.outside_good_gamma,
             ),
             eqmatgam=np.eye(self.nvargam, dtype=np.float64),
+            gauss_zero_floor=ctrl.gauss_zero_floor,
         )
         cfg = MSLConfig(
             n_rep=ctrl.n_rep,
@@ -647,7 +647,16 @@ class MDCEVMixedModel(BaseModel):
             self.var_names, spec,
             est.space.unpack(theta_hat, spec, want_grad=False),
         )
+        ll_c = mdcev_constants_loglik(
+            np.asarray(self.data[self.alternatives], dtype=float),
+            np.asarray(self.data[self.price_cols], dtype=float),
+            utility=ctrl.utility, outside_good_gamma=ctrl.outside_good_gamma,
+            row_to_person=panel.row_to_person, person_weights=est.weightind,
+        )
         return MDCEVMixedResults(
+            loglik_constants=ll_c,
+            n_free_params=int(theta_hat.size),
+            n_constants_params=2 * (self.nc - 1) + 1,
             mixing_summary=mixing_summary,
             params=params_report,
             se=se,

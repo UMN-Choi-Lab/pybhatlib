@@ -112,6 +112,29 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
   values without recoding the model.
 - `verbose` levels: `0` silent, `1` summary, `2` per-iteration NLL,
   `3` per-iteration parameter / gradient / relative-gradient table.
+- `loglik_constants` (LL(C)): MNL/MNP use analytic empirical shares when all
+  alternatives are available. Otherwise they fit shared alternative constants
+  with each observation's availability, using basic MNL or IID MNP likelihoods.
+  Mixed choice models use the same unmixed baselines. MORP/MORP-flex retain
+  analytic independent threshold-only baselines, not correlated MORP null fits.
+- MDCEV/MDCEV-mixed LL(C) fits the basic MDCEV model with alternative constants
+  in both baseline utility and inside-good gamma, plus free sigma, preserving
+  traditional/linear utility, prices and weights. This adds an auxiliary fit;
+  mixed models do not simulate the baseline. Panel baselines assume independent
+  occasions and use the fitted model's individual weights and normalization.
+  Failed auxiliary fits return `NaN` (shown as `N/A`) with a warning. External
+  estimates without training data also have `N/A` baselines. MDCEV has no
+  uniform LL(0); density-based likelihood comparisons require consistent units
+  and numerical conventions.
+- Adjusted rho-squared uses total likelihoods: `1 - (LL - K) / LL(0)` and
+  `1 - (LL - (K - Kc)) / LL(C)`. With stored mean likelihoods, parameter
+  penalties are divided by the same case/individual count. `K` retains the
+  model's existing optimizer parameter count; `Kc` counts the baseline's
+  constants (`J - 1` for choice models), thresholds (sum of category counts
+  minus one per ordinal outcome), or utility/gamma constants plus sigma
+  (`2 * (J - 1) + 1` for MDCEV). MDCEV summaries show only constants-based
+  rho-squared measures. Unavailable baseline counts or zero baseline
+  likelihoods produce `N/A` for the affected adjusted statistic.
 
 **Backend**
 - NumPy by default; optional PyTorch backend with GPU support (install with

@@ -11,6 +11,7 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 import pandas as pd
 from numpy.typing import NDArray
 
@@ -32,7 +33,7 @@ _MNPRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MNPResults:
+class MNPResults(FitMetricsMixin):
     """Results from MNP model estimation.
 
     Attributes
@@ -87,10 +88,12 @@ class MNPResults:
         ``loglik * n_obs`` (preserving its old total-LL semantics) — see
         Notes.)
     loglik_constants, loglik_zero : float
-        Mean independent empirical-share and uniform null log-likelihoods,
-        normalized like ``loglik``. Shares are conditional on the available
-        choice set; ordinal dimensions and panel occasions are independent
-        in these benchmarks, rather than restricted fits of the full kernel.
+        Mean constants-only and uniform null log-likelihoods, normalized like
+        ``loglik``. Full availability uses analytic empirical shares. With
+        unavailable alternatives, LL(C) fits shared alternative constants via
+        the basic IID MNP likelihood, respecting each choice set; no random
+        mixing is retained. LL(0) is uniform over the available alternatives.
+        Panel occasions are independent in these benchmarks.
     average_correct_probability : float
         Arithmetic mean fitted probability of the observed outcome (the joint
         category combination for ordinal models). In panels, average across
@@ -181,6 +184,9 @@ class MNPResults:
     # Independent null benchmarks; not restricted fits of the full kernel.
     loglik_constants: float = np.nan
     loglik_zero: float = np.nan
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    """Parameter count of the unmixed LL(C) baseline; -1 when unavailable."""
     average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:
@@ -355,6 +361,7 @@ class MNPResults:
         ):
             formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
             lines.append(f"  {label:<23s}{formatted}")
+        lines.extend(self.rho2_summary_lines())
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 

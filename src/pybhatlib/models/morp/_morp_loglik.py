@@ -176,7 +176,7 @@ def _per_obs_loglik(
         prob_q = max(prob_q, 1e-300)
         ll_per_obs[q] = np.log(prob_q)
 
-    record_probabilities(np.exp(ll_per_obs))
+    record_probabilities(ll_per_obs, log=True)
     return ll_per_obs
 
 
