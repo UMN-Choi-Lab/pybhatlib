@@ -343,8 +343,6 @@ class MDCEVMixedModel(BaseModel):
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
         if self.control.draw_method == "explicit":
             return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
-        if self.control.draw_method != "scipy":
-            raise ValueError("draw_method must be 'scipy' or 'explicit'")
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def build_estimator(
@@ -397,6 +395,7 @@ class MDCEVMixedModel(BaseModel):
                 outside_good_gamma=ctrl.outside_good_gamma,
             ),
             eqmatgam=np.eye(self.nvargam, dtype=np.float64),
+            gauss_zero_floor=ctrl.gauss_zero_floor,
         )
         cfg = MSLConfig(
             n_rep=ctrl.n_rep,
