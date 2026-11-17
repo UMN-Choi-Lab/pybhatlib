@@ -88,6 +88,11 @@ class KernelObsResult:
     dlogp_dkparams: NDArray
     dlogp_drc: NDArray
     dlogp_domega: Optional[NDArray] = None
+    # Optional stable log likelihoods and log derivatives for divide kernels.
+    # Raw probabilities/derivatives above remain available to existing callers.
+    log_p_obs: Optional[NDArray] = None
+    score_dV: Optional[NDArray] = None
+    score_dkparams: Optional[NDArray] = None
 
 
 @runtime_checkable
