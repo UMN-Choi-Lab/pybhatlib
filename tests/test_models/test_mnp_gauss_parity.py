@@ -46,7 +46,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from pybhatlib.models.mnp import MNPControl, MNPModel
+from pybhatlib.models.mnp import MNPControl, MNPModel, MNPResults
 from pybhatlib.models.mnp._mnp_ate import mnp_ate, mnp_ate_from_params
 
 ALTERNATIVES = ["Alt1_ch", "Alt2_ch", "Alt3_ch"]
@@ -84,6 +84,29 @@ _GAUSS_KERNEL = np.array([
     [1.0,                          _GAUSS_PARKER * _GAUSS_SCALE],
     [_GAUSS_PARKER * _GAUSS_SCALE, _GAUSS_SCALE ** 2],
 ])
+
+
+def test_gauss_reported_pair_normalizes_to_default_sumsq(travelmode_path):
+    """Default units change coefficients, not predictions from a GAUSS pair."""
+    data = pd.read_csv(travelmode_path)
+    first = MNPResults.from_estimates(
+        _GAUSS_BETA, kernel_cov=_GAUSS_KERNEL,
+        control=MNPControl(iid=False, scaling="first"), n_alts=3,
+    )
+    default = MNPResults.from_estimates(
+        _GAUSS_BETA, kernel_cov=_GAUSS_KERNEL,
+        control=MNPControl(iid=False), n_alts=3,
+    )
+    assert default.control.scaling == "sumsq"
+    normalizer = np.sqrt(np.trace(_GAUSS_KERNEL))
+    np.testing.assert_allclose(first.b_original, _GAUSS_BETA)
+    np.testing.assert_allclose(default.b_original, _GAUSS_BETA / normalizer)
+    kwargs = dict(data=data, spec=SPEC_WITH_AGE45, alternatives=ALTERNATIVES)
+    np.testing.assert_allclose(
+        mnp_ate(default, **kwargs).predicted_shares,
+        mnp_ate(first, **kwargs).predicted_shares,
+        rtol=1e-10, atol=1e-10,
+    )
 
 
 @pytest.mark.slow

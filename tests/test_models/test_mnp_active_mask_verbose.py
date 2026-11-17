@@ -41,6 +41,7 @@ PARKER01_IDX = 6  # theta-space index of the single correlation parameter
 # ---------------------------------------------------------------------------
 
 def _make_iid_model(travelmode_path, **ctrl_kwargs):
+    ctrl_kwargs.setdefault("scaling", "first")  # Published BHATLIB units.
     ctrl = MNPControl(iid=True, maxiter=200, verbose=0, seed=42, **ctrl_kwargs)
     return MNPModel(
         data=travelmode_path,
@@ -52,6 +53,7 @@ def _make_iid_model(travelmode_path, **ctrl_kwargs):
 
 
 def _make_flexible_model(travelmode_path, **ctrl_kwargs):
+    ctrl_kwargs.setdefault("scaling", "first")  # Frozen-scale layout below.
     ctrl = MNPControl(iid=False, maxiter=200, verbose=0, seed=42, **ctrl_kwargs)
     return MNPModel(
         data=travelmode_path,
@@ -135,6 +137,7 @@ def test_active_mask_freezes_parker01(travelmode_path):
         verbose=0,
         seed=42,
         startb=startb,
+        scaling="first",
         active_mask=mask,
     )
     model = MNPModel(
@@ -229,6 +232,7 @@ def test_frozen_se_is_nan(travelmode_path):
         seed=42,
         startb=startb,
         active_mask=mask,
+        scaling="first",  # The reporting-index assertions use GAUSS units.
     )
     model = MNPModel(
         data=travelmode_path,

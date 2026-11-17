@@ -46,8 +46,16 @@ class MNPControl:
         coordinates. In ``startb`` these are log scales for ``first`` and
         logits of squared scales relative to the first for ``sumsq``.
         Natural covariance inputs and reported scales use this normalization.
+        The ``sumsq`` default intentionally differs from the earlier implicit
+        GAUSS BHATLIB normalization. Use ``scaling="first"`` to reproduce
+        GAUSS's first-differenced-scale-equals-one coefficients and standard
+        errors. Changing identification rescales coefficients/covariances;
+        it does not change probabilities when parameters are converted
+        consistently. Optimizer ``startb`` must use the selected coordinates.
     spherical : bool
-        If True, use spherical parameterization for correlation matrix.
+        If True, use spherical parameterization for the kernel-error
+        correlation matrix. Random-coefficient covariance blocks use scaled
+        radial correlation coordinates independently of this flag.
     scal : float
         Scaling factor for starting values.
     IID_first : bool
@@ -102,9 +110,18 @@ class MNPControl:
         Random seed for reproducibility.
     startb : NDArray or None
         User-supplied optimizer-space starting values. The kernel scale block
-        follows ``scaling``; the parameter order and length are unchanged.
+        follows ``scaling``; changing kernel identification alone leaves its
+        parameter count unchanged. Random-coefficient covariance blocks use
+        ``[radial correlation coordinates | log SDs]`` in every segment;
+        ``randdiag=True`` omits correlations and retains log SDs. This replaces
+        the old full-covariance lower-Cholesky coordinates, so old full vectors
+        must not be reused just because their lengths match.
         Segment weights use unconstrained logits relative to segment 1;
         final reporting transforms these into probabilities.
+        With no supplied start, each random-coefficient SD starts at ``0.1``
+        (log SD ``log(0.1)``), correlations at zero, and segment logits at zero
+        (equal probabilities). Reported ``b_original`` is not an optimizer
+        starting vector and is not converted automatically.
     active_mask : NDArray of bool or None
         Boolean mask of shape ``(n_params,)``.  ``True`` = parameter is
         estimated; ``False`` = parameter is frozen at its ``startb`` value

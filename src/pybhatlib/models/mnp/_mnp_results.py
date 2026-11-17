@@ -11,6 +11,7 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 import pandas as pd
 from numpy.typing import NDArray
 
@@ -32,7 +33,7 @@ _MNPRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MNPResults:
+class MNPResults(FitMetricsMixin):
     """Results from MNP model estimation.
 
     Attributes
@@ -42,6 +43,10 @@ class MNPResults:
         prediction and forecasting.  Length equals ``n_params``.
         (Previously named ``b``; the old attribute is still available
         as a deprecated alias.)
+        In each segment the random-covariance block now contains radial
+        correlation coordinates followed by log SDs, not raw Cholesky
+        entries; diagonal models retain log SDs. Segment weights remain
+        logits. Older saved optimizer vectors require migration before reuse.
     b_original : NDArray
         Reporting coefficients under ``control.scaling``. Aligned with
         ``param_names``; non-IID reporting includes all differenced scales,
@@ -53,6 +58,10 @@ class MNPResults:
         segment's probability for two segments; ``segunpar_sN`` identifies
         segments 2..N for larger mixtures. The reference probability is shown
         with all other weights in the segment-probability table.
+        Older ``CovCOv*`` reporting rows represented variances/covariances,
+        and ``segunpar`` represented an optimizer logit. They must be converted,
+        not relabeled, when compared with the current SD/correlation and
+        probability rows. This also applies to their standard errors.
     se : NDArray
         Delta-method standard errors (aligned with ``b_original``).
         Computed using the estimator named in ``control.se_method``.
@@ -79,10 +88,12 @@ class MNPResults:
         ``loglik * n_obs`` (preserving its old total-LL semantics) — see
         Notes.)
     loglik_constants, loglik_zero : float
-        Mean independent empirical-share and uniform null log-likelihoods,
-        normalized like ``loglik``. Shares are conditional on the available
-        choice set; ordinal dimensions and panel occasions are independent
-        in these benchmarks, rather than restricted fits of the full kernel.
+        Mean constants-only and uniform null log-likelihoods, normalized like
+        ``loglik``. Full availability uses analytic empirical shares. With
+        unavailable alternatives, LL(C) fits shared alternative constants via
+        the basic IID MNP likelihood, respecting each choice set; no random
+        mixing is retained. LL(0) is uniform over the available alternatives.
+        Panel occasions are independent in these benchmarks.
     average_correct_probability : float
         Arithmetic mean fitted probability of the observed outcome (the joint
         category combination for ordinal models). In panels, average across
@@ -173,6 +184,9 @@ class MNPResults:
     # Independent null benchmarks; not restricted fits of the full kernel.
     loglik_constants: float = np.nan
     loglik_zero: float = np.nan
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    """Parameter count of the unmixed LL(C) baseline; -1 when unavailable."""
     average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:
@@ -213,7 +227,13 @@ class MNPResults:
         Parameters
         ----------
         beta : array-like, shape (n_beta,)
-            Slope coefficients in the model's coefficient order.
+            Reported slope coefficients in the model's coefficient order.
+            Without ``kernel_cov`` (IID), these must already use the selected
+            ``control.scaling`` convention; the default is ``"sumsq"``.
+            For unconverted GAUSS IID coefficients, pass
+            ``MNPControl(iid=True, scaling="first")``. Alternatively, divide
+            GAUSS IID coefficients by ``sqrt(I - 1)`` for ``"sumsq"``.
+            There is no automatic inference of the source coefficient scale.
         kernel_cov : array-like, shape (I-1, I-1), optional
             Differenced kernel error covariance ``Lambda`` (the quantity
             :func:`~pybhatlib.models.mnp._mnp_loglik._build_lambda` returns).
@@ -221,11 +241,8 @@ class MNPResults:
             beta are normalized together according to ``control.scaling``:
             first scale 1, or sum of squared differenced scales 1. Supplying
             an already normalized pair leaves its utility scale unchanged.
-            An IID model has no covariance to infer the scale from, so
-            ``beta`` is taken in ``control.scaling`` units: IID estimates
-            reported by GAUSS (first differenced variance 1) need
-            ``scaling="first"``; under ``"sumsq"`` they are ``sqrt(I-1)``
-            times too large.
+            This automatic joint normalization applies only to non-IID models
+            with a covariance; it cannot infer the units of an IID beta vector.
         control : MNPControl, optional
             Control structure.  Defaults to ``MNPControl(iid=kernel_cov is
             None)``.  Its ``heteronly`` flag selects the variance-only
@@ -271,9 +288,9 @@ class MNPResults:
                 raise ValueError(f"kernel_cov must be square, got {Lambda.shape}")
             if n_alts is None:
                 n_alts = dim + 1
-            # GAUSS homogeneous form: kernel_cov is the differenced kernel K with
-            # K[0,0] PINNED to 1. Encode only the I-2 FREE scales (scales[1:]) as
-            # log-scales; the first scale is implicit (pinned to 1).
+            # The natural covariance supplies the utility scale. Encode its
+            # I-2 free scale coordinates using the selected identification;
+            # the reference scale is fixed (first) or implied (sumsq).
             scales = np.sqrt(np.clip(np.diag(Lambda), 1e-300, None))
             from pybhatlib.models._mnp_scaling import encode_kernel_scales
 
@@ -344,6 +361,7 @@ class MNPResults:
         ):
             formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
             lines.append(f"  {label:<23s}{formatted}")
+        lines.extend(self.rho2_summary_lines())
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 

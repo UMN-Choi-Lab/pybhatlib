@@ -293,7 +293,7 @@ class TestMixtureMixedDiagGradient:
 
 
 class TestMixtureMixedFullGradient:
-    """Mixture (nseg=2) with IID kernel and full Cholesky random coefficients."""
+    """Mixture with IID kernel and radial-correlation/log-SD random blocks."""
 
     def test_2_ranvar_full(self):
         N, I, n_vars = 10, 3, 2

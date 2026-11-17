@@ -41,6 +41,12 @@ from numpy.typing import ArrayLike, NDArray
 _HALTON_BURNIN = 10
 
 
+def _validate_draw_method(draw_method: str) -> None:
+    """Validate the Halton source selected by a model control."""
+    if draw_method not in ("scipy", "explicit"):
+        raise ValueError("draw_method must be 'scipy' or 'explicit'")
+
+
 # ---------------------------------------------------------------------------
 # Panel reshape helper  (GAUSS ass -> (n_rep, n_ind, n_rnd))
 # ---------------------------------------------------------------------------
@@ -216,6 +222,10 @@ class ScipyHaltonDrawSource:
     The sampler is constructed fresh on every :meth:`draws` call from the
     per-call seed, so this **never mutates any global RNG** and is safe for
     parallel gradient evaluation.
+
+    The first 10 Halton points are always skipped automatically, once per
+    generated sequence, before assigning draws to individuals. This burn-in
+    is fixed and is not a control option.
 
     Parameters
     ----------

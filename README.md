@@ -112,6 +112,29 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
   values without recoding the model.
 - `verbose` levels: `0` silent, `1` summary, `2` per-iteration NLL,
   `3` per-iteration parameter / gradient / relative-gradient table.
+- `loglik_constants` (LL(C)): MNL/MNP use analytic empirical shares when all
+  alternatives are available. Otherwise they fit shared alternative constants
+  with each observation's availability, using basic MNL or IID MNP likelihoods.
+  Mixed choice models use the same unmixed baselines. MORP/MORP-flex retain
+  analytic independent threshold-only baselines, not correlated MORP null fits.
+- MDCEV/MDCEV-mixed LL(C) fits the basic MDCEV model with alternative constants
+  in both baseline utility and inside-good gamma, plus free sigma, preserving
+  traditional/linear utility, prices and weights. This adds an auxiliary fit;
+  mixed models do not simulate the baseline. Panel baselines assume independent
+  occasions and use the fitted model's individual weights and normalization.
+  Failed auxiliary fits return `NaN` (shown as `N/A`) with a warning. External
+  estimates without training data also have `N/A` baselines. MDCEV has no
+  uniform LL(0); density-based likelihood comparisons require consistent units
+  and numerical conventions.
+- Adjusted rho-squared uses total likelihoods: `1 - (LL - K) / LL(0)` and
+  `1 - (LL - (K - Kc)) / LL(C)`. With stored mean likelihoods, parameter
+  penalties are divided by the same case/individual count. `K` retains the
+  model's existing optimizer parameter count; `Kc` counts the baseline's
+  constants (`J - 1` for choice models), thresholds (sum of category counts
+  minus one per ordinal outcome), or utility/gamma constants plus sigma
+  (`2 * (J - 1) + 1` for MDCEV). MDCEV summaries show only constants-based
+  rho-squared measures. Unavailable baseline counts or zero baseline
+  likelihoods produce `N/A` for the affected adjusted statistic.
 
 **Backend**
 - NumPy by default; optional PyTorch backend with GPU support (install with
@@ -128,6 +151,54 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 
 ## Verification
 
+MNP parameter-vector migration in #71:
+
+- `results.params` / `startb` use optimizer coordinates. Each full random-
+  coefficient covariance block is now `[radial correlation coordinates | log
+  SDs]`, replacing lower-Cholesky entries. Diagonal blocks still use log SDs.
+  The vector length alone does not establish compatibility. Convert every
+  segment's block; setting `scaling="first"` does not restore the old layout.
+- To migrate an old full covariance block, reconstruct `Omega = L_old @
+  L_old.T`, obtain `sd = sqrt(diag(Omega))` and `R = Omega / outer(sd, sd)`,
+  and encode its correlation factor with
+  `revnewcholparmscaled(np.linalg.cholesky(R).T, control.scal)` from
+  `pybhatlib.matgradient._radial`. Append `log(sd)`. This assumes positive SDs
+  and the same utility normalization; account separately for a change to
+  `sumsq`. Zero-variance blocks need a positive starting value before encoding.
+- `b_original` reports correlations and SDs (`corr[...]`, `scal[...]`) rather
+  than the old `CovCOv*` variances/covariances. `omega_hat` and `segment_covs`
+  retain covariance semantics. Convert old variances to SDs and off-diagonal
+  covariances to correlations using the full covariance matrix. Reported
+  uncertainty must be transformed too; an old variance SE is not an SD SE.
+- Optimizer segment coordinates remain logits relative to segment 1. Reporting
+  now uses probabilities: `segunpar` is the second-segment probability, and
+  `segunpar_sN` identifies segments 2..N. Convert old reported logits with
+  `softmax([0, logits...])`; convert probabilities back to optimizer logits
+  with `log(p_segment / p_reference)`. `segment_probs` contains all weights.
+- Automatic starts now use SD `0.1` and zero correlations in every segment,
+  with equal mixture weights. In diagonal models this changes the SD start
+  from `1` to `0.1`. Supplied starts are not silently converted. Changes in
+  starting points may change the optimization path and local optimum.
+
+For external IID MNP estimates, `MNPResults.from_estimates` and
+`mnp_ate_from_params` interpret beta in `control.scaling` units. The default
+remains `"sumsq"`; the coefficient vector alone cannot identify its original
+normalization. For `J` alternatives, these two inputs give equivalent ATEs:
+
+```python
+# GAUSS IID coefficients, kept in first-scale-equals-one units:
+gauss_ate = mnp_ate_from_params(
+    beta_gauss, X=X, n_alts=J,
+    control=MNPControl(iid=True, scaling="first"),
+)
+# Equivalent coefficients in the library's default sumsq units:
+default_ate = mnp_ate_from_params(beta_gauss / np.sqrt(J - 1), X=X, n_alts=J)
+```
+
+For coefficients from a fitted pybhatlib model, reuse its scaling control.
+For non-IID external inputs, provide the matching `beta` and `kernel_cov` pair;
+the constructor normalizes them together without changing predictions.
+
 pybhatlib reproduces Table 1 of the BHATLIB GAUSS reference implementation using
 the TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 
@@ -141,6 +212,13 @@ the TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 
 Models (a)–(c) reproduce the GAUSS estimates and BHHH standard errors to ≤0.001
 on every parameter (verified end-to-end against GAUSS 26.1.1 + MaxLik 5.0.9).
+Direct GAUSS coefficient/SE comparisons use `MNPControl(scaling="first")`.
+The default is now `scaling="sumsq"` (squared differenced kernel scales sum to
+one), matching MNPKerCP's existing default. This changes reported units;
+equivalent, consistently rescaled parameters give the same probabilities.
+Use `scaling="first"` for externally supplied IID GAUSS coefficients.
+`startb` always uses the selected optimizer coordinates; choosing `first`
+does not undo other parameter-layout changes in this release.
 Model (d) is multi-modal — the Python optimum is a slightly better local mode
 than the GAUSS one.
 

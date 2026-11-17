@@ -225,7 +225,7 @@ def test_loglik_par_unpar_round_trip_mixed():
     rng = np.random.default_rng(13)
     theta_par = np.concatenate([
         rng.standard_normal(n_beta) * 0.3,
-        np.array([0.5]),  # Cholesky entry > 0
+        np.array([0.5]),  # log SD; natural variance is exp(2 * 0.5)
     ])
     theta_unpar = _param_to_unpar(
         theta_par, n_beta, n_alts, control, ranvar_indices
@@ -364,14 +364,16 @@ def _assert_bhhh_se_parity(
     """Validate the GAUSS first-differenced-variance=1 kernel against the
     published BHATLIB Table-2 values.
 
-    pybhatlib reports on the GAUSS homogeneous kernel convention: the first
+    This test selects the GAUSS homogeneous kernel convention: the first
     differenced error variance is pinned to 1, so ``scale01 == 1.0`` exactly (a
     FIXED reporting row with SE = NaN) and the remaining scale (``scale02``) is
     the relative variance of alt-3's differenced error term — exactly what the
     published table reports as its "scale01" entry. Under this convention the
     reported coefficients equal the published ones DIRECTLY (no un-normalization
-    factor; the old sum-of-squared-scales transform is gone):
-    beta/parker/CovCOv/segunpar == published verbatim, and published "scale01"
+    factor, because the control explicitly selects "first" rather than the
+    library's "sumsq" default):
+    beta/parker match directly; legacy CovCOv variances are square-rooted
+    before comparing to current scal[...] SDs. Published "scale01"
     == reported ``scale02``. SE *validity* (positive, finite) is asserted for
     each estimated parameter; exact SE parity for IID is in
     ``test_bhhh_unpar_matches_paper_iid_a1``.
@@ -480,9 +482,8 @@ def test_report_names_length_matches_values_iid():
 def test_report_names_length_matches_values_mixed():
     """Mixed MNP (n_rand=2): names and values must be same length AND in same order.
 
-    For the random-coef block with n_rand=2 (full Cholesky), both
-    ``_build_report_names`` and ``_unpar_to_report`` must iterate the
-    upper-triangle in the same order: (0,0), (0,1), (1,1).
+    For two correlated random coefficients, both reporting methods must
+    emit the correlation followed by the two SDs in the same order.
     """
     import pandas as pd
     from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar, count_params
