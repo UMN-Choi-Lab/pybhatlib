@@ -40,6 +40,8 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+
+from pybhatlib.models._fit_diagnostics import record_probabilities
 from pybhatlib.utils._safe_reparam import safe_exp
 
 from pybhatlib.gradmvn._mvncd_grad_analytic import (
@@ -321,6 +323,7 @@ def mnp_per_obs_scores(
             ]
         dim_q = len(avail_alts)
         if dim_q == 0:
+            record_probabilities(1.0)
             continue
 
         M = np.zeros((dim_q, I), dtype=np.float64)
@@ -612,6 +615,7 @@ def _mixture_analytic_gradient(
 
         dim_q = len(avail_alts)
         if dim_q == 0:
+            record_probabilities(1.0)
             continue
 
         # Build differencing matrix M
@@ -703,6 +707,7 @@ def _mixture_analytic_gradient(
         # ---- Mixture probability ----
         P_q = np.dot(pi_h, P_q_h_vals)
         P_q = max(P_q, 1e-300)
+        record_probabilities(P_q)
         total_ll += np.log(P_q)
         inv_P_q = 1.0 / P_q
 
@@ -874,6 +879,7 @@ def _mixture_vectorized_k2(
     # P_q = sum_h pi_h * P_q_h
     P_q_all = P_q_h_all @ pi_h  # (N,)
     P_q_all = np.maximum(P_q_all, 1e-300)
+    record_probabilities(P_q_all)
     total_ll = float(np.sum(np.log(P_q_all)))
     inv_P_q = 1.0 / P_q_all  # (N,)
 
@@ -1004,6 +1010,7 @@ def _batched_gradient_shared_cov(
                 diff_V_group, Lambda_diff_c
             )
 
+            record_probabilities(prob_all)
             total_ll += float(np.sum(np.log(prob_all)))
             inv_p_all = 1.0 / prob_all  # (N_c,)
 
@@ -1057,6 +1064,7 @@ def _batched_gradient_shared_cov(
                     diff_V, Lambda_diff_c
                 )
             prob = max(prob, 1e-300)
+            record_probabilities(prob)
             total_ll += np.log(prob)
             inv_p = 1.0 / prob
 
@@ -1146,6 +1154,7 @@ def _vectorized_gradient_mixed_k2(
             diff_V_group, Lambda_diff_group
         )
 
+        record_probabilities(prob_all)
         total_ll += float(np.sum(np.log(prob_all)))
         inv_p_all = 1.0 / prob_all  # (N_c,)
 
@@ -1276,6 +1285,7 @@ def _sequential_gradient(
             dim_q = len(avail_alts)
 
             if dim_q == 0:
+                record_probabilities(1.0)
                 continue
 
             diff_V = np.array([V_all[q, chosen] - V_all[q, j] for j in avail_alts])
@@ -1314,6 +1324,7 @@ def _sequential_gradient(
                 diff_V, Lambda_diff
             )
         prob = max(prob, 1e-300)
+        record_probabilities(prob)
         total_ll += np.log(prob)
         inv_p = 1.0 / prob
 

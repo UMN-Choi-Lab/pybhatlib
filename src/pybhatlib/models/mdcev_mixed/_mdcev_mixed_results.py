@@ -24,6 +24,7 @@ from pybhatlib.models._results_common import (
     mixing_summary_from_state,
 )
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_control import MDCEVMixedControl
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 
 
 # Legacy construction kwargs → canonical field names.
@@ -35,7 +36,7 @@ _MDCEVMIXEDRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MDCEVMixedResults:
+class MDCEVMixedResults(FitMetricsMixin):
     """Results from mixed MDCEV model estimation.
 
     Attributes
@@ -117,6 +118,15 @@ class MDCEVMixedResults:
     data_path: str = ""
     message: str | None = None
     mixing_summary: MixingSummary | None = None
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    loglik_constants: float = np.nan
+    """Mean per-individual LL of an unmixed, basic MDCEV constants-only fit.
+
+    Both utility and inside-good gamma have alternative constants; sigma is
+    estimated. Preserves prices, utility form and individual weights, assuming
+    independent occasions. NaN for external estimates or failed null fits.
+    """
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MDCEVMixedResults, accepting both canonical and legacy kwargs.
@@ -228,6 +238,12 @@ class MDCEVMixedResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        ll_c = (
+            f"{self.loglik_constants:>14.6f}"
+            if np.isfinite(self.loglik_constants) else f"{'N/A':>14s}"
+        )
+        lines.append(f"  Mean LL(C)             {ll_c}")
+        lines.extend(self.rho2_summary_lines(include_zero=False))
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append(f"  Number of individuals  {self.n_ind:>14d}")
         lines.append("")
