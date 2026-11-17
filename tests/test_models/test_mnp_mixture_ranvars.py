@@ -96,23 +96,49 @@ def _make_model(spec, nseg, ranvars, travelmode_path, mix=True, **ctrl_kwargs):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("nseg", [2, 3])
+@pytest.mark.parametrize("nseg", [1, 2, 3])
 @pytest.mark.parametrize("randdiag", [False, True])
 @pytest.mark.parametrize("ranvars", [["OVTT"], ["OVTT", "COST"]])
+@pytest.mark.parametrize("scaling", ["first", "sumsq"])
 def test_all_segments_start_with_positive_random_scales(
-    travelmode_path, nseg, randdiag, ranvars,
+    travelmode_path, nseg, randdiag, ranvars, scaling,
 ):
     from pybhatlib.models.mnp._mnp_loglik import _unpack_params, _build_omega_cholesky
 
-    model = _make_model(SPEC_BASE, nseg, ranvars, travelmode_path, randdiag=randdiag)
+    model = _make_model(SPEC_BASE, nseg, ranvars, travelmode_path,
+                        randdiag=randdiag, scaling=scaling)
     theta = model._default_start_values()
     params = _unpack_params(theta, model.n_beta, model.n_alts, model.control, model.ranvar_indices)
-    omegas = [params["omega_params"]] + params["segment_omegas"]
+    omegas = [params["omega_params"]] + params.get("segment_omegas", [])
     assert len(omegas) == nseg
     expected = np.eye(len(ranvars)) * 0.1
+    n_corr = 0 if randdiag else len(ranvars) * (len(ranvars) - 1) // 2
+    expected_coordinates = np.r_[np.zeros(n_corr),
+                                  np.full(len(ranvars), np.log(0.1))]
     for omega in omegas:
+        np.testing.assert_allclose(omega, expected_coordinates, atol=1e-14)
         L = _build_omega_cholesky(omega, model.ranvar_indices, model.control)
         np.testing.assert_allclose(L, expected)
+
+
+@pytest.mark.parametrize("n_rand", [2, 3])
+def test_legacy_cholesky_migration_preserves_covariance(n_rand):
+    """Check the documented conversion; old entries cannot just be relabeled."""
+    from pybhatlib.matgradient._radial import revnewcholparmscaled
+    from pybhatlib.models.mnp._mnp_random import random_covariance
+
+    rng = np.random.default_rng(89)
+    old_lower = np.tril(rng.normal(scale=.15, size=(n_rand, n_rand)))
+    np.fill_diagonal(old_lower, np.linspace(.3, .7, n_rand))
+    covariance = old_lower @ old_lower.T
+    sd = np.sqrt(np.diag(covariance))
+    correlation = covariance / np.outer(sd, sd)
+    ctrl = MNPControl(randdiag=False, scal=1.7)
+    radial = revnewcholparmscaled(np.linalg.cholesky(correlation).T, ctrl.scal)
+    migrated = np.r_[radial, np.log(sd)]
+    lower, reconstructed = random_covariance(migrated, n_rand, ctrl)
+    np.testing.assert_allclose(reconstructed, covariance, atol=1e-14)
+    np.testing.assert_allclose(lower @ lower.T, covariance, atol=1e-14)
 
 
 @pytest.mark.parametrize("scaling", ["first", "sumsq"])

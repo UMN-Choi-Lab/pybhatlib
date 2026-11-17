@@ -42,6 +42,10 @@ class MNPResults:
         prediction and forecasting.  Length equals ``n_params``.
         (Previously named ``b``; the old attribute is still available
         as a deprecated alias.)
+        In each segment the random-covariance block now contains radial
+        correlation coordinates followed by log SDs, not raw Cholesky
+        entries; diagonal models retain log SDs. Segment weights remain
+        logits. Older saved optimizer vectors require migration before reuse.
     b_original : NDArray
         Reporting coefficients under ``control.scaling``. Aligned with
         ``param_names``; non-IID reporting includes all differenced scales,
@@ -53,6 +57,10 @@ class MNPResults:
         segment's probability for two segments; ``segunpar_sN`` identifies
         segments 2..N for larger mixtures. The reference probability is shown
         with all other weights in the segment-probability table.
+        Older ``CovCOv*`` reporting rows represented variances/covariances,
+        and ``segunpar`` represented an optimizer logit. They must be converted,
+        not relabeled, when compared with the current SD/correlation and
+        probability rows. This also applies to their standard errors.
     se : NDArray
         Delta-method standard errors (aligned with ``b_original``).
         Computed using the estimator named in ``control.se_method``.
