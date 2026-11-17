@@ -65,6 +65,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   overrides that copy another column, as the MNP and MORP scenario APIs do. (#58)
 
 ### Fixed
+- MNP sandwich and Hessian SEs now invert the observed Hessian only over
+  active optimizer coordinates before projecting to natural/reporting
+  parameters. This excludes uncertainty from frozen coordinates, including
+  coupled `sumsq` scales and random-coefficient covariances. The sandwich's
+  BHHH fallback uses the same active-coordinate projection as BHHH. (#71)
 - `simmdcev` / `simtradmdcev` clip uniform draws away from 0 and 1 so the
   double-log Gumbel transform stays finite. (#58)
 - The MDCEV satiation and gradient helpers accept both gamma index layouts --

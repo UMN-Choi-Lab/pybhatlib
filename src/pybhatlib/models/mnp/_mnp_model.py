@@ -1368,6 +1368,12 @@ class MNPModel(BaseModel):
                         ``B = G_unpar^T G_unpar``.  Uses ``J_pu`` for the
                         Hessian leg.
 
+        With frozen optimizer coordinates, Hessian and sandwich covariance
+        use ``inv(H[active, active])`` and ``J_pu[:, active]``. The BFGS
+        fallback uses its already constrained active-space inverse (divided
+        by N). When natural coordinates are coupled, BHHH, including the
+        sandwich fallback, uses the active scores ``G_unpar @ J_active``.
+
         Parameters
         ----------
         theta_hat : ndarray
@@ -1411,17 +1417,6 @@ class MNPModel(BaseModel):
         # through the spherical-Cholesky parameterization.
         J_norm = self._fd_jacobian(self._unpar_to_report, theta_unpar)
 
-        # MNP-003 active_mask × unparameterized SE: the J-column zeroing
-        # that lived here on the parameterized-space Jacobian J is no
-        # longer applicable now that the SE projection goes through
-        # J_pu (par->unpar) and J_norm (unpar->report).  Frozen theta
-        # entries already contribute zero to ``cov_unpar`` via their
-        # zeroed rows/cols in ``hess_inv`` (active_mask reconstruction
-        # in fit()) and zeroed score columns in ``G`` (BHHH path).  The
-        # explicit NaN-marking via ``_build_theta_to_report_map``
-        # further down still applies — frozen-only-dependent report
-        # params get SE=NaN regardless.
-
         # MNP-002: select Cov(theta) via control.se_method.
         se_method = self.control.se_method
         cov_unpar: np.ndarray | None = None
@@ -1434,6 +1429,39 @@ class MNPModel(BaseModel):
             active_mask is not None and coupled_random_reporting
         )
 
+        # Invert curvature only in free optimizer coordinates. Inverting the
+        # full observed Hessian and then slicing its inverse would instead
+        # include uncertainty from parameters that were held fixed.
+        A_unpar = None
+        if se_method in ("hessian", "sandwich") and (
+            hess_observed is not None or hess_inv is not None
+        ):
+            J_pu = self._fd_jacobian(
+                lambda th: _param_to_unpar(
+                    th, self.n_beta, self.n_alts, self.control,
+                    self.ranvar_indices,
+                ), theta_hat,
+            )
+            free = (np.ones(len(theta_hat), dtype=bool)
+                    if active_mask is None else np.asarray(active_mask, dtype=bool))
+            J_active = J_pu[:, free]
+            if hess_observed is not None:
+                H_active = hess_observed[np.ix_(free, free)]
+                try:
+                    H_inv_active = np.linalg.inv(H_active)
+                except np.linalg.LinAlgError:
+                    warnings.warn(
+                        "Observed Hessian is singular; falling back to pinv. "
+                        "Check for unidentified parameters.",
+                        RuntimeWarning, stacklevel=2,
+                    )
+                    H_inv_active = np.linalg.pinv(H_active)
+            else:
+                # fit() embeds the optimizer's active-space inverse in a
+                # full matrix. Its objective is mean NLL, hence the / N.
+                H_inv_active = hess_inv[np.ix_(free, free)] / self.N
+            A_unpar = J_active @ H_inv_active @ J_active.T
+
         if se_method in ("bhhh", "sandwich"):
             # Per-obs scores in UNPARAMETERIZED space (the lpr1/lgd1 path).
             # Single analytic pass when available (analytic_grad + me/ovus +
@@ -1441,13 +1469,11 @@ class MNPModel(BaseModel):
             # par->unpar Jacobian; otherwise 2*n_theta full-data FD passes.
             G = self._bhhh_scores_unpar(theta_hat, theta_unpar)
 
-            # Zero out columns for frozen (inactive) parameters from PR #6
-            # active_mask (MNPControl attribute).  This prevents inactive
-            # directions from contaminating the score covariance with random
-            # gradient noise.  The guard makes this a no-op until PR #6 lands.
+            # A natural score column can be zeroed directly only when it
+            # corresponds to the same frozen optimizer coordinate. Coupled
+            # coordinates instead require projection through J_active.
             if (
-                hasattr(self.control, "active_mask")
-                and self.control.active_mask is not None
+                active_mask is not None
                 and not coupled_frozen_coordinates
             ):
                 G[:, ~active_mask] = 0.0
@@ -1491,7 +1517,7 @@ class MNPModel(BaseModel):
             active_idx = np.where(scoring_active_mask)[0]
             B_inv[np.ix_(active_idx, active_idx)] = B_inv_active
 
-            if se_method == "bhhh":
+            if se_method == "bhhh" or A_unpar is None:
                 # BHHH is the only path that's truly unparameterized end-to-end:
                 # G_unpar is computed natively in unparameterized space, so
                 # B_inv is already the unparameterized covariance.
@@ -1509,83 +1535,18 @@ class MNPModel(BaseModel):
                     J_active = J_pu[:, active_mask]
                     G_active = G @ J_active
                     cov_unpar = J_active @ np.linalg.pinv(G_active.T @ G_active) @ J_active.T
-            else:  # sandwich
-                # Sandwich = A^{-1} B A^{-1} with A = J_pu^T H_unpar J_pu in
-                # unparameterized space.  We assemble A_unpar via the
-                # par->unpar Jacobian (FD; PR #10 review P0 #1: this is a
-                # delta-method projection regardless of whether we start from
-                # the true observed Hessian or the BFGS approximation).
-                # Prefer the true observed Hessian when available (PR #16
-                # P0 #1 fix); otherwise fall back to the BFGS hess_inv / N.
-                if hess_observed is not None:
-                    try:
-                        H_inv_par = np.linalg.inv(hess_observed)
-                    except np.linalg.LinAlgError:
-                        warnings.warn(
-                            "Observed Hessian is singular; falling back to pinv. "
-                            "Check for unidentified parameters.",
-                            RuntimeWarning, stacklevel=2,
-                        )
-                        H_inv_par = np.linalg.pinv(hess_observed)
-                    J_pu = self._fd_jacobian(
-                        lambda th: _param_to_unpar(
-                            th, self.n_beta, self.n_alts, self.control,
-                            self.ranvar_indices,
-                        ),
-                        theta_hat,
-                    )
-                    A_unpar = J_pu @ H_inv_par @ J_pu.T
-                    cov_unpar = A_unpar @ B @ A_unpar
-                elif hess_inv is not None:
-                    J_pu = self._fd_jacobian(
-                        lambda th: _param_to_unpar(
-                            th, self.n_beta, self.n_alts, self.control,
-                            self.ranvar_indices,
-                        ),
-                        theta_hat,
-                    )
-                    A_unpar = J_pu @ (hess_inv / self.N) @ J_pu.T
-                    cov_unpar = A_unpar @ B @ A_unpar
-                else:
+                if se_method == "sandwich":
                     warnings.warn(
                         "se_method='sandwich' requested but neither "
                         "observed Hessian nor BFGS hess_inv is available; "
                         "falling back to BHHH covariance.",
                         RuntimeWarning, stacklevel=2,
                     )
-                    cov_unpar = B_inv
+            else:  # sandwich
+                cov_unpar = A_unpar @ B @ A_unpar.T
         elif se_method == "hessian":
-            # Hessian path: project the parameterized H to unparameterized
-            # space via J_pu (delta-method).  Prefer hess_observed (true H)
-            # over hess_inv / N (BFGS approximation).
-            if hess_observed is not None:
-                try:
-                    H_inv_par = np.linalg.inv(hess_observed)
-                except np.linalg.LinAlgError:
-                    warnings.warn(
-                        "Observed Hessian is singular; falling back to pinv. "
-                        "Check for unidentified parameters.",
-                        RuntimeWarning, stacklevel=2,
-                    )
-                    H_inv_par = np.linalg.pinv(hess_observed)
-                J_pu = self._fd_jacobian(
-                    lambda th: _param_to_unpar(
-                        th, self.n_beta, self.n_alts, self.control,
-                        self.ranvar_indices,
-                    ),
-                    theta_hat,
-                )
-                cov_unpar = J_pu @ H_inv_par @ J_pu.T
-            elif hess_inv is not None:
-                J_pu = self._fd_jacobian(
-                    lambda th: _param_to_unpar(
-                        th, self.n_beta, self.n_alts, self.control,
-                        self.ranvar_indices,
-                    ),
-                    theta_hat,
-                )
-                cov_unpar = J_pu @ (hess_inv / self.N) @ J_pu.T
-            else:
+            cov_unpar = A_unpar
+            if cov_unpar is None:
                 warnings.warn(
                     "se_method='hessian' requested but neither observed "
                     "Hessian nor BFGS hess_inv is available; SE will be NaN.",
