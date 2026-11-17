@@ -448,6 +448,8 @@ class MORPFlexModel(BaseModel):
             maxiter=ctrl.maxiter,
             tol=ctrl.tol,
             obj_scale=panel.n_ind,
+            log_sd_idx=np.arange(layout.n_theta)[layout.slices().get("scal", slice(0))],
+            reset_collapsed_sd=ctrl.reset_collapsed_sd,
             verbose=ctrl.verbose,
             param_names=self._param_names(spec, layout),
         )
