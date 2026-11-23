@@ -16,22 +16,16 @@ from numpy.typing import NDArray
 
 from pybhatlib.models._ate_common import (
     ATEResultMixin,
+    ScenarioSpec,
+    apply_scenario_overrides as _apply_scenario_overrides,
     scenarios_to_dict as _scenarios_to_dict,
 )
 from pybhatlib.models.mdcev._mdcev_results import MDCEVResults
 from pybhatlib.models.mdcev._mdcev_forecast import (
+    mdcev_forecast,
     mdcev_predict,
     prepare_mdcev_forecast_data,
 )
-
-# Narrower than the shared ``_ate_common.ScenarioSpec``: MDCEV overrides are
-# scalar-valued (broadcast to a column via prepare_mdcev_forecast_data), with
-# no source-column string mode as MNP and MORP have.
-ScenarioSpec = Union[
-    "dict[str, dict[str, float]]",
-    "pd.DataFrame",
-]
-
 
 @dataclass
 class MDCEVATEResult(ATEResultMixin):
@@ -42,12 +36,14 @@ class MDCEVATEResult(ATEResultMixin):
     n_obs : int
         Number of observations.
     predicted_shares : NDArray, shape (nc,)
-        Mean predicted consumption share for each alternative at the
-        observed data values.
+        Predicted participation rate for each alternative at the observed data
+        values: the share of simulated allocations (over observations and
+        Monte Carlo replications of :func:`mdcev_forecast`) with positive
+        consumption. The outside good is always consumed, so its entry is 1.
     base_shares : NDArray or None, shape (nc,)
-        Predicted shares at the base level of the treatment variable.
+        Participation rates at the base level of the treatment variable.
     treatment_shares : NDArray or None, shape (nc,)
-        Predicted shares at the treatment level.
+        Participation rates at the treatment level.
     pct_ate : NDArray or None, shape (nc,)
         Percentage ATE = (treatment_shares - base_shares) / base_shares * 100.
     alternative_names : list[str] or None
@@ -83,7 +79,13 @@ def mdcev_ate(
     scenarios: "ScenarioSpec | None" = None,
     budget_col: str = "tot",
 ) -> MDCEVATEResult:
-    """Compute predicted consumption shares and ATE for the MDCEV model.
+    """Compute predicted participation rates and ATE for the MDCEV model.
+
+    "Shares" throughout are participation rates -- the fraction of simulated
+    allocations with positive consumption of each alternative, as printed by
+    the GAUSS BHATLIB forecasting drivers -- computed with
+    :func:`mdcev_forecast` (traditional or linear outside-good utility,
+    following ``results.control.utility``).
 
     Supports two modes:
 
@@ -96,7 +98,7 @@ def mdcev_ate(
     ``data`` (DataFrame) plus a dict/DataFrame of ``{column: scalar}`` overrides
     per scenario.  Each scenario's design matrices are rebuilt via
     :func:`prepare_mdcev_forecast_data` (both the utility and satiation
-    matrices) and mean shares are returned in ``shares_per_scenario`` (with a
+    matrices) and participation rates are returned in ``shares_per_scenario`` (with a
     ``.comparison(base, treatment)`` helper), mirroring :func:`mnp_ate`.
 
     Parameters
@@ -142,22 +144,25 @@ def mdcev_ate(
             raise ValueError(
                 "model and data are required when using scenarios="
             )
-        Xb, Xgb, pb, _, _ = prepare_mdcev_forecast_data(
+        Xb, Xgb, pb, budget_b, _ = prepare_mdcev_forecast_data(
             model, data, None, None, budget_col
         )
-        baseline = mdcev_predict(
-            results, Xb, Xgb, pb, n_draws=n_draws, seed=seed,
-        ).mean(axis=0)
+        baseline_forecasts = mdcev_forecast(
+            results, Xb, Xgb, pb, budget_b,
+            n_replications=n_draws, seed=seed,
+        )
+        baseline = (baseline_forecasts > 0.0).mean(axis=0)
         shares_per_scenario: dict[str, NDArray] = {}
         for name, overrides in _scenarios_to_dict(scenarios).items():
-            cv = list(overrides.keys())
-            cval = [float(v) for v in overrides.values()]
-            Xs, Xgs, ps, _, _ = prepare_mdcev_forecast_data(
-                model, data, cv, cval, budget_col
+            data_mod = _apply_scenario_overrides(data, overrides)
+            Xs, Xgs, ps, budget_s, _ = prepare_mdcev_forecast_data(
+                model, data_mod, None, None, budget_col
             )
-            shares_per_scenario[name] = mdcev_predict(
-                results, Xs, Xgs, ps, n_draws=n_draws, seed=seed,
-            ).mean(axis=0)
+            forecasts = mdcev_forecast(
+                results, Xs, Xgs, ps, budget_s,
+                n_replications=n_draws, seed=seed,
+            )
+            shares_per_scenario[name] = (forecasts > 0.0).mean(axis=0)
         return MDCEVATEResult(
             n_obs=Xb.shape[0],
             predicted_shares=baseline,

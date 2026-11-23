@@ -15,12 +15,11 @@ import pandas as pd
 from numpy.typing import NDArray
 from scipy.special import ndtr as _ndtr
 
-from pybhatlib.utils._safe_reparam import safe_exp
-
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import ProbabilityCache, baseline_loglikelihoods
 from pybhatlib.models.mnp._mnp_control import MNPControl
 from pybhatlib.models.mnp._mnp_loglik import count_params, mnp_loglik
 from pybhatlib.models.mnp._mnp_results import MNPResults
@@ -163,22 +162,44 @@ class MNPModel(BaseModel):
         if self.ranvar_indices is None:
             self.control.mix = False
 
-        # Warn only when auto-expansion produced duplicate column indices,
-        # which makes the random-coefficient Omega rank-deficient. User-
-        # supplied duplicate names (e.g. ``ranvars=["OVTT", "OVTT"]``) are a
-        # deliberate choice and not flagged here.
-        if (
-            ranvars_expanded
-            and self.ranvar_indices
-            and len(set(self.ranvar_indices)) < len(self.ranvar_indices)
-        ):
+        # Shared-coefficients layout: variables not listed in ``ranvars`` are
+        # now SHARED across all mixture segments (single coefficient, no
+        # extra theta slot). With ``nseg > 1`` and no ranvars at all, every
+        # segment would therefore have an identical beta and identical
+        # (absent) Omega — a fully unidentified model that differs only in
+        # meaningless mixing weights over duplicate components. Fail fast
+        # instead of silently fitting a degenerate model.
+        if self.control.nseg > 1 and not self.ranvar_indices:
+            raise ValueError(
+                "control.nseg > 1 requires at least one variable in `ranvars`. "
+                "Under the shared-coefficients parameterization, variables not "
+                "listed in `ranvars` are identical across all segments, so "
+                "nseg > 1 with no ranvars produces an unidentified model "
+                "(every segment is the same). Pass `ranvars=[...]` naming the "
+                "variable(s) that should vary by segment."
+            )
+
+        # Warn whenever ranvars resolve to duplicate column indices — this
+        # always makes the random-coefficient Omega rank-deficient,
+        # regardless of how the duplicate arose (auto-expansion no longer
+        # exists; this now only happens if the same underlying variable is
+        # listed more than once in `ranvars`, directly or via two spec
+        # columns built from the same source data).
+        if self.ranvar_indices and len(set(self.ranvar_indices)) < len(self.ranvar_indices):
             warnings.warn(
-                "Mixture ranvars auto-expansion produced duplicate column indices "
-                f"{self.ranvar_indices}. The resulting random-coefficient Omega is "
-                "rank-deficient and the optimizer can only recover effective scalar "
-                "variance per segment. To fit a model with truly per-segment random "
-                "coefficients, list segment-suffixed names in spec (e.g. OVTT_seg1, "
-                "OVTT_seg2) and pass them explicitly. See "
+                "`ranvars` resolved to duplicate column indices "
+                f"{self.ranvar_indices} — the same underlying variable "
+                "appears more than once. The resulting random-coefficient "
+                "Omega will be rank-deficient. This is usually caused by "
+                "listing the same variable twice in `ranvars`, including "
+                "indirectly via two spec columns built from the same source "
+                "data (e.g. separate 'OVTT_seg1'/'OVTT_seg2' columns both "
+                "mapped to the same underlying OVTT data). With "
+                "`control.nseg > 1`, a single name — e.g. `ranvars=['OVTT']` "
+                "— already gets its own coefficient value in every segment "
+                "automatically; there is no need to create separate "
+                "per-segment spec columns. List each distinct random "
+                "coefficient once. See "
                 "docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md.",
                 RuntimeWarning,
                 stacklevel=2,
@@ -203,40 +224,37 @@ class MNPModel(BaseModel):
     ) -> tuple[list[int], bool]:
         """Resolve user-supplied ranvar names into indices in ``var_names``.
 
-        Implements the MNP-006 (M1) auto-expansion ergonomic fix.
-        Mirrors the GAUSS pattern ``ranvars = { OVTT1 OVTT2 }`` from
-        ``MNP Table2 d.gss:113`` — with ``control.nseg > 1`` the user
-        may write ``ranvars=["OVTT"]`` (base name) and the index is
-        replicated across segments automatically.
+        NOTE — post shared-coefficients fix: this used to also auto-expand a
+        bare base name (e.g. ``"OVTT"``) into ``nseg`` duplicate indices (the
+        MNP-006 (M1) ergonomic fix, mirroring the GAUSS pattern
+        ``ranvars = { OVTT1 OVTT2 }`` from ``MNP Table2 d.gss:113``). That
+        expansion is now REMOVED: ``_unpack_params`` (see
+        ``_mnp_loglik.py``) already gives every name in ``ranvars`` its own
+        segment-specific coefficient/Omega slot for each of the ``nseg``
+        segments automatically. Pre-duplicating the index here would double
+        that — you'd get a rank-deficient per-segment Omega on top of the
+        (correct) per-segment expansion.
+
+        Practical upshot: to make a variable ``"OVTT"`` vary by mixture
+        segment, just pass ``ranvars=["OVTT"]`` once (with ``control.nseg >
+        1``) — do NOT create separate ``"OVTT_seg1"``/``"OVTT_seg2"`` spec
+        columns and pass both as ranvars; that now creates two independent
+        random-coefficient variables (each of which *also* gets its own
+        per-segment expansion), not one variable that differs by segment.
 
         Resolution rules
         ----------------
         Each user-supplied name ``rv`` is classified as:
 
-        - **base** — appears in ``var_names`` and does NOT end with a
-          digit or an explicit ``_seg``/``_s`` suffix (e.g. ``"OVTT"``).
-          Auto-expanded to one slot per segment when ``nseg > 1``.
-        - **segment-suffixed (literal)** — appears in ``var_names`` and
-          ends with a digit or ``_sN`` suffix (e.g. ``"OVTT1"``,
-          ``"OVTT_s2"``). Used as-is, no expansion.
+        - **literal** — appears in ``var_names`` as-is (e.g. ``"OVTT"``,
+          or an explicitly-created ``"OVTT_seg1"`` column). Resolved to
+          that column's index directly.
         - **segment-suffixed (inferred)** — does not appear in
           ``var_names``, but stripping a trailing digit or ``_sN``
-          yields a base that does (e.g. ``"OVTT1"`` → ``"OVTT"``).
-          Used as-is for that base index, no expansion.
+          suffix yields a base that does (e.g. legacy GAUSS-style
+          ``"OVTT1"`` → ``"OVTT"``). Resolved to the base column's index.
+          Only recognised when ``nseg > 1`` (see the nseg==1 branch below).
         - Otherwise → ``ValueError``.
-
-        is_base heuristic limitation
-        ----------------------------
-        A name is treated as a "base" eligible for auto-expansion only
-        when it neither matches the explicit ``_seg``/``_s`` regex nor
-        ends in a digit. This means a name like ``"AGE45"`` (ends in
-        digit) is **never** auto-expanded — even when the user might
-        want a per-segment AGE45 random coefficient. Conversely, a name
-        like ``"X1Y"`` (does not end in digit) **is** auto-expanded if
-        ``nseg > 1``, even when the user only wanted a single column.
-        If you need the non-default behavior, list explicit segment
-        names (e.g. ``"AGE45_seg1"``, ``"AGE45_seg2"``) in spec and
-        pass them in ``ranvars`` directly.
 
         Parameters
         ----------
@@ -246,13 +264,13 @@ class MNPModel(BaseModel):
         Returns
         -------
         indices : list of int
-            Resolved indices into ``self.var_names``. When auto-expansion
-            fires, length is ``n_base_names * nseg + n_non_base_names``
-            (no dedup of input names); otherwise ``len(ranvars)``.
+            Resolved indices into ``self.var_names``, length ``len(ranvars)``
+            (no dedup — user-supplied duplicate names, e.g.
+            ``ranvars=["OVTT", "OVTT"]``, are preserved as a deliberate
+            choice; see the duplicate-index warning in ``__init__``).
         expanded : bool
-            ``True`` iff auto-expansion replicated at least one base
-            index across segments. Used by ``__init__`` to attribute
-            duplicate-index warnings correctly.
+            Always ``False`` now that auto-expansion has been removed.
+            Kept in the return signature for call-site compatibility.
 
         Raises
         ------
@@ -261,8 +279,6 @@ class MNPModel(BaseModel):
         """
         nseg = self.control.nseg
         resolved: list[int] = []
-        # Classify per-name so we know which to auto-expand.
-        is_base: list[bool] = []
 
         for rv in ranvars:
             base = self._strip_segment_suffix(rv, var_names=self.var_names)
@@ -270,18 +286,6 @@ class MNPModel(BaseModel):
 
             if rv in self.var_names:
                 resolved.append(self.var_names.index(rv))
-                # A name qualifies as a "base" for per-segment auto-expansion
-                # only when it carries NO segment suffix (explicit or legacy).
-                # Names that end in digits but are not recognised as a legacy
-                # segment form (e.g. ``"AGE45"`` when ``"AGE4"`` is absent
-                # from spec) are treated as literal variable names, NOT bases
-                # — even though ``_strip_segment_suffix`` returns None for them.
-                # We detect the "ends-in-digits but not a recognised suffix"
-                # case by checking whether the raw name ends in a digit.
-                ends_in_digit = rv[-1].isdigit() if rv else False
-                # Treat as base only when no suffix at all (no trailing digits,
-                # no explicit _seg/_s form).
-                is_base.append(not looks_segment_suffixed and not ends_in_digit)
                 continue
 
             # Not literally in var_names — try base lookup (only
@@ -289,7 +293,6 @@ class MNPModel(BaseModel):
             # suffix has no semantic meaning).
             if nseg > 1 and looks_segment_suffixed and base in self.var_names:
                 resolved.append(self.var_names.index(base))
-                is_base.append(False)  # explicit segment form
                 continue
 
             # Targeted hint when the failure is the nseg=1 + legacy-suffix
@@ -310,21 +313,7 @@ class MNPModel(BaseModel):
                 f"{self.var_names}"
             )
 
-        # Auto-expand base names when nseg > 1: replicate each base
-        # index ``nseg`` times so that every mixture segment receives
-        # its own random-coefficient slot.
-        expanded = False
-        if nseg > 1 and any(is_base):
-            expanded = True
-            replicated: list[int] = []
-            for idx, base_flag in zip(resolved, is_base):
-                if base_flag:
-                    replicated.extend([idx] * nseg)
-                else:
-                    replicated.append(idx)
-            resolved = replicated
-
-        return resolved, expanded
+        return resolved, False
 
     @staticmethod
     def _strip_segment_suffix(
@@ -470,6 +459,24 @@ class MNPModel(BaseModel):
             except ImportError:
                 pass
 
+            # _mnp_grad_gpu.py's mixture-of-normals path (nseg > 1) still
+            # assumes the OLD full-n_beta-per-segment theta layout and has
+            # not yet been updated for the shared-coefficients fix (only
+            # `ranvar_indices` vary by segment now). Using it would silently
+            # compute a wrong-shaped/wrong-valued gradient, so fall back to
+            # the CPU path (which uses the corrected numerical gradient)
+            # until _mnp_grad_gpu.py is rewritten to match.
+            if use_gpu and self.control.nseg > 1:
+                warnings.warn(
+                    "GPU-accelerated gradient is not yet supported for "
+                    "mixture-of-normals models (nseg > 1) under the "
+                    "shared-coefficients parameterization; falling back to "
+                    "the CPU path.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                use_gpu = False
+
         if use_gpu:
             import torch
             from pybhatlib.models.mnp._mnp_grad_gpu import mnp_gradient_gpu
@@ -500,6 +507,8 @@ class MNPModel(BaseModel):
                     self.n_alts, self.n_beta, self.control,
                     self.ranvar_indices, return_gradient=True, xp=xp,
                 )
+
+        _full_objective = ProbabilityCache(_full_objective, self.N)
 
         # ------------------------------------------------------------------
         # MNP-003: wrap objective for active_mask if needed
@@ -683,12 +692,10 @@ class MNPModel(BaseModel):
         )
         dim = self.n_alts - 1
 
-        # GAUSS homogeneous "first-differenced-variance = 1" form: the reported
-        # kernel covariance IS the differenced kernel K returned by _build_lambda
-        # (K[0,0] == 1 pinned). No overall-scale renormalization is applied —
-        # betas and Omega are reported on the raw (GAUSS/reported) scale.
-        # For IID the kernel is the frozen GAUSS startker (K[0,0] == 1 too).
-        lambda_hat = Lambda  # K, with lambda_hat[0,0] == 1
+        # Structural covariances retain the chosen likelihood normalization.
+        # Reporting converts Omega to correlations/SDs without changing the
+        # covariance or Cholesky factors consumed by prediction and ATE.
+        lambda_hat = Lambda
 
         if self.control.mix and self.ranvar_indices and "omega_params" in params:
             L_raw = _build_omega_cholesky(
@@ -704,7 +711,23 @@ class MNPModel(BaseModel):
                 raw -= raw.max()
                 segment_probs = np.exp(raw) / np.exp(raw).sum()
 
+        segment_means = None
+        segment_covs = None
+        if omega_hat is not None and self.control.nseg > 1:
+            segment_means = [params["beta"].copy()] + params["segment_betas_full"]
+            segment_covs = [omega_hat]
+            for omega_params in params["segment_omegas"]:
+                L = _build_omega_cholesky(omega_params, self.ranvar_indices, self.control)
+                segment_covs.append(L @ L.T)
+
+        ll_c, ll_0 = baseline_loglikelihoods(
+            self.y, [self.n_alts], availability=self.avail, family="mnp",
+        )
         return MNPResults(
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=int(active_mask.sum()) if active_mask is not None else self.n_params,
+            n_constants_params=self.n_alts - 1,
+            average_correct_probability=_full_objective.get(theta_hat),
             params=theta_hat,
             b_original=b_report,
             se=se,
@@ -724,12 +747,16 @@ class MNPModel(BaseModel):
             omega_hat=omega_hat,
             cholesky_L=cholesky_L,
             segment_probs=segment_probs,
+            segment_means=segment_means,
+            segment_covs=segment_covs,
+            random_coefficient_names=[self.var_names[i] for i in self.ranvar_indices or []],
             control=self.control,
             data_path=self.data_path,
             ranvar_indices=self.ranvar_indices,
             se_bhhh=se_by_method.get("bhhh"),
             se_hessian=se_by_method.get("hessian"),
             se_sandwich=se_by_method.get("sandwich"),
+            alternatives=list(self.alternatives),
         )
 
     # ------------------------------------------------------------------
@@ -782,8 +809,8 @@ class MNPModel(BaseModel):
 
         if not self.control.iid:
             dim = self.n_alts - 1
-            # GAUSS homogeneous form: I-2 FREE scales (first diff variance pinned
-            # to 1). Free scales start at 0 (exp(0)=1).
+            # I-2 free coordinates: zero means unit scales for "first", or
+            # equal squared shares (scale=1/sqrt(dim)) for "sumsq".
             n_scale = max(dim - 1, 0)
             theta0[idx:idx + n_scale] = 0.0
             idx += n_scale
@@ -796,40 +823,35 @@ class MNPModel(BaseModel):
                 idx += n_corr
 
         if self.control.mix and self.ranvar_indices is not None:
-            n_rand = len(self.ranvar_indices)
-            if self.control.randdiag:
-                theta0[idx:idx + n_rand] = 0.0
-                idx += n_rand
-            else:
-                n_omega = n_rand * (n_rand + 1) // 2
-                theta0[idx:idx + n_omega] = 0.0
-                # Set diagonal elements to small positive values
-                chol_idx = 0
-                for i in range(n_rand):
-                    for j in range(i + 1):
-                        if i == j:
-                            theta0[idx + chol_idx] = 0.1
-                        chol_idx += 1
-                idx += n_omega
+            start = self._random_start_values()
+            theta0[idx:idx + len(start)] = start
+            idx += len(start)
 
         if self.control.nseg > 1:
             # Segment params: start at 0 (equal probabilities)
             n_seg = self.control.nseg - 1
             theta0[idx:idx + n_seg] = 0.0
             idx += n_seg
-            # Extra segment betas and omegas
+            # Extra segment betas and omegas.
+            #
+            # Shared-coefficients layout: only variables in ``ranvars``
+            # (``self.ranvar_indices``) get a segment-specific starting
+            # value; every other coefficient is shared with segment 1 and
+            # gets no separate theta slot here. See
+            # docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md.
+            n_rand_shared = len(self.ranvar_indices) if self.ranvar_indices else 0
+            base_beta = theta0[:self.n_beta]
             for _ in range(1, self.control.nseg):
-                theta0[idx:idx + self.n_beta] = theta0[:self.n_beta] + np.random.randn(self.n_beta) * 0.05
-                idx += self.n_beta
+                if n_rand_shared > 0:
+                    base_rand = base_beta[np.asarray(self.ranvar_indices)]
+                    theta0[idx:idx + n_rand_shared] = (
+                        base_rand + np.random.randn(n_rand_shared) * 0.05
+                    )
+                    idx += n_rand_shared
                 if self.control.mix and self.ranvar_indices is not None:
-                    n_rand = len(self.ranvar_indices)
-                    if self.control.randdiag:
-                        theta0[idx:idx + n_rand] = 0.0
-                        idx += n_rand
-                    else:
-                        n_omega = n_rand * (n_rand + 1) // 2
-                        theta0[idx:idx + n_omega] = 0.0
-                        idx += n_omega
+                    start = self._random_start_values()
+                    theta0[idx:idx + len(start)] = start
+                    idx += len(start)
 
         return theta0
 
@@ -839,78 +861,38 @@ class MNPModel(BaseModel):
 
         if not self.control.iid:
             dim = self.n_alts - 1
-            for i in range(dim):
-                names.append(f"scale{i + 1:02d}")
+            kernel_names = [
+                            f"ker[{self.alternatives[d + 1]}-{self.alternatives[0]}]"
+                            for d in range(dim)
+                        ]
+            for i in range(dim-1):
+                names.append(f"ker[{self.alternatives[i + 2]}-{self.alternatives[0]}]")
             if not self.control.heteronly:
                 for i in range(dim):
                     for j in range(i + 1, dim):
-                        names.append(f"parker{i + 1:02d}")
+                        names.append(f"corr[{kernel_names[i]},{kernel_names[j]}]")
 
         if self.control.mix and self.ranvar_indices is not None:
-            n_rand = len(self.ranvar_indices)
-            if self.control.randdiag:
-                for i in range(n_rand):
-                    rv_name = self.var_names[self.ranvar_indices[i]]
-                    names.append(f"CovCOv{i + 1:02d}")
-            else:
-                idx = 0
-                for i in range(n_rand):
-                    for j in range(i + 1):
-                        names.append(f"CovCOv{idx + 1:02d}")
-                        idx += 1
+            names.extend(self._random_optimizer_names())
 
         if self.control.nseg > 1:
             for h in range(1, self.control.nseg):
-                names.append(f"segunpar")
+                names.append(f"segment_logit[s{h + 1}]")
+            # Shared-coefficients layout: only variables in ``ranvars`` get a
+            # segment-specific name/slot; everything else is shared with
+            # segment 1 and is not repeated here.
             for h in range(1, self.control.nseg):
-                for vn in self.var_names:
-                    names.append(f"{vn}_s{h + 1}")
+                if self.ranvar_indices:
+                    for i in self.ranvar_indices:
+                        names.append(f"{self.var_names[i]}_s{h + 1}")
                 if self.control.mix and self.ranvar_indices is not None:
-                    n_rand = len(self.ranvar_indices)
-                    if self.control.randdiag:
-                        for i in range(n_rand):
-                            names.append(f"CovCOv{i + 1:02d}_s{h + 1}")
-                    else:
-                        idx = 0
-                        for i in range(n_rand):
-                            for j in range(i + 1):
-                                names.append(f"CovCOv{idx + 1:02d}_s{h + 1}")
-                                idx += 1
+                    names.extend(self._random_optimizer_names(f"_s{h + 1}"))
 
         # Pad if needed
         while len(names) < self.n_params:
             names.append(f"param{len(names) + 1}")
 
         return names[:self.n_params]
-
-    def _unparametrize(self, theta: np.ndarray) -> np.ndarray:
-        """Convert parametrized values to unparametrized (original scale)."""
-        b_orig = theta.copy()
-        idx = self.n_beta
-
-        if not self.control.iid:
-            dim = self.n_alts - 1
-            # Scales: exp transform
-            for i in range(dim):
-                b_orig[idx + i] = safe_exp(theta[idx + i])
-            idx += dim
-            if not self.control.heteronly:
-                n_corr = dim * (dim - 1) // 2
-                # Correlations: keep as-is (theta params)
-                idx += n_corr
-
-        if self.control.mix and self.ranvar_indices is not None:
-            n_rand = len(self.ranvar_indices)
-            if self.control.randdiag:
-                for i in range(n_rand):
-                    b_orig[idx + i] = safe_exp(theta[idx + i])
-                idx += n_rand
-            else:
-                n_omega = n_rand * (n_rand + 1) // 2
-                # Cholesky elements: keep as-is
-                idx += n_omega
-
-        return b_orig
 
     # ------------------------------------------------------------------
     # BHATLIB-style normalized reporting
@@ -922,9 +904,8 @@ class MNPModel(BaseModel):
         Routes through the unparameterized form so the reporting block has
         a single source of truth: ``theta_par -> theta_unpar -> b_report``.
         This eliminates the need for a delta-method projection through the
-        parameterized covariance and aligns the random-coefficient block
-        with GAUSS (which reports variance/covariance entries via
-        ``vecdup(L'L)``, not Cholesky entries).
+        parameterized covariance. Structural covariances remain available
+        in the natural likelihood layout; reporting uses correlations and SDs.
         """
         from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar
 
@@ -937,23 +918,14 @@ class MNPModel(BaseModel):
     def _unpar_to_report(self, theta_unpar: np.ndarray) -> np.ndarray:
         """Map unparameterized theta to the MNP reporting convention.
 
-        GAUSS homogeneous "first-differenced-variance = 1" form (lpr1): the
-        reported kernel covariance IS the differenced kernel ``K`` with
-        ``K[0,0] == 1`` PINNED. No overall-scale renormalization is applied:
-
-          - betas are reported RAW (the GAUSS/reported scale);
-          - the kernel block reports the raw correlations (``parker``) followed
-            by the I-1 scales, where ``scale01`` is LITERALLY 1.0 (pinned, no
-            free theta column) and ``scale0k = sqrt(K[k-1, k-1])`` for k >= 2;
-          - the random-coefficient Omega entries are reported RAW.
-
-        Notes
-        -----
-        Because no scalar normalization survives, the Jacobian of this map
-        (``J_norm``) is an identity/selection: every reported entry except the
-        pinned ``scale01`` corresponds 1:1 to an unparameterized theta entry,
-        and ``scale01`` has no theta column (its SE is therefore NaN). This
-        makes ``cov_report == cov_unpar`` on the free block.
+        Betas pass through unchanged. Random-coefficient covariances become
+        correlations followed by SDs, matching the mixed-MNP convention.
+        The kernel block reports correlations followed by all I-1 differenced
+        scales. With ``scaling="first"`` the first scale is the fixed 1 and
+        has no free coordinate (SE is NaN). With ``scaling="sumsq"`` it is
+        sqrt(1-sum(free_scales**2)) and has sampling uncertainty determined by
+        the other scales. ``J_norm`` includes that dependency. Identification
+        already holds in the likelihood; no additional rescaling is applied.
         """
         from pybhatlib.models.mnp._mnp_loglik import (
             _build_lambda_direct,
@@ -992,11 +964,7 @@ class MNPModel(BaseModel):
             for i in range(dim):
                 report.append(float(scales[i]))
 
-        # --- Random-coefficient Omega (variance/covariance entries, raw) ---
-        # GAUSS reference: MNP_TRAVELMODE.gss line 211 reports
-        # ``vecdup(newcorker' * newcorker)`` — i.e., upper-tri (with diag)
-        # of Omega. This makes ``CovCOv01`` the variance of the random
-        # coefficient (not its standard deviation).
+        # --- Random-coefficient correlations and SDs (mixed-MNP convention) ---
         if (
             self.control.mix
             and self.ranvar_indices is not None
@@ -1005,19 +973,15 @@ class MNPModel(BaseModel):
             Omega = _build_omega_direct(
                 params["omega_params"], self.ranvar_indices, self.control,
             )
-            n_rand = len(self.ranvar_indices)
-            if self.control.randdiag:
-                for i in range(n_rand):
-                    report.append(float(Omega[i, i]))
-            else:
-                for i in range(n_rand):
-                    for j in range(i, n_rand):
-                        report.append(float(Omega[i, j]))
+            report.extend(self._random_cov_to_report(Omega))
 
         # --- Segment parameters ---
         if self.control.nseg > 1:
             seg_params = params.get("segment_params", np.array([]))
-            report.extend(seg_params.tolist())
+            logits = np.concatenate([[0.0], seg_params])
+            weights = np.exp(logits - logits.max())
+            probabilities = weights / weights.sum()
+            report.extend(probabilities[1:].tolist())
 
             for h in range(1, self.control.nseg):
                 if h - 1 < len(params.get("segment_betas", [])):
@@ -1032,16 +996,42 @@ class MNPModel(BaseModel):
                         self.ranvar_indices,
                         self.control,
                     )
-                    n_rand = len(self.ranvar_indices)
-                    if self.control.randdiag:
-                        for i in range(n_rand):
-                            report.append(float(Omega_h[i, i]))
-                    else:
-                        for i in range(n_rand):
-                            for j in range(i, n_rand):
-                                report.append(float(Omega_h[i, j]))
+                    report.extend(self._random_cov_to_report(Omega_h))
 
         return np.array(report, dtype=np.float64)
+
+    def _random_cov_to_report(self, covariance: NDArray) -> list[float]:
+        """Report correlations then natural SDs, without changing raw Omega."""
+        scales = np.sqrt(np.maximum(np.diag(covariance), 0.0))
+        values = []
+        if not self.control.randdiag:
+            outer = np.outer(scales, scales)
+            corr = np.divide(covariance, outer, out=np.zeros_like(covariance), where=outer > 0)
+            values.extend(float(corr[i, j]) for i in range(len(scales))
+                          for j in range(i + 1, len(scales)))
+        values.extend(scales.tolist())
+        return values
+
+    def _random_report_names(self, suffix: str = "") -> list[str]:
+        names = [self.var_names[i] for i in self.ranvar_indices or []]
+        correlations = [] if self.control.randdiag else [
+            f"corr[{names[i]},{names[j]}]{suffix}"
+            for i in range(len(names)) for j in range(i + 1, len(names))
+        ]
+        return correlations + [f"scal[{name}]{suffix}" for name in names]
+
+    def _random_optimizer_names(self, suffix: str = "") -> list[str]:
+        names = [self.var_names[i] for i in self.ranvar_indices or []]
+        correlations = [] if self.control.randdiag else [
+            f"corr_theta[{names[i]},{names[j]}]{suffix}"
+            for i in range(len(names)) for j in range(i + 1, len(names))
+        ]
+        return correlations + [f"scal_theta[{name}]{suffix}" for name in names]
+
+    def _random_start_values(self) -> NDArray:
+        n_rand = len(self.ranvar_indices or [])
+        n_corr = 0 if self.control.randdiag else n_rand * (n_rand - 1) // 2
+        return np.r_[np.zeros(n_corr), np.full(n_rand, np.log(0.1))]
 
     def _build_theta_to_report_map(self) -> dict[int, int | None]:
         """Map theta-space parameter indices to report-space indices.
@@ -1097,7 +1087,7 @@ class MNPModel(BaseModel):
             for k in range(n_free_scale):
                 mapping[scale_theta_start + k] = scale_report_start + 1 + k
 
-        # --- Random-coefficient Cholesky params ---
+        # --- Random-coefficient correlation/log-SD coordinates ---
         if self.control.mix and self.ranvar_indices is not None:
             n_rand = len(self.ranvar_indices)
             if self.control.randdiag:
@@ -1116,9 +1106,13 @@ class MNPModel(BaseModel):
                 mapping[theta_idx] = report_idx
                 theta_idx += 1
                 report_idx += 1
-            # Extra segment betas and omegas
+            # Extra segment betas and omegas.
+            # Shared-coefficients layout: only ``ranvar_indices`` slots exist
+            # in theta/report space for extra segments (everything else is
+            # shared with segment 1 and has no separate theta column).
+            n_rand_shared = len(self.ranvar_indices) if self.ranvar_indices else 0
             for _ in range(1, self.control.nseg):
-                for k in range(self.n_beta):
+                for k in range(n_rand_shared):
                     mapping[theta_idx] = report_idx
                     theta_idx += 1
                     report_idx += 1
@@ -1136,61 +1130,41 @@ class MNPModel(BaseModel):
         return mapping
 
     def _build_report_names(self) -> list[str]:
-        """Build parameter names for BHATLIB reporting convention.
-
-        Compared to ``_build_param_names`` (theta-space), this drops one
-        scale parameter (absorbed by normalization) and reorders
-        covariance parameters as parker (correlations) then scale
-        (relative scales).
-        """
+        """Name natural correlations and scales, including the reference scale."""
         names = list(self.var_names)
         dim = self.n_alts - 1
 
         if not self.control.iid:
-            # Parker (correlations)
+            dim = self.n_alts - 1
+            kernel_names = [
+                f"ker[{self.alternatives[d + 1]}-{self.alternatives[0]}]"
+                for d in range(dim)
+            ]
+
             if not self.control.heteronly:
-                idx = 0
                 for i in range(dim):
                     for j in range(i + 1, dim):
-                        idx += 1
-                        names.append(f"parker{idx:02d}")
+                        names.append(f"corr[{kernel_names[i]},{kernel_names[j]}]")
 
-            # All I-1 kernel scales (sum of squares == 1); none absorbed.
-            for i in range(dim):
-                names.append(f"scale{i + 1:02d}")
+            for i, kernel_name in enumerate(kernel_names):
+                fixed = " (fixed)" if i == 0 and self.control.scaling == "first" else ""
+                names.append(f"kerscal[{kernel_name[4:-1]}]{fixed}")
 
         if self.control.mix and self.ranvar_indices is not None:
-            n_rand = len(self.ranvar_indices)
-            if self.control.randdiag:
-                for i in range(n_rand):
-                    names.append(f"CovCOv{i + 1:02d}")
-            else:
-                # Upper-triangle (including diagonal), row-by-row —
-                # matches _unpar_to_report which loops ``for j in range(i, n_rand)``.
-                idx = 0
-                for i in range(n_rand):
-                    for j in range(i, n_rand):
-                        idx += 1
-                        names.append(f"CovCOv{idx:02d}")
+            names.extend(self._random_report_names())
 
         if self.control.nseg > 1:
             for _h in range(1, self.control.nseg):
-                names.append("segunpar")
+                names.append("segunpar" if self.control.nseg == 2 else f"segunpar_s{_h + 1}")
+            # Shared-coefficients layout: only ranvar names get a
+            # segment-specific report entry; shared coefficients are not
+            # repeated per segment.
             for h in range(1, self.control.nseg):
-                for vn in self.var_names:
-                    names.append(f"{vn}_s{h + 1}")
+                if self.ranvar_indices:
+                    for i in self.ranvar_indices:
+                        names.append(f"{self.var_names[i]}_s{h + 1}")
                 if self.control.mix and self.ranvar_indices is not None:
-                    n_rand = len(self.ranvar_indices)
-                    if self.control.randdiag:
-                        for i in range(n_rand):
-                            names.append(f"CovCOv{i + 1:02d}_s{h + 1}")
-                    else:
-                        # Upper-triangle, matching _unpar_to_report segment block.
-                        idx = 0
-                        for i in range(n_rand):
-                            for j in range(i, n_rand):
-                                idx += 1
-                                names.append(f"CovCOv{idx:02d}_s{h + 1}")
+                    names.extend(self._random_report_names(f"_s{h + 1}"))
 
         return names
 
@@ -1391,6 +1365,12 @@ class MNPModel(BaseModel):
                         ``B = G_unpar^T G_unpar``.  Uses ``J_pu`` for the
                         Hessian leg.
 
+        With frozen optimizer coordinates, Hessian and sandwich covariance
+        use ``inv(H[active, active])`` and ``J_pu[:, active]``. The BFGS
+        fallback uses its already constrained active-space inverse (divided
+        by N). When natural coordinates are coupled, BHHH, including the
+        sandwich fallback, uses the active scores ``G_unpar @ J_active``.
+
         Parameters
         ----------
         theta_hat : ndarray
@@ -1434,20 +1414,50 @@ class MNPModel(BaseModel):
         # through the spherical-Cholesky parameterization.
         J_norm = self._fd_jacobian(self._unpar_to_report, theta_unpar)
 
-        # MNP-003 active_mask × unparameterized SE: the J-column zeroing
-        # that lived here on the parameterized-space Jacobian J is no
-        # longer applicable now that the SE projection goes through
-        # J_pu (par->unpar) and J_norm (unpar->report).  Frozen theta
-        # entries already contribute zero to ``cov_unpar`` via their
-        # zeroed rows/cols in ``hess_inv`` (active_mask reconstruction
-        # in fit()) and zeroed score columns in ``G`` (BHHH path).  The
-        # explicit NaN-marking via ``_build_theta_to_report_map``
-        # further down still applies — frozen-only-dependent report
-        # params get SE=NaN regardless.
-
         # MNP-002: select Cov(theta) via control.se_method.
         se_method = self.control.se_method
         cov_unpar: np.ndarray | None = None
+        coupled_frozen_scales = (
+            self.control.scaling == "sumsq" and not self.control.iid
+            and active_mask is not None
+        )
+        coupled_random_reporting = self.control.mix and bool(self.ranvar_indices)
+        coupled_frozen_coordinates = coupled_frozen_scales or (
+            active_mask is not None and coupled_random_reporting
+        )
+
+        # Invert curvature only in free optimizer coordinates. Inverting the
+        # full observed Hessian and then slicing its inverse would instead
+        # include uncertainty from parameters that were held fixed.
+        A_unpar = None
+        if se_method in ("hessian", "sandwich") and (
+            hess_observed is not None or hess_inv is not None
+        ):
+            J_pu = self._fd_jacobian(
+                lambda th: _param_to_unpar(
+                    th, self.n_beta, self.n_alts, self.control,
+                    self.ranvar_indices,
+                ), theta_hat,
+            )
+            free = (np.ones(len(theta_hat), dtype=bool)
+                    if active_mask is None else np.asarray(active_mask, dtype=bool))
+            J_active = J_pu[:, free]
+            if hess_observed is not None:
+                H_active = hess_observed[np.ix_(free, free)]
+                try:
+                    H_inv_active = np.linalg.inv(H_active)
+                except np.linalg.LinAlgError:
+                    warnings.warn(
+                        "Observed Hessian is singular; falling back to pinv. "
+                        "Check for unidentified parameters.",
+                        RuntimeWarning, stacklevel=2,
+                    )
+                    H_inv_active = np.linalg.pinv(H_active)
+            else:
+                # fit() embeds the optimizer's active-space inverse in a
+                # full matrix. Its objective is mean NLL, hence the / N.
+                H_inv_active = hess_inv[np.ix_(free, free)] / self.N
+            A_unpar = J_active @ H_inv_active @ J_active.T
 
         if se_method in ("bhhh", "sandwich"):
             # Per-obs scores in UNPARAMETERIZED space (the lpr1/lgd1 path).
@@ -1456,15 +1466,14 @@ class MNPModel(BaseModel):
             # par->unpar Jacobian; otherwise 2*n_theta full-data FD passes.
             G = self._bhhh_scores_unpar(theta_hat, theta_unpar)
 
-            # Zero out columns for frozen (inactive) parameters from PR #6
-            # active_mask (MNPControl attribute).  This prevents inactive
-            # directions from contaminating the score covariance with random
-            # gradient noise.  The guard makes this a no-op until PR #6 lands.
+            # A natural score column can be zeroed directly only when it
+            # corresponds to the same frozen optimizer coordinate. Coupled
+            # coordinates instead require projection through J_active.
             if (
-                hasattr(self.control, "active_mask")
-                and self.control.active_mask is not None
+                active_mask is not None
+                and not coupled_frozen_coordinates
             ):
-                G[:, ~self.control.active_mask] = 0.0
+                G[:, ~active_mask] = 0.0
 
             B = G.T @ G
 
@@ -1505,88 +1514,36 @@ class MNPModel(BaseModel):
             active_idx = np.where(scoring_active_mask)[0]
             B_inv[np.ix_(active_idx, active_idx)] = B_inv_active
 
-            if se_method == "bhhh":
+            if se_method == "bhhh" or A_unpar is None:
                 # BHHH is the only path that's truly unparameterized end-to-end:
                 # G_unpar is computed natively in unparameterized space, so
                 # B_inv is already the unparameterized covariance.
                 cov_unpar = B_inv
-            else:  # sandwich
-                # Sandwich = A^{-1} B A^{-1} with A = J_pu^T H_unpar J_pu in
-                # unparameterized space.  We assemble A_unpar via the
-                # par->unpar Jacobian (FD; PR #10 review P0 #1: this is a
-                # delta-method projection regardless of whether we start from
-                # the true observed Hessian or the BFGS approximation).
-                # Prefer the true observed Hessian when available (PR #16
-                # P0 #1 fix); otherwise fall back to the BFGS hess_inv / N.
-                if hess_observed is not None:
-                    try:
-                        H_inv_par = np.linalg.inv(hess_observed)
-                    except np.linalg.LinAlgError:
-                        warnings.warn(
-                            "Observed Hessian is singular; falling back to pinv. "
-                            "Check for unidentified parameters.",
-                            RuntimeWarning, stacklevel=2,
-                        )
-                        H_inv_par = np.linalg.pinv(hess_observed)
+                if coupled_frozen_coordinates:
+                    # Fixed optimizer coordinates can constrain combinations of
+                    # natural scales/covariances. Restrict scores to the active
+                    # directions before projecting back to natural coordinates.
                     J_pu = self._fd_jacobian(
                         lambda th: _param_to_unpar(
                             th, self.n_beta, self.n_alts, self.control,
                             self.ranvar_indices,
-                        ),
-                        theta_hat,
+                        ), theta_hat,
                     )
-                    A_unpar = J_pu @ H_inv_par @ J_pu.T
-                    cov_unpar = A_unpar @ B @ A_unpar
-                elif hess_inv is not None:
-                    J_pu = self._fd_jacobian(
-                        lambda th: _param_to_unpar(
-                            th, self.n_beta, self.n_alts, self.control,
-                            self.ranvar_indices,
-                        ),
-                        theta_hat,
-                    )
-                    A_unpar = J_pu @ (hess_inv / self.N) @ J_pu.T
-                    cov_unpar = A_unpar @ B @ A_unpar
-                else:
+                    J_active = J_pu[:, active_mask]
+                    G_active = G @ J_active
+                    cov_unpar = J_active @ np.linalg.pinv(G_active.T @ G_active) @ J_active.T
+                if se_method == "sandwich":
                     warnings.warn(
                         "se_method='sandwich' requested but neither "
                         "observed Hessian nor BFGS hess_inv is available; "
                         "falling back to BHHH covariance.",
                         RuntimeWarning, stacklevel=2,
                     )
-                    cov_unpar = B_inv
+            else:  # sandwich
+                cov_unpar = A_unpar @ B @ A_unpar.T
         elif se_method == "hessian":
-            # Hessian path: project the parameterized H to unparameterized
-            # space via J_pu (delta-method).  Prefer hess_observed (true H)
-            # over hess_inv / N (BFGS approximation).
-            if hess_observed is not None:
-                try:
-                    H_inv_par = np.linalg.inv(hess_observed)
-                except np.linalg.LinAlgError:
-                    warnings.warn(
-                        "Observed Hessian is singular; falling back to pinv. "
-                        "Check for unidentified parameters.",
-                        RuntimeWarning, stacklevel=2,
-                    )
-                    H_inv_par = np.linalg.pinv(hess_observed)
-                J_pu = self._fd_jacobian(
-                    lambda th: _param_to_unpar(
-                        th, self.n_beta, self.n_alts, self.control,
-                        self.ranvar_indices,
-                    ),
-                    theta_hat,
-                )
-                cov_unpar = J_pu @ H_inv_par @ J_pu.T
-            elif hess_inv is not None:
-                J_pu = self._fd_jacobian(
-                    lambda th: _param_to_unpar(
-                        th, self.n_beta, self.n_alts, self.control,
-                        self.ranvar_indices,
-                    ),
-                    theta_hat,
-                )
-                cov_unpar = J_pu @ (hess_inv / self.N) @ J_pu.T
-            else:
+            cov_unpar = A_unpar
+            if cov_unpar is None:
                 warnings.warn(
                     "se_method='hessian' requested but neither observed "
                     "Hessian nor BFGS hess_inv is available; SE will be NaN.",
@@ -1641,7 +1598,7 @@ class MNPModel(BaseModel):
         # SE/t-stat/p-value are NaN. Its report index is n_beta + n_corr
         # (betas, then parkers, then scale01 leads the scale block).
         # ------------------------------------------------------------------
-        if not self.control.iid:
+        if not self.control.iid and self.control.scaling == "first":
             dim = self.n_alts - 1
             n_corr = dim * (dim - 1) // 2 if not self.control.heteronly else 0
             scale01_ri = self.n_beta + n_corr
@@ -1662,15 +1619,56 @@ class MNPModel(BaseModel):
         # ------------------------------------------------------------------
         if active_mask is not None:
             theta_to_report = self._build_theta_to_report_map()
+            random_names = set()
+            if coupled_random_reporting:
+                random_names.update(self._random_report_names())
+                for h in range(1, self.control.nseg):
+                    random_names.update(self._random_report_names(f"_s{h + 1}"))
+            # Segment probabilities depend on all free logits, so their fixed
+            # status must follow the full reporting Jacobian as well.
+            random_names.update(name for name in self._build_report_names()
+                                if name == "segunpar" or name.startswith("segunpar_s"))
+            report_names = self._build_report_names()
+            dim = self.n_alts - 1
+            n_corr = dim * (dim - 1) // 2 if not self.control.heteronly else 0
+            scale_start = self.n_beta + n_corr
             for theta_idx, ri in theta_to_report.items():
                 if ri is None:
                     continue  # absorbed param — no report slot
+                if coupled_frozen_scales and scale_start <= ri < scale_start + dim:
+                    continue
+                if report_names[ri] in random_names:
+                    continue
                 if theta_idx < len(active_mask) and not active_mask[theta_idx]:
                     # This theta param is frozen → mark its report slot as NaN
                     if ri < len(se):
                         se[ri] = np.nan
                         t_stat[ri] = np.nan
                         p_value[ri] = np.nan
+
+            if random_names:
+                J_report = self._fd_jacobian(
+                    lambda th: self._unpar_to_report(_param_to_unpar(
+                        th, self.n_beta, self.n_alts, self.control, self.ranvar_indices,
+                    )), theta_hat,
+                )
+                for i, name in enumerate(report_names):
+                    if name in random_names and not np.any(np.abs(J_report[i, active_mask]) > 1e-10):
+                        se[i] = np.nan
+                        t_stat[i] = np.nan
+                        p_value[i] = np.nan
+
+            if coupled_frozen_scales:
+                J_scales = self._fd_jacobian(
+                    lambda th: self._unpar_to_report(_param_to_unpar(
+                        th, self.n_beta, self.n_alts, self.control, self.ranvar_indices,
+                    )), theta_hat,
+                )[scale_start:scale_start + dim, :]
+                for i, row in enumerate(J_scales[:, active_mask]):
+                    if not np.any(np.abs(row) > 1e-10):
+                        se[scale_start + i] = np.nan
+                        t_stat[scale_start + i] = np.nan
+                        p_value[scale_start + i] = np.nan
 
         return b_report, se, t_stat, p_value, cov_report, corr_report, g_report
 

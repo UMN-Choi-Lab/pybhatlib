@@ -328,15 +328,14 @@ class TestMixedDiagonalGradient:
 
 
 class TestMixedFullGradient:
-    """Mixed MNP with full (lower triangular) Omega parameterization."""
+    """Mixed MNP with radial correlation and log-SD covariance coordinates."""
 
     def test_2_ranvar_full(self):
-        """Two random coefficients, full Cholesky, IID kernel."""
+        """Two correlated random coefficients, IID kernel."""
         N, I, n_vars = 10, 3, 2
         X, y, avail = _make_data(N, I, n_vars)
         ranvar_indices = [0, 1]
-        # beta(2) + omega(3 lower-tri) = 5 params
-        # L = [[L00, 0], [L10, L11]]
+        # beta(2) + omega(radial correlation, log SD1, log SD2) = 5 params
         theta = np.array([0.3, -0.2, 0.5, 0.1, 0.4])
         control = MNPControl(iid=True, mix=True, randdiag=False, method="me")
 
@@ -351,12 +350,12 @@ class TestMixedFullGradient:
         np.testing.assert_allclose(grad, fd_grad, atol=1e-5, rtol=1e-3)
 
     def test_2_ranvar_full_cov_kernel(self):
-        """Two random coefficients, full Cholesky, full covariance kernel."""
+        """Two correlated random coefficients, full covariance kernel."""
         N, I, n_vars = 10, 3, 2
         X, y, avail = _make_data(N, I, n_vars, seed=33)
         ranvar_indices = [0, 1]
-        # beta(2) + scale(2) + corr(1) + omega(3) = 8 params
-        theta = np.array([0.3, -0.2, 0.1, 0.2, 0.0, 0.5, 0.1, 0.4])
+        # beta(2) + free kernel scale(1) + kernel corr(1) + omega(3) = 7
+        theta = np.array([0.3, -0.2, 0.1, 0.2, 0.5, 0.1, 0.4])
         control = MNPControl(
             iid=False, heteronly=False, mix=True, randdiag=False, method="me",
         )

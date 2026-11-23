@@ -2,11 +2,14 @@
 
 Thin wrapper over the shared mixed / panel ATE machinery
 (:func:`pybhatlib.mixed._predict.mixed_ate`).  The mixed MDCEV ATE lifts the
-shipped fixed-coefficient MDCEV participation prediction
-(:func:`pybhatlib.models.mdcev._mdcev_forecast.mdcev_predict`) over the mixing
-draws and differences the sample-averaged shares between counterfactual
-scenarios, reusing the *same* mixing draws throughout so the ATE isolates the
-covariate effect.
+shipped fixed-coefficient MDCEV allocation simulator
+(:func:`pybhatlib.models.mdcev._mdcev_forecast.mdcev_forecast`, via
+:func:`~pybhatlib.models.mdcev_mixed._mdcev_mixed_forecast.make_mdcev_mixed_participation_predict`)
+over the mixing draws and differences the sample-averaged participation rates
+-- the share of simulated allocations with positive consumption, the same
+quantity the fixed-coefficient :func:`~pybhatlib.models.mdcev._mdcev_ate.mdcev_ate`
+reports -- between counterfactual scenarios, reusing the *same* mixing draws
+throughout so the ATE isolates the covariate effect.
 
 The result is a :class:`~pybhatlib.mixed._predict.MixedATEResult`, which is an
 :class:`~pybhatlib.models._ate_common.ATEResultMixin` exposing the harmonized
@@ -33,6 +36,7 @@ from pybhatlib.mixed._reparam import ReportingSpace
 from pybhatlib.models._ate_common import ScenarioSpec
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_forecast import (
     build_mdcev_mixed_components,
+    make_mdcev_mixed_participation_predict,
 )
 from pybhatlib.vecup._panel import PanelIndex
 
@@ -47,13 +51,16 @@ def mdcev_mixed_ate(
     alternative_names: Optional[list[str]] = None,
     draws: Optional[DrawSource] = None,
     xp=None,
+    budget_col: str = "tot",
 ) -> MixedATEResult:
     """Draw-integrated ATE across counterfactual scenarios for a mixed MDCEV model.
 
-    Computes baseline participation shares (observed covariates) and, for each
-    scenario, the draw-integrated shares under that scenario's covariate
-    overrides, delegating to the shared
-    :func:`~pybhatlib.mixed._predict.mixed_ate`.
+    Computes baseline participation rates (observed covariates) and, for each
+    scenario, the draw-integrated participation rates under that scenario's
+    covariate overrides, delegating to the shared
+    :func:`~pybhatlib.mixed._predict.mixed_ate`. "Shares" are participation
+    rates -- the fraction of simulated allocations with positive consumption --
+    exactly as in the fixed-coefficient :func:`~pybhatlib.models.mdcev.mdcev_ate`.
 
     Parameters
     ----------
@@ -66,7 +73,7 @@ def mdcev_mixed_ate(
         Scenario specification, normalised via
         :func:`~pybhatlib.models._ate_common.scenarios_to_dict`.
     n_draws : int, default 1000
-        Monte-Carlo error draws per observation.
+        Allocation replications per observation (Monte-Carlo error draws).
     seed : int, default 1234
         Monte-Carlo seed (shared across scenarios and MSL replications).
     alternative_names : list of str, optional
@@ -75,6 +82,8 @@ def mdcev_mixed_ate(
         Override the fit-time mixing-draw source (shared across scenarios).
     xp : backend, optional
         Array backend used to wrap the result arrays. Defaults to NumPy.
+    budget_col : str, default "tot"
+        Budget column of ``data`` (ones when absent), as in ``mdcev_ate``.
 
     Returns
     -------
@@ -82,8 +91,16 @@ def mdcev_mixed_ate(
         Baseline ``predicted_shares`` plus ``shares_per_scenario`` and the
         ``.comparison()`` / ``.summary()`` surface.
     """
+    hook = make_mdcev_mixed_participation_predict(
+        n_replications=n_draws,
+        seed=seed,
+        num_outside=1,
+        outside_good_gamma=model.control.outside_good_gamma,
+        utility=model.control.utility,
+    )
     components = build_mdcev_mixed_components(
-        model, n_draws=n_draws, seed=seed, alternative_names=alternative_names
+        model, n_draws=n_draws, seed=seed, alternative_names=alternative_names,
+        kernel_predict=hook, budget_col=budget_col,
     )
     data_use = model.data if data is None else data
     return mixed_ate(
@@ -118,9 +135,8 @@ def _prime_model_at_theta(
     coefficient (no ``exp`` / sign reparam), the ``rcor`` block *is* the
     off-diagonal correlation (``matndupdiagonefull`` -> Cholesky), and the scale
     / Yeo-Johnson ``lambda`` blocks enter directly (no ``exp`` / no ``cdlogit``).
-    No reporting -> estimation inversion is therefore performed -- ``params`` is
-    fed to the engine as-is and ``predict`` / ``ate`` run at the natural
-    parameters.  ``ReportingSpace`` emits no reparam gradients, which is fine
+    The kernel scale is converted from reported sigma to log sigma;
+    the other reporting blocks enter directly.  ``ReportingSpace`` emits no reparam gradients, which is fine
     because ATE / predict need none.
 
     Parameters
@@ -144,7 +160,17 @@ def _prime_model_at_theta(
     model._fitted_spec = spec
     model._fitted_layout = layout
     model._fitted_est = est
-    model._fitted_theta = np.asarray(params, dtype=np.float64).reshape(-1)
+    theta = np.asarray(params, dtype=np.float64).reshape(-1).copy()
+    if theta.size != layout.n_theta:
+        raise ValueError(f"Expected {layout.n_theta} reporting parameters, got {theta.size}")
+    kernel_slice = layout.slices()["kern"]
+    sigma = theta[kernel_slice]
+    if not np.all(np.isfinite(sigma)) or np.any(sigma <= 0):
+        raise ValueError("Reported sigma must be finite and positive")
+    # ReportingSpace consumes natural random-coefficient parameters, while the
+    # MDCEV kernel and forecast hook consume log(sigma), as during fitting.
+    theta[kernel_slice] = np.log(sigma)
+    model._fitted_theta = theta
 
 
 def mdcev_mixed_ate_from_params(
@@ -158,6 +184,7 @@ def mdcev_mixed_ate_from_params(
     alternative_names: Optional[list[str]] = None,
     draws: Optional[DrawSource] = None,
     xp=None,
+    budget_col: str = "tot",
 ) -> MixedATEResult:
     """Draw-integrated mixed-MDCEV ATE from externally supplied reporting params.
 
@@ -185,8 +212,8 @@ def mdcev_mixed_ate_from_params(
         parameters are consumed directly: ``beta`` is the reported coefficient,
         the ``rcor`` block is the off-diagonal correlation, and the scale /
         Yeo-Johnson ``lambda`` blocks enter as-is (no reporting -> estimation
-        inversion).  The kernel-owned ``gamma`` and MDCEV kernel scale pass
-        through identically in both spaces.
+        inversion). Inside-good ``gamma`` enters unchanged. The reported natural
+        ``sigma`` is converted to log sigma for the kernel and forecast hook.
     data : pd.DataFrame, optional
         Dataset the scenarios override; defaults to the model's own data.
     scenarios : dict or pd.DataFrame
@@ -219,6 +246,7 @@ def mdcev_mixed_ate_from_params(
         alternative_names=alternative_names,
         draws=draws,
         xp=xp,
+        budget_col=budget_col,
     )
 
 

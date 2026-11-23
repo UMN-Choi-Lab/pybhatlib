@@ -13,8 +13,8 @@ kernel-error dimensions), the parameter layout in GAUSS ``b`` order
 ``[thresh | beta | rcor | scal | lam | kernlam]`` (the threshold block leads and
 the Yeo-Johnson kernel-lam block trails; MORP fixes ``wker`` to ones so there is
 no kernel-scale block), the random-coefficient pipeline, the rectangle-MVNCD
-kernel and :class:`~pybhatlib.mixed._engine.MixedMSLEstimator`; runs
-``scipy.optimize.minimize(jac=True)``; and performs a reporting-space BHHH
+kernel and :class:`~pybhatlib.mixed._engine.MixedMSLEstimator`; runs the shared
+SciPy optimizer; and performs a reporting-space BHHH
 standard-error pass.
 
 ``predict`` / ``ate`` are wired to the shared mixed predictor
@@ -33,7 +33,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-import scipy.optimize as sopt
 from numpy.typing import NDArray
 from scipy.special import ndtr
 
@@ -41,6 +40,7 @@ from pybhatlib.io._data_loader import load_data, used_columns_selector
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.matgradient._radial import newcholparmscaled
 from pybhatlib.mixed._draws import FixtureDrawSource, ScipyHaltonDrawSource
+from pybhatlib.mixed._halt_draws import ExplicitHaltonDrawSource
 from pybhatlib.mixed._engine import DesignData, MixedMSLEstimator, MSLConfig
 from pybhatlib.mixed._rc_pipeline import RandomCoefPipeline
 from pybhatlib.mixed._reparam import (
@@ -52,9 +52,14 @@ from pybhatlib.mixed._reparam import (
 )
 from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import baseline_loglikelihoods
 from pybhatlib.models.morp_flex._morp_flex_control import MORPFlexControl
 from pybhatlib.models.morp_flex._morp_flex_kernel import RectMvncdKernel
-from pybhatlib.models.morp_flex._morp_flex_results import MORPFlexResults
+from pybhatlib.models.morp_flex._morp_flex_results import (
+    MORPFlexResults,
+    mixing_summary_from_state,
+)
+from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.utils._logistic import cdlogit
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
@@ -214,6 +219,8 @@ class MORPFlexModel(BaseModel):
         """Runtime draw source (zeros when there are no random coefficients)."""
         if n_rnd == 0:
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
+        if self.control.draw_method == "explicit":
+            return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def _build_estimator(
@@ -377,7 +384,7 @@ class MORPFlexModel(BaseModel):
             f"corr[{joint_names[i]},{joint_names[j]}]"
             for i in range(spec.nrndtot)
             for j in range(i + 1, spec.nrndtot)
-        ]
+        ][:layout.n_rcor]
         scal = [f"sd[{nm}]" for nm in rc_names]
         lam = [f"lam[{nm}]" for nm in rc_names]
         kernlam = [f"kernlam[{self.dep_vars[d]}]" for d in range(spec.nkernlam)]
@@ -388,6 +395,10 @@ class MORPFlexModel(BaseModel):
         names: list[str] = [""] * layout.n_theta
         for name, s in layout.slices().items():
             names[s] = blocks[name]
+        if len(names) != layout.n_theta or any(not name for name in names):
+            raise RuntimeError(
+                "MORPFlex optimizer parameter names do not match the layout"
+            )
         return names
 
     # ------------------------------------------------------------------
@@ -432,13 +443,16 @@ class MORPFlexModel(BaseModel):
 
         method_map = {"bfgs": "BFGS", "lbfgsb": "L-BFGS-B", "newton": "BFGS"}
         method = method_map.get(ctrl.optimizer, "BFGS")
-        options: dict = {"maxiter": ctrl.maxiter, "gtol": ctrl.tol,
-                         "disp": ctrl.verbose >= 2}
-        if method == "L-BFGS-B":
-            options["ftol"] = ctrl.tol
-
-        res = sopt.minimize(
-            est.objective, theta0, jac=True, method=method, options=options,
+        res = minimize_scipy(
+            est.objective,
+            theta0,
+            jac=True,
+            method=method,
+            maxiter=ctrl.maxiter,
+            tol=ctrl.tol,
+            ftol=ctrl.tol if method == "L-BFGS-B" else None,
+            verbose=ctrl.verbose,
+            param_names=self._param_names(spec, layout),
         )
         theta_hat = np.asarray(res.x, dtype=np.float64)
 
@@ -451,12 +465,14 @@ class MORPFlexModel(BaseModel):
             theta=theta_hat, spec=spec, layout=layout, panel=panel, est=est
         )
 
-        ll_pi, score = est.simulated_loglik(theta_hat, want_grad=True)
+        ll_pi, score = est.simulated_loglik(
+            theta_hat, want_grad=True, collect_probabilities=True,
+        )
         ll_total = float(ll_pi.sum())
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
         grad_norm = float(np.linalg.norm(g_sum))
-        converged = bool(res.success) or grad_norm < ctrl.tol_check
+        converged = bool(res.converged) or grad_norm < ctrl.tol_check
 
         params_report = self._to_reporting(theta_hat, spec, layout, est.space)
         if ctrl.want_covariance:
@@ -487,7 +503,7 @@ class MORPFlexModel(BaseModel):
         p_value = 2.0 * (1.0 - ndtr(np.abs(t_stat)))
 
         t_elapsed = (time.time() - t_start) / 60.0
-        n_iter = int(getattr(res, "nit", 0))
+        n_iter = res.n_iter
 
         if ctrl.verbose >= 1:
             msg = "converged" if converged else "NOT converged"
@@ -496,7 +512,29 @@ class MORPFlexModel(BaseModel):
                 f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}"
             )
 
+        rc_state = est.space.unpack(theta_hat, spec, want_grad=False)
+        kernel_state = est.kernel.prepare(theta_hat, layout)
+        mixing_summary = mixing_summary_from_state(
+            self.var_names, spec, rc_state,
+            kernel_names=[f"ker[{dep}]" for dep in self.dep_vars],
+            kernel_shapes=kernel_state.xlamker,
+            joint_corr=kernel_state.omegastar,
+            copula=est.kernel.copula,
+            note=(
+                "ker[outcome] denotes its undifferenced ordinal error; "
+                "kernel scales are fixed at 1."
+            ),
+        )
+        ll_c, ll_0 = baseline_loglikelihoods(
+            self.y_ord, self.n_categories,
+            row_to_person=panel.row_to_person, person_weights=est.weightind,
+        )
         return MORPFlexResults(
+            mixing_summary=mixing_summary,
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=int(theta_hat.size),
+            n_constants_params=sum(k - 1 for k in self.n_categories),
+            average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,
             t_stat=t_stat,
@@ -514,7 +552,7 @@ class MORPFlexModel(BaseModel):
             return_code=0 if converged else 1,
             control=ctrl,
             data_path=self.data_path,
-            message=getattr(res, "message", None),
+            message=res.message,
         )
 
     # ------------------------------------------------------------------

@@ -67,13 +67,14 @@ utility_spec = {
     "ASCShp":{"Transp": "sero", "Accomod": "sero", "FandB": "sero", "Shp": "uno", "AR": "sero"},
     "ASCRec": {"Transp": "sero", "Accomod": "sero", "FandB": "sero", "Shp": "sero", "Recr": "uno"},
     }
-# Satiation (gamma) utility: one gamma per good, including the outside good.
+# Satiation (gamma) utility: one gamma per INSIDE good. The outside good
+# (Transp) has no gamma parameter -- its satiation is pinned to
+# MDCEVControl.outside_good_gamma (GAUSS ``u[.,1] = -1000``).
 gamma_spec = {
-    "G_Out":{"Transp": "uno", "Accomod": "sero", "FandB": "sero", "Shp": "sero", "Recr": "sero"},
-    "GAcc":{"Transp": "sero", "Accomod": "uno", "FandB": "sero", "Shp": "sero", "Recr": "sero"},
-    "GFnB": {"Transp": "sero", "Accomod": "sero", "FandB": "uno", "Shp": "sero", "Recr": "sero"},
-    "GShp":{"Transp": "sero", "Accomod": "sero", "FandB": "sero", "Shp": "uno", "Recr": "sero"},
-    "GRec": {"Transp": "sero", 'Accomod': "sero", 'FandB': "sero", 'Shp': "sero", 'Recr': "uno"},
+    "GAcc": {"Accomod": "uno", "FandB": "sero", "Shp": "sero", "Recr": "sero"},
+    "GFnB": {"Accomod": "sero", "FandB": "uno", "Shp": "sero", "Recr": "sero"},
+    "GShp": {"Accomod": "sero", "FandB": "sero", "Shp": "uno", "Recr": "sero"},
+    "GRec": {"Accomod": "sero", "FandB": "sero", "Shp": "sero", "Recr": "uno"},
 }
 
 print(f"  utility_spec: {len(utility_spec)} baseline coefficients")
@@ -136,10 +137,7 @@ for name, est, se, t, p in zip(
     results.param_names, results.b_reported,
     results.se, results.t_stat, results.p_value,
 ):
-    if est <= -999.0:  # fixed outside-good gamma (G_Out = -1000)
-        print(f"  {name:<12}{est:>12.4f}{'--':>11}{'--':>10}{'--':>10}")
-    else:
-        print(f"  {name:<12}{est:>12.4f}{se:>11.4f}{t:>10.3f}{p:>10.4f}")
+    print(f"  {name:<12}{est:>12.4f}{se:>11.4f}{t:>10.3f}{p:>10.4f}")
 print()
 
 # The library's own formatted report (LL, psi/gamma/sigma, BHHH std errs).
@@ -183,21 +181,21 @@ utility_spec_full = {
     "stl3Acc": {"Transp": "sero", "Accomod": "stlt3", "FandB": "sero",  "Shp": "sero",  "Recr": "sero"},
     "st410acc":{"Transp": "sero", "Accomod": "st410", "FandB": "sero",  "Shp": "sero",  "Recr": "sero"},
 }
-# Full Bhat (2018) satiation (gamma) specification.
+# Full Bhat (2018) satiation (gamma) specification (inside goods only; the
+# outside good's gamma is pinned and not a parameter).
 gamma_spec_full = {
-    "G_out":   {"Transp": "uno",  "Accomod": "sero",  "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
-    "GAcc":    {"Transp": "sero", "Accomod": "uno",   "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
-    "GFnB":    {"Transp": "sero", "Accomod": "sero",  "FandB": "uno",    "Shp": "sero",   "Recr": "sero"},
-    "GShp":    {"Transp": "sero", "Accomod": "sero",  "FandB": "sero",   "Shp": "uno",    "Recr": "sero"},
-    "GRec":    {"Transp": "sero", "Accomod": "sero",  "FandB": "sero",   "Shp": "sero",   "Recr": "uno"},
-    "urbAcc":  {"Transp": "sero", "Accomod": "urban", "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
-    "urbFnB":  {"Transp": "sero", "Accomod": "sero",  "FandB": "urban",  "Shp": "sero",   "Recr": "sero"},
-    "urbshp":  {"Transp": "sero", "Accomod": "sero",  "FandB": "sero",   "Shp": "urban",  "Recr": "sero"},
-    "stl3Acc": {"Transp": "sero", "Accomod": "stlt3", "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
-    "st410acc":{"Transp": "sero", "Accomod": "st410", "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
-    "trlFnB":  {"Transp": "sero", "Accomod": "sero",  "FandB": "b51q11", "Shp": "sero",   "Recr": "sero"},
-    "trlShp":  {"Transp": "sero", "Accomod": "sero",  "FandB": "sero",   "Shp": "b51q11", "Recr": "sero"},
-    "trlRec":  {"Transp": "sero", "Accomod": "sero",  "FandB": "sero",   "Shp": "sero",   "Recr": "b51q11"},
+    "GAcc":    {"Accomod": "uno",   "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
+    "GFnB":    {"Accomod": "sero",  "FandB": "uno",    "Shp": "sero",   "Recr": "sero"},
+    "GShp":    {"Accomod": "sero",  "FandB": "sero",   "Shp": "uno",    "Recr": "sero"},
+    "GRec":    {"Accomod": "sero",  "FandB": "sero",   "Shp": "sero",   "Recr": "uno"},
+    "urbAcc":  {"Accomod": "urban", "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
+    "urbFnB":  {"Accomod": "sero",  "FandB": "urban",  "Shp": "sero",   "Recr": "sero"},
+    "urbshp":  {"Accomod": "sero",  "FandB": "sero",   "Shp": "urban",  "Recr": "sero"},
+    "stl3Acc": {"Accomod": "stlt3", "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
+    "st410acc":{"Accomod": "st410", "FandB": "sero",   "Shp": "sero",   "Recr": "sero"},
+    "trlFnB":  {"Accomod": "sero",  "FandB": "b51q11", "Shp": "sero",   "Recr": "sero"},
+    "trlShp":  {"Accomod": "sero",  "FandB": "sero",   "Shp": "b51q11", "Recr": "sero"},
+    "trlRec":  {"Accomod": "sero",  "FandB": "sero",   "Shp": "sero",   "Recr": "b51q11"},
 }
 
 ctrl_full = MDCEVControl(
@@ -216,13 +214,14 @@ results_full = model_full.fit()
 
 # Converged estimates hard-coded in Estimation_LinearMDCEV.gss /
 # Forecasting_LinMDCEV.gss (bmdcev vector). Order: 10 baseline psi,
-# 13 satiation gamma (G_out fixed at -1000), then sigma. Verified by
+# 12 satiation gamma, then sigma. The GAUSS vector also carries a -1000
+# placeholder for the pinned outside-good gamma between the psi and gamma
+# blocks; pybhatlib has no such parameter, so it is omitted. Verified by
 # reading "Gauss Files and Comparison/MDCEV Linear/Forecasting_LinMDCEV.gss".
 gauss_bmdcev = [
     -0.808202714251692, 0.731234459824711, 1.06054820199217, -0.611599523507261,
     0.369888842845592, 0.181422387925194, -0.326089727282693, 0.0797315296162311,
     0.793299599509931, 0.447620582542694,                       # baseline psi
-    -1000.0,                                                    # G_out (fixed)
     9.23016054313031, 6.00682426848757, 6.03739098374529, 6.69388399872308,
     0.207089920449732, 0.360784692370941, 0.667134608295719, -1.88769730534571,
     -1.09326625172878, 0.0129648764666295, 0.0251824728822728, 0.0321997832805945,
@@ -232,10 +231,8 @@ gauss_bmdcev = [
 print(f"  {'Parameter':<12}{'PyBhatLib':>14}{'GAUSS':>14}{'|diff|':>12}")
 print("  " + "-" * 52)
 max_diff = 0.0
+assert len(gauss_bmdcev) == len(results_full.b_reported)
 for name, py, gx in zip(results_full.param_names, results_full.b_reported, gauss_bmdcev):
-    if gx <= -999.0:
-        print(f"  {name:<12}{py:>14.4f}{gx:>14.1f}{'(fixed)':>12}")
-        continue
     d = abs(py - gx)
     max_diff = max(max_diff, d)
     print(f"  {name:<12}{py:>14.6f}{gx:>14.6f}{d:>12.2e}")

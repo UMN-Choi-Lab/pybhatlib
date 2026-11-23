@@ -17,11 +17,14 @@ import pandas as pd
 from numpy.typing import NDArray
 
 from pybhatlib.models._results_common import (
+    MixingSummary,
     attach_deprecated_aliases,
     attach_ll_total_alias,
     legacy_init,
+    mixing_summary_from_state,
 )
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_control import MDCEVMixedControl
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 
 
 # Legacy construction kwargs → canonical field names.
@@ -33,7 +36,7 @@ _MDCEVMIXEDRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MDCEVMixedResults:
+class MDCEVMixedResults(FitMetricsMixin):
     """Results from mixed MDCEV model estimation.
 
     Attributes
@@ -41,10 +44,16 @@ class MDCEVMixedResults:
     params : NDArray
         Optimised parameter vector in *reporting* space, shape (n_params,).
         Layout ``[beta | gamma | rcor | kern | scal | lam]``: baseline-utility
-        coefficients, translation (``gamma``) parameters, random-coefficient
-        correlation entries, the MDCEV kernel error scale, the random-coefficient
-        scale (std-dev) vector, and the Yeo-Johnson ``lambda`` values in
-        ``(0, 2)``.
+        coefficients, inside-good translation (``gamma``) parameters,
+        random-coefficient correlation entries, the natural MDCEV kernel error
+        scale ``sigma``, the random-coefficient scale (std-dev) vector, and the
+        Yeo-Johnson ``lambda`` values in ``(0, 2)``.
+        The kernel-scale entry is now reported as natural ``sigma`` rather
+        than ``log(sigma)``. Older saved reporting vectors must exponentiate
+        that entry before use with the current external-estimate ATE helper;
+        also align their layout with the inside-good-only gamma block.
+        This does not change ``control.startb``, which still requires
+        optimizer-space values, including ``log(sigma)`` in the kernel slot.
     se : NDArray
         Standard errors aligned with ``params``.
     t_stat : NDArray
@@ -52,7 +61,7 @@ class MDCEVMixedResults:
     p_value : NDArray
         Two-sided p-values.
     gradient : NDArray
-        Final (summed) score vector at convergence, estimation space.
+        Final (summed) score vector at convergence, reporting space.
     loglik : float
         Mean simulated log-likelihood (per individual).
     n_obs : int
@@ -79,6 +88,8 @@ class MDCEVMixedResults:
         Path to the data file used.
     message : str | None
         Solver message from the optimizer.
+    mixing_summary : MixingSummary | None
+        Fitted random-coefficient distribution details, when available.
 
     Notes
     -----
@@ -106,6 +117,16 @@ class MDCEVMixedResults:
     control: MDCEVMixedControl | None = None
     data_path: str = ""
     message: str | None = None
+    mixing_summary: MixingSummary | None = None
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    loglik_constants: float = np.nan
+    """Mean per-individual LL of an unmixed, basic MDCEV constants-only fit.
+
+    Both utility and inside-good gamma have alternative constants; sigma is
+    estimated. Preserves prices, utility form and individual weights, assuming
+    independent occasions. NaN for external estimates or failed null fits.
+    """
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MDCEVMixedResults, accepting both canonical and legacy kwargs.
@@ -148,6 +169,9 @@ class MDCEVMixedResults:
         params : ndarray, shape (n_params,)
             Parameter estimates, in the model's reporting-space layout
             ``[beta | gamma | rcor | kern | scal | lam]``.
+            The ``kern`` entry is natural ``sigma``, not ``log(sigma)``;
+            ``gamma`` contains inside-good coefficients only. Older saved
+            reporting vectors require conversion to this convention.
         param_names : list[str] or None
             Names for each element of *params*.  Defaults to
             ``["p1", "p2", ...]`` when not provided.
@@ -214,26 +238,98 @@ class MDCEVMixedResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        ll_c = (
+            f"{self.loglik_constants:>14.6f}"
+            if np.isfinite(self.loglik_constants) else f"{'N/A':>14s}"
+        )
+        lines.append(f"  Mean LL(C)             {ll_c}")
+        lines.extend(self.rho2_summary_lines(include_zero=False))
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append(f"  Number of individuals  {self.n_ind:>14d}")
         lines.append("")
 
+        name_width = max(
+            16,
+            max((len(name) for name in self.param_names), default=16) + 1,
+        )
         header = (
-            f"  {'Parameters':<16s} {'Estimates':>10s} {'Std. err.':>10s}"
-            f" {'Est./s.e.':>10s} {'Prob.':>10s}"
+            f"  {'Parameters':<{name_width}s} {'Estimates':>10s} {'Std. err.':>10s}"
+            f" {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
         )
         lines.append(header)
-        lines.append("  " + "-" * 60)
+        lines.append("  " + "-" * (len(header) - 2))
 
         for i, name in enumerate(self.param_names):
             est = self.params[i] if i < len(self.params) else 0.0
             se = self.se[i] if i < len(self.se) else 0.0
             t = self.t_stat[i] if i < len(self.t_stat) else 0.0
             p = self.p_value[i] if i < len(self.p_value) else 0.0
+            g = self.gradient[i] if i < len(self.gradient) else 0.0
             lines.append(
-                f"  {name:<16s} {est:>10.4f} {se:>10.4f}"
-                f" {t:>10.3f} {p:>10.4f}"
+                f"  {name:<{name_width}s} {est:>10.4f} {se:>10.4f}"
+                f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
+
+        mixing = self.mixing_summary
+        if mixing is not None and mixing.names:
+            width = max(20, max(map(len, mixing.names)))
+
+            def append_moments(title: str, start: int, stop: int) -> None:
+                lines.extend([
+                    "", f"  {title}",
+                    f"  {'Coefficient':<{width}s} {'Location':>12s}"
+                    f" {'Scale':>12s} {'Shape':>12s}",
+                    "  " + "-" * (width + 39),
+                ])
+                for i in range(start, stop):
+                    lines.append(
+                        f"  {mixing.names[i]:<{width}s} {mixing.means[i]:>12.5f}"
+                        f" {mixing.scales[i]:>12.5f} {mixing.shapes[i]:>12.5f}"
+                    )
+
+            if mixing.n_random:
+                append_moments(
+                    "Random-coefficient locations, scales, and shapes",
+                    0, mixing.n_random,
+                )
+            has_kernel = mixing.n_random < len(mixing.names)
+            if has_kernel:
+                lines.extend([
+                    "", "  Kernel-error scales and shapes",
+                    f"  {'Coefficient':<{width}s} {'Scale':>12s} {'Shape':>12s}",
+                    "  " + "-" * (width + 26),
+                ])
+                for i in range(mixing.n_random, len(mixing.names)):
+                    lines.append(
+                        f"  {mixing.names[i]:<{width}s}"
+                        f" {mixing.scales[i]:>12.5f} {mixing.shapes[i]:>12.5f}"
+                    )
+
+            def append_matrix(title: str, matrix: NDArray) -> None:
+                col_width = max(11, max(map(len, mixing.names)))
+                lines.extend([
+                    "", f"  {title}",
+                    f"  {'':<{width}s} "
+                    + " ".join(f"{name:>{col_width}s}" for name in mixing.names),
+                ])
+                for name, row in zip(mixing.names, matrix):
+                    values = [
+                        f"{value:>{col_width}.4f}" if np.isfinite(value)
+                        else f"{'--':>{col_width}s}"
+                        for value in row
+                    ]
+                    lines.append(f"  {name:<{width}s} " + " ".join(values))
+
+            subject = (
+                "Joint random-coefficient / kernel-error" if has_kernel and mixing.n_random
+                else "Kernel-error" if has_kernel else "Random-coefficient"
+            )
+            append_matrix(f"{subject} correlation matrix", mixing.corr_matrix)
+            append_matrix(f"{subject} implied covariance matrix", mixing.cov_matrix)
+
+        lines.extend(["", "  Correlation matrix of the parameters"])
+        for row in self.corr_matrix[:len(self.param_names), :len(self.param_names)]:
+            lines.append("  " + " ".join(f"{value:>7.3f}" for value in row))
 
         lines.append("")
         lines.append(f"  Number of iterations   {self.n_iter:>10d}")
@@ -252,7 +348,7 @@ class MDCEVMixedResults:
         Returns
         -------
         df : pd.DataFrame
-            DataFrame with columns: Estimate, Std.Error, t-stat, p-value.
+            DataFrame with columns: Estimate, Std.Error, t-stat, p-value, Gradient.
         """
         n = len(self.param_names)
         return pd.DataFrame(
@@ -261,6 +357,7 @@ class MDCEVMixedResults:
                 "Std.Error": self.se[:n],
                 "t-stat": self.t_stat[:n],
                 "p-value": self.p_value[:n],
+                "Gradient": self.gradient[:n],
             },
             index=self.param_names,
         )

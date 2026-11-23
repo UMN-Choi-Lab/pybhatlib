@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 import pandas as pd
 from numpy.typing import NDArray
 
@@ -33,7 +34,7 @@ _MIXMNLRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MixMNLResults:
+class MixMNLResults(FitMetricsMixin):
     """Results from MixMNL model estimation.
 
     Attributes
@@ -54,6 +55,19 @@ class MixMNLResults:
         Final (summed) score vector at convergence, estimation space.
     loglik : float
         Mean simulated log-likelihood (per individual).
+    loglik_constants, loglik_zero : float
+        Mean constants-only and uniform null log-likelihoods, normalized like
+        ``loglik``. Full availability uses analytic empirical shares. With
+        unavailable alternatives, LL(C) fits shared alternative constants via
+        the basic MNL likelihood, respecting each choice set; no random
+        mixing is retained. LL(0) is uniform over the available alternatives.
+        Panel occasions are independent in these benchmarks.
+    average_correct_probability : float
+        Arithmetic mean fitted probability of the observed outcome (the joint
+        category combination for ordinal models). In panels, average across
+        occasions within each person, then across persons. It is not the
+        exponential of the mean log-likelihood or a classification hit rate.
+        These diagnostics are ``nan`` without fitting data.
     n_obs : int
         Number of observations.
     n_ind : int
@@ -106,6 +120,20 @@ class MixMNLResults:
     control: MixMNLControl | None = None
     data_path: str = ""
     message: str | None = None
+    random_coef_names: list[str] | None = None
+    random_coef_means: NDArray | None = None
+    random_coef_scales: NDArray | None = None
+    random_coef_shapes: NDArray | None = None
+    random_coef_corr_matrix: NDArray | None = None
+    random_coef_cov_matrix: NDArray | None = None
+
+    # Independent null benchmarks; not restricted fits of the full kernel.
+    loglik_constants: float = np.nan
+    loglik_zero: float = np.nan
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    """Parameter count of the unmixed LL(C) baseline; -1 when unavailable."""
+    average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MixMNLResults, accepting both canonical and legacy kwargs.
@@ -205,16 +233,28 @@ class MixMNLResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        for label, value in (
+            ("Mean LL(C)", self.loglik_constants),
+            ("Mean LL(0)", self.loglik_zero),
+            ("APCP", self.average_correct_probability),
+        ):
+            formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
+            lines.append(f"  {label:<23s}{formatted}")
+        lines.extend(self.rho2_summary_lines())
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append(f"  Number of individuals  {self.n_ind:>14d}")
         lines.append("")
 
+        name_width = max(
+            16,
+            max((len(name) for name in self.param_names), default=16) + 1,
+        )
         header = (
-            f"  {'Parameters':<16s} {'Estimates':>10s} {'Std. err.':>10s}"
+            f"  {'Parameters':<{name_width}s} {'Estimates':>10s} {'Std. err.':>10s}"
             f" {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
         )
         lines.append(header)
-        lines.append("  " + "-" * 78)
+        lines.append("  " + "-" * (len(header) - 2))
 
         for i, name in enumerate(self.param_names):
             est = self.params[i] if i < len(self.params) else 0.0
@@ -223,9 +263,72 @@ class MixMNLResults:
             p = self.p_value[i] if i < len(self.p_value) else 0.0
             g = self.gradient[i] if i < len(self.gradient) else 0.0
             lines.append(
-                f"  {name:<16s} {est:>10.4f} {se:>10.4f}"
+                f"  {name:<{name_width}s} {est:>10.4f} {se:>10.4f}"
                 f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
+
+
+        rc_names = self.random_coef_names
+        rc_means = self.random_coef_means
+        rc_scales = self.random_coef_scales
+        rc_shapes = self.random_coef_shapes
+        rc_corr = self.random_coef_corr_matrix
+        rc_cov = self.random_coef_cov_matrix
+        if (
+            rc_names
+            and rc_means is not None
+            and rc_scales is not None
+            and rc_corr is not None
+            and rc_cov is not None
+        ):
+            lines.append("")
+            lines.append("  Random-coefficient locations, scales, and shapes")
+            lines.append(
+                f"  {'Coefficient':<20s} {'Location':>12s} {'Scale':>12s} {'Shape':>12s}"
+            )
+            lines.append("  " + "-" * 59)
+            for i, (name, mean, scale) in enumerate(zip(rc_names, rc_means, rc_scales)):
+                shape = (
+                    f"{rc_shapes[i]:>12.5f}"
+                    if rc_shapes is not None
+                    else f"{'--':>12s}"
+                )
+                lines.append(f"  {name:<20s} {mean:>12.5f} {scale:>12.5f} {shape}")
+
+            matrix_name_width = max(
+                12, max((len(name) for name in rc_names), default=12)
+            )
+
+            def _append_rc_matrix(title: str, matrix: NDArray) -> None:
+                lines.append("")
+                lines.append(f"  {title}")
+                lines.append(
+                    f"  {'':<{matrix_name_width}s} "
+                    + " ".join(f"{name:>11s}" for name in rc_names)
+                )
+                for i, name in enumerate(rc_names):
+                    values = [
+                        f"{matrix[i, j]:>11.4f}"
+                        if np.isfinite(matrix[i, j])
+                        else f"{'--':>11s}"
+                        for j in range(len(rc_names))
+                    ]
+                    lines.append(
+                        f"  {name:<{matrix_name_width}s} " + " ".join(values)
+                    )
+
+            _append_rc_matrix("Random-coefficient correlation matrix", rc_corr)
+            _append_rc_matrix("Implied random-coefficient covariance matrix", rc_cov)
+
+        lines.append("")
+        n_params = len(self.param_names)
+        lines.append("  Correlation matrix of the parameters")
+        for i in range(min(n_params, self.corr_matrix.shape[0])):
+            row_vals = [
+                f"{self.corr_matrix[i, j]:>7.3f}"
+                for j in range(min(n_params, self.corr_matrix.shape[1]))
+            ]
+            lines.append("  " + " ".join(row_vals))
 
         lines.append("")
         lines.append(f"  Number of iterations   {self.n_iter:>10d}")

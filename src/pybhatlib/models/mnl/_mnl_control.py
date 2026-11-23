@@ -61,5 +61,5 @@ class MNLControl:
     analytic_hess: bool = True
     se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh"
     verbose: int = 1
-    seed: int | None = None
+    seed: int | None = 14287
     startb: NDArray | None = None

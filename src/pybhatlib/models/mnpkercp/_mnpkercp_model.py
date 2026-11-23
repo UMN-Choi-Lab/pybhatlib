@@ -11,7 +11,7 @@ over ``nrndtot = nrndcoef + (nc - 1)`` random elements), the parameter layout in
 GAUSS ``b`` order ``[beta | rcor | scal | kern | lam]`` (the kernel-scale block
 interleaves **between** ``scal`` and ``lam``), the random-coefficient pipeline,
 the MVNCD kernel and :class:`~pybhatlib.mixed._engine.MixedMSLEstimator`; runs
-``scipy.optimize.minimize(jac=True)``; and performs a reporting-space BHHH
+the shared SciPy optimizer; and performs a reporting-space BHHH
 standard-error pass.
 
 Copula / gradient scope
@@ -41,7 +41,6 @@ import time
 
 import numpy as np
 import pandas as pd
-import scipy.optimize as sopt
 from numpy.typing import NDArray
 from scipy.special import ndtr
 
@@ -49,15 +48,20 @@ from pybhatlib.io._data_loader import load_data, used_columns_selector
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.matgradient._radial import newcholparmscaled
 from pybhatlib.mixed._draws import FixtureDrawSource, ScipyHaltonDrawSource
+from pybhatlib.mixed._halt_draws import ExplicitHaltonDrawSource
 from pybhatlib.mixed._engine import DesignData, MixedMSLEstimator, MSLConfig
 from pybhatlib.mixed._rc_pipeline import RandomCoefPipeline
 from pybhatlib.mixed._reparam import EstimationSpace, ParamLayout
 from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import baseline_loglikelihoods
 from pybhatlib.models.mnpkercp._mnpkercp_control import MNPKerCPControl
 from pybhatlib.models.mnpkercp._mnpkercp_kernel import MvncdKernel
-from pybhatlib.models.mnpkercp._mnpkercp_results import MNPKerCPResults
-from pybhatlib.utils._logistic import logitmod
+from pybhatlib.models.mnpkercp._mnpkercp_results import (
+    MNPKerCPResults,
+    mixing_summary_from_state,
+)
+from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
 
@@ -217,6 +221,8 @@ class MNPKerCPModel(BaseModel):
         """Runtime draw source (zeros when there are no random coefficients)."""
         if n_rnd == 0:
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
+        if self.control.draw_method == "explicit":
+            return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def _build_estimator(
@@ -252,6 +258,7 @@ class MNPKerCPModel(BaseModel):
         )
         kernel = MvncdKernel(
             self.n_alts, spec.nrndcoef, copula=ctrl.copula, scal=ctrl.scal,
+            scaling=ctrl.scaling,
             iid=ctrl.iid,
             active_corr_pairs=spec.active_corr_pairs,
             method=ctrl.method,
@@ -296,7 +303,7 @@ class MNPKerCPModel(BaseModel):
         ``beta`` becomes the sign-reparameterized coefficients, ``rcor`` the
         joint correlation off-diagonal entries (row-based upper-triangular),
         ``scal`` the scale (std-dev) vector ``exp(xscalrand)``, ``kern`` the
-        natural free kernel-error scales ``sqrt(logitmod([0,xscalker]))[1:]``, and
+        natural free kernel-error scales under ``control.scaling``, and
         ``lam`` the Yeo-Johnson powers ``2 cdlogit(xlam)`` in ``(0, 2)``.
         """
         rc = space.unpack(theta, spec, want_grad=False)
@@ -324,11 +331,9 @@ class MNPKerCPModel(BaseModel):
                     rcor_r[pos] = omega_vec[pos]
         scal_r = np.asarray(rc.wscalrand, dtype=np.float64).reshape(-1)
         if layout.n_kern:
-            kernel_logits = np.concatenate([
-                np.zeros(1, dtype=np.float64),
-                np.asarray(theta[sl["kern"]], dtype=np.float64),
-            ])
-            kern_r = np.sqrt(logitmod(kernel_logits))[1:]
+            from pybhatlib.models._mnp_scaling import kernel_scales
+
+            kern_r = kernel_scales(theta[sl["kern"]], self.control.scaling)[1:]
         else:
             kern_r = np.zeros(0, dtype=np.float64)
         lam_r = np.asarray(rc.xlamrnd, dtype=np.float64).reshape(-1)
@@ -393,6 +398,32 @@ class MNPKerCPModel(BaseModel):
             )
         return names
 
+    def _optimizer_param_names(
+        self, spec: MixingSpec, layout: ParamLayout
+    ) -> list[str]:
+        """Names aligned to the possibly restricted optimizer-space vector."""
+        rc_names = [self.var_names[int(p)] for p in spec.mixpos]
+        joint_names = list(rc_names) + [
+            f"ker[{self.alternatives[d + 1]}-{self.alternatives[0]}]"
+            for d in range(spec.kernel_dim)
+        ]
+        correlations = [
+            f"corr_theta[{joint_names[i]},{joint_names[j]}]"
+            for i, j in spec.active_corr_pairs
+        ]
+        scales = [f"scal_theta[{name}]" for name in rc_names]
+        kernel_scales = [
+            f"kern_theta[{self.alternatives[i + 2]}-{self.alternatives[0]}]"
+            for i in range(spec.n_kern)
+        ]
+        lambdas = [f"lam_theta[{name}]" for name in rc_names]
+        names = list(self.var_names) + correlations + scales + kernel_scales + lambdas
+        if len(names) != layout.n_theta:
+            raise RuntimeError(
+                "MNPKerCP optimizer names do not cover the estimation-space layout"
+            )
+        return names
+
     # ------------------------------------------------------------------
     # fit
     # ------------------------------------------------------------------
@@ -447,37 +478,27 @@ class MNPKerCPModel(BaseModel):
 
         method_map = {"bfgs": "BFGS", "lbfgsb": "L-BFGS-B", "newton": "BFGS"}
         method = method_map.get(ctrl.optimizer, "BFGS")
-        options: dict = {"maxiter": ctrl.maxiter, "gtol": ctrl.tol,
-                         "disp": ctrl.verbose >= 2}
-        if method == "L-BFGS-B":
-            options["ftol"] = ctrl.tol
-
-        iter_count = [0]
-
-        def _iter_callback(theta_k: NDArray) -> None:
-            if ctrl.verbose < 2:
-                return
-            obj_val, grad = est.objective(theta_k)
-            grad_norm = float(np.linalg.norm(np.asarray(grad, dtype=np.float64)))
-            print(
-                f"  iter={iter_count[0]:4d}  f={float(obj_val):+.12f}  "
-                f"||g||={grad_norm:.3e}"
-            )
-            print(theta_k)
-            iter_count[0] += 1
-
-
-        res = sopt.minimize(
-            est.objective, theta0, jac=True, method=method, options=options, callback = _iter_callback if ctrl.verbose >= 2 else None,
+        res = minimize_scipy(
+            est.objective,
+            theta0,
+            jac=True,
+            method=method,
+            maxiter=ctrl.maxiter,
+            tol=ctrl.tol,
+            ftol=ctrl.tol if method == "L-BFGS-B" else None,
+            verbose=ctrl.verbose,
+            param_names=self._optimizer_param_names(spec, layout),
         )
         theta_hat = np.asarray(res.x, dtype=np.float64)
 
-        ll_pi, score = est.simulated_loglik(theta_hat, want_grad=True)
+        ll_pi, score = est.simulated_loglik(
+            theta_hat, want_grad=True, collect_probabilities=True,
+        )
         ll_total = float(ll_pi.sum())
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
         grad_norm = float(np.linalg.norm(g_sum))
-        converged = bool(res.success) or grad_norm < ctrl.tol_check
+        converged = bool(res.converged) or grad_norm < ctrl.tol_check
 
         params_report = self._to_reporting(theta_hat, spec, layout, est.space)
         if ctrl.want_covariance:
@@ -508,7 +529,7 @@ class MNPKerCPModel(BaseModel):
         p_value = 2.0 * (1.0 - ndtr(np.abs(t_stat)))
 
         t_elapsed = (time.time() - t_start) / 60.0
-        n_iter = int(getattr(res, "nit", 0))
+        n_iter = res.n_iter
 
         if ctrl.verbose >= 1:
             msg = "converged" if converged else "NOT converged"
@@ -526,7 +547,34 @@ class MNPKerCPModel(BaseModel):
         self._mixing_spec = spec
         self._layout = layout
 
+        rc_state = est.space.unpack(theta_hat, spec, want_grad=False)
+        kernel_state = est.kernel.prepare(theta_hat, layout)
+        mixing_summary = mixing_summary_from_state(
+            self.var_names, spec, rc_state,
+            kernel_names=[
+                f"ker[{alt}-{self.alternatives[0]}]"
+                for alt in self.alternatives[1:]
+            ],
+            kernel_scales=np.diag(kernel_state.wdiagker),
+            joint_corr=kernel_state.omegastar,
+            copula=est.kernel.copula,
+            note=(
+                "ker[A-B] denotes epsilon[A] - epsilon[B]; "
+                + ("kernel scales have sum of squares = 1."
+                   if ctrl.scaling == "sumsq" else "first kernel scale = 1.")
+            ),
+        )
+        ll_c, ll_0 = baseline_loglikelihoods(
+            self.y, [self.n_alts], availability=self.avail,
+            row_to_person=panel.row_to_person, person_weights=est.weightind,
+            family="mnp",
+        )
         return MNPKerCPResults(
+            mixing_summary=mixing_summary,
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=int(theta_hat.size),
+            n_constants_params=self.n_alts - 1,
+            average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,
             t_stat=t_stat,
@@ -544,7 +592,7 @@ class MNPKerCPModel(BaseModel):
             return_code=0 if converged else 1,
             control=ctrl,
             data_path=self.data_path,
-            message=getattr(res, "message", None),
+            message=res.message,
         )
 
     # ------------------------------------------------------------------

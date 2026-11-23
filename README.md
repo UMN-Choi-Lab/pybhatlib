@@ -5,14 +5,22 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/UMN-Choi-Lab/pybhatlib/tests.yml?branch=main&label=tests)](https://github.com/UMN-Choi-Lab/pybhatlib/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/pypi/l/pybhatlib)](https://github.com/UMN-Choi-Lab/pybhatlib/blob/main/LICENSE)
 
-Python reimplementation of **BHATLIB** — an open-source library for statistical and
-econometric matrix-based inference methods.
+Open-source Python library for matrix-based econometric inference: multivariate
+normal CDF evaluation with analytic gradients, and maximum-likelihood estimation of
+discrete-choice models (MNP, MORP, MDCEV, MNL).
 
-BHATLIB (Bhat, Clower, Haddad, Jones; UT Austin / Aptech Systems) provides efficient
-matrix operations, gradient-enabled routines for multivariate distribution evaluation
-(including Bhat's 2018 MVNCD analytic approximation), and pre-built econometric models.
+The numerical core follows the GAUSS **BHATLIB** library by Chandra Bhat and
+colleagues (UT Austin / Aptech Systems) and implements Bhat's (2018) analytic
+MVNCD approximation.
 
 ## Installation
+
+```bash
+pip install pybhatlib                  # core (NumPy + SciPy + Numba)
+pip install "pybhatlib[torch]"         # add PyTorch backend (optional GPU)
+```
+
+From source (for development, or to run the bundled examples and tutorials):
 
 ```bash
 git clone https://github.com/UMN-Choi-Lab/pybhatlib.git
@@ -79,8 +87,15 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 - **Multivariate Ordered Response Probit (MORP)** — multiple ordinal outcomes
   with shared covariance; per-outcome `spec` mapping
 - **Multiple Discrete-Continuous Extreme Value (MDCEV)** — traditional
-  (Bhat 2008) and linear (Bhat 2018) outside-good utility specifications,
-  selected via `MDCEVControl.utility`
+  (Bhat 2008) and linear outside-good utility specifications, selected via
+  `MDCEVControl.utility`
+- **Multinomial Logit (MNL)**
+- **Linear regression (LR)** — single continuous outcome, closed-form OLS with
+  classical / White-robust / BHHH standard errors
+- **Mixed / simulation-based models** — `MixMNLModel`, `MNPKerCPModel`,
+  `MORPFlexModel`, `MDCEVMixedModel` on a shared maximum-simulated-likelihood
+  engine (Halton draws, panel data, normal / log-normal / Yeo-Johnson
+  coefficient transforms). New and under active refinement.
 
 **Numerical core**
 - `vecup` — vecdup, matdupfull, LDLT decomposition, truncated MVN moments
@@ -97,6 +112,29 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
   values without recoding the model.
 - `verbose` levels: `0` silent, `1` summary, `2` per-iteration NLL,
   `3` per-iteration parameter / gradient / relative-gradient table.
+- `loglik_constants` (LL(C)): MNL/MNP use analytic empirical shares when all
+  alternatives are available. Otherwise they fit shared alternative constants
+  with each observation's availability, using basic MNL or IID MNP likelihoods.
+  Mixed choice models use the same unmixed baselines. MORP/MORP-flex retain
+  analytic independent threshold-only baselines, not correlated MORP null fits.
+- MDCEV/MDCEV-mixed LL(C) fits the basic MDCEV model with alternative constants
+  in both baseline utility and inside-good gamma, plus free sigma, preserving
+  traditional/linear utility, prices and weights. This adds an auxiliary fit;
+  mixed models do not simulate the baseline. Panel baselines assume independent
+  occasions and use the fitted model's individual weights and normalization.
+  Failed auxiliary fits return `NaN` (shown as `N/A`) with a warning. External
+  estimates without training data also have `N/A` baselines. MDCEV has no
+  uniform LL(0); density-based likelihood comparisons require consistent units
+  and numerical conventions.
+- Adjusted rho-squared uses total likelihoods: `1 - (LL - K) / LL(0)` and
+  `1 - (LL - (K - Kc)) / LL(C)`. With stored mean likelihoods, parameter
+  penalties are divided by the same case/individual count. `K` retains the
+  model's existing optimizer parameter count; `Kc` counts the baseline's
+  constants (`J - 1` for choice models), thresholds (sum of category counts
+  minus one per ordinal outcome), or utility/gamma constants plus sigma
+  (`2 * (J - 1) + 1` for MDCEV). MDCEV summaries show only constants-based
+  rho-squared measures. Unavailable baseline counts or zero baseline
+  likelihoods produce `N/A` for the affected adjusted statistic.
 
 **Backend**
 - NumPy by default; optional PyTorch backend with GPU support (install with
@@ -113,8 +151,56 @@ A runnable end-to-end example (with `morp_ate`, `morp_predict`,
 
 ## Verification
 
-pybhatlib reproduces Table 1 from the BHATLIB paper (Bhat 2018) using the
-TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
+MNP parameter-vector migration in #71:
+
+- `results.params` / `startb` use optimizer coordinates. Each full random-
+  coefficient covariance block is now `[radial correlation coordinates | log
+  SDs]`, replacing lower-Cholesky entries. Diagonal blocks still use log SDs.
+  The vector length alone does not establish compatibility. Convert every
+  segment's block; setting `scaling="first"` does not restore the old layout.
+- To migrate an old full covariance block, reconstruct `Omega = L_old @
+  L_old.T`, obtain `sd = sqrt(diag(Omega))` and `R = Omega / outer(sd, sd)`,
+  and encode its correlation factor with
+  `revnewcholparmscaled(np.linalg.cholesky(R).T, control.scal)` from
+  `pybhatlib.matgradient._radial`. Append `log(sd)`. This assumes positive SDs
+  and the same utility normalization; account separately for a change to
+  `sumsq`. Zero-variance blocks need a positive starting value before encoding.
+- `b_original` reports correlations and SDs (`corr[...]`, `scal[...]`) rather
+  than the old `CovCOv*` variances/covariances. `omega_hat` and `segment_covs`
+  retain covariance semantics. Convert old variances to SDs and off-diagonal
+  covariances to correlations using the full covariance matrix. Reported
+  uncertainty must be transformed too; an old variance SE is not an SD SE.
+- Optimizer segment coordinates remain logits relative to segment 1. Reporting
+  now uses probabilities: `segunpar` is the second-segment probability, and
+  `segunpar_sN` identifies segments 2..N. Convert old reported logits with
+  `softmax([0, logits...])`; convert probabilities back to optimizer logits
+  with `log(p_segment / p_reference)`. `segment_probs` contains all weights.
+- Automatic starts now use SD `0.1` and zero correlations in every segment,
+  with equal mixture weights. In diagonal models this changes the SD start
+  from `1` to `0.1`. Supplied starts are not silently converted. Changes in
+  starting points may change the optimization path and local optimum.
+
+For external IID MNP estimates, `MNPResults.from_estimates` and
+`mnp_ate_from_params` interpret beta in `control.scaling` units. The default
+remains `"sumsq"`; the coefficient vector alone cannot identify its original
+normalization. For `J` alternatives, these two inputs give equivalent ATEs:
+
+```python
+# GAUSS IID coefficients, kept in first-scale-equals-one units:
+gauss_ate = mnp_ate_from_params(
+    beta_gauss, X=X, n_alts=J,
+    control=MNPControl(iid=True, scaling="first"),
+)
+# Equivalent coefficients in the library's default sumsq units:
+default_ate = mnp_ate_from_params(beta_gauss / np.sqrt(J - 1), X=X, n_alts=J)
+```
+
+For coefficients from a fitted pybhatlib model, reuse its scaling control.
+For non-IID external inputs, provide the matching `beta` and `kernel_cov` pair;
+the constructor normalizes them together without changing predictions.
+
+pybhatlib reproduces Table 1 of the BHATLIB GAUSS reference implementation using
+the TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 
 | Model | Specification | Target LL | Achieved LL | Status |
 |-------|--------------|-----------|-------------|--------|
@@ -124,10 +210,17 @@ TRAVELMODE dataset (3 modes — DA, SR, TR; 1125 observations):
 | (c)     | + Random coeff. OVTT        | -635.871 | -635.871 | exact match |
 | (d)     | 2-segment mixture           | -634.975 | -632.912 | close (multi-modal) |
 
-Models (a)–(c) reproduce the published estimates and BHHH standard errors to
-≤0.001 on every parameter (verified end-to-end against GAUSS 26.1.1 + MaxLik
-5.0.9). Model (d) is documented as multi-modal — the Python optimum is a
-slightly better local mode than the published one.
+Models (a)–(c) reproduce the GAUSS estimates and BHHH standard errors to ≤0.001
+on every parameter (verified end-to-end against GAUSS 26.1.1 + MaxLik 5.0.9).
+Direct GAUSS coefficient/SE comparisons use `MNPControl(scaling="first")`.
+The default is now `scaling="sumsq"` (squared differenced kernel scales sum to
+one), matching MNPKerCP's existing default. This changes reported units;
+equivalent, consistently rescaled parameters give the same probabilities.
+Use `scaling="first"` for externally supplied IID GAUSS coefficients.
+`startb` always uses the selected optimizer coordinates; choosing `first`
+does not undo other parameter-layout changes in this release.
+Model (d) is multi-modal — the Python optimum is a slightly better local mode
+than the GAUSS one.
 
 For MORP, `iid=False` now uses GAUSS BHATLIB's unit-variance identification by
 default (`MORPControl.fix_scales=True`): the latent-utility variances are fixed
@@ -155,6 +248,8 @@ matching `.py` script under `python_scripts/`):
 | MNP | `t04a_mnp_iid` … `t04g_mnp_forecasting`, `t04h_bhatlib_table1`, `t04i_bhat2018_table2` |
 | MORP | `t05b_morp_ate_predict` |
 | MDCEV | `t07a_mdcev_trad`, `t07b_mdcev_lin` |
+| MNL | `t08a_mnl` |
+| LR | `t09a_lr` |
 | Backends & verification | `t06a_backend_switching`, `t06b_custom_specs`, `t06c_gradient_verification` |
 
 ## Contributing
@@ -173,8 +268,9 @@ pytest tests/ -m torch        # PyTorch backend tests only
 1. Bhat, C. R. (2018). New Matrix-Based Methods for the Analytic Evaluation of the
    Multivariate Cumulative Normal Distribution Function. *Transportation Research
    Part B*, 109: 238–256.
-2. Bhat, C. R., Clower, E., Haddad, A. J., Jones, J. BHATLIB: An Open-Source
-   Library for Statistical and Econometric Matrix-Based Inference Methods in GAUSS.
+2. Bhat, C. R. (2008). The Multiple Discrete-Continuous Extreme Value (MDCEV)
+   Model: Role of Utility Function Parameters, Identification Considerations, and
+   Model Extensions. *Transportation Research Part B*, 42(3): 274–303.
 
 ## License
 

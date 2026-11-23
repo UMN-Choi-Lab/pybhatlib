@@ -20,10 +20,13 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from pybhatlib.models._fit_diagnostics import record_probabilities, pause_probability_recording
+
 from pybhatlib.backend._array_api import get_backend
 from pybhatlib.gradmvn._mvncd import mvncd, mvncd_log_batch
 from pybhatlib.matgradient._spherical import theta_to_corr
 from pybhatlib.models.mnp._mnp_control import MNPControl
+from pybhatlib.models._mnp_scaling import kernel_scales, direct_kernel_scales
 from pybhatlib.models.mnp._mnp_grad_analytic import mnp_analytic_gradient
 from pybhatlib.utils._safe_reparam import safe_cholesky, safe_exp
 
@@ -84,6 +87,20 @@ def mnp_loglik(
     if return_gradient:
         # Analytic gradient computes both nll and grad in one pass,
         # avoiding a redundant forward-only evaluation.
+        #
+        # NOTE (shared-coefficients fix): ``mnp_analytic_gradient``'s
+        # mixture-of-normals path (nseg > 1) has been updated to match the
+        # current theta layout, where extra segments only carry
+        # ``len(ranvar_indices)`` free beta params (see ``_unpack_params``)
+        # and every other coefficient is shared with segment 1. The chain
+        # rule in ``_mixture_analytic_gradient`` (and its K=2 fast path)
+        # now correctly splits each segment's raw beta gradient into the
+        # "shared" part (flows back into segment 1's theta slot) and the
+        # "ranvar" part (flows into that segment's own small slot).
+        #
+        # ``_mnp_grad_gpu.py``'s mixture path has NOT been updated yet and
+        # is still stale against this layout, so GPU dispatch for nseg > 1
+        # remains disabled separately in ``_mnp_model.py``.
         if (
             control.analytic_grad
             and control.method in ("me", "ovus")
@@ -125,10 +142,11 @@ def mnp_loglik(
 
     if return_gradient:
         # Numerical gradient fallback (analytic path handled above)
-        grad = _numerical_gradient(
-            theta_np, X_np, y_np, avail, n_alts, n_beta,
-            control, ranvar_indices, xp
-        )
+        with pause_probability_recording():
+            grad = _numerical_gradient(
+                theta_np, X_np, y_np, avail, n_alts, n_beta,
+                control, ranvar_indices, xp
+            )
         return nll, grad
 
     return nll
@@ -234,6 +252,7 @@ def _batch_loglik_shared_cov(
             diff_V_group[:, k] = V_group[:, c] - V_group[:, j]
 
         log_probs = mvncd_log_batch(diff_V_group, Lambda_diff_c, method="me")
+        record_probabilities(log_probs, log=True)
         total_ll += float(np.sum(log_probs))
 
     return total_ll
@@ -352,6 +371,7 @@ def _batch_loglik_mixed(
         log_probs = mvncd_log_batch(
             diff_V_group, sigma_all[0], method="me", per_obs_sigma=sigma_all,
         )
+        record_probabilities(log_probs, log=True)
         total_ll += float(np.sum(log_probs))
 
     return total_ll
@@ -435,6 +455,7 @@ def _sequential_loglik_single_segment(
             ranvar_indices, control, xp
         )
         prob_q = max(prob_q, 1e-300)
+        record_probabilities(prob_q)
         total_ll += np.log(prob_q)
 
     return total_ll
@@ -466,6 +487,7 @@ def _sequential_loglik_mixture(
             ranvar_indices, control, xp
         )
         prob_q = max(prob_q, 1e-300)
+        record_probabilities(prob_q)
         total_ll += np.log(prob_q)
 
     return total_ll
@@ -513,7 +535,7 @@ def _unpack_params(
             # Diagonal: just n_rand variance params
             n_omega = n_rand
         else:
-            # Full Cholesky: n_rand*(n_rand+1)/2
+            # Correlations + log SDs: n_rand*(n_rand+1)/2
             n_omega = n_rand * (n_rand + 1) // 2
         params["omega_params"] = theta[idx: idx + n_omega]
         idx += n_omega
@@ -524,13 +546,39 @@ def _unpack_params(
         params["segment_params"] = theta[idx: idx + n_seg_params]
         idx += n_seg_params
 
-        # Additional beta and omega for extra segments
+        # Additional (shared-coefficients) beta and omega for extra segments.
+        #
+        # Only variables listed in ``ranvars`` (i.e. ``ranvar_indices``) get a
+        # segment-specific coefficient value; every other variable is SHARED
+        # across all segments (its value is whatever is in ``params["beta"]``
+        # for segment 1). So each extra segment only carries
+        # ``len(ranvar_indices)`` free beta parameters, not the full
+        # ``n_beta``. See docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md.
+        #
+        # ``segment_betas`` holds the RAW free parameters (length
+        # ``n_rand_shared`` each) — this is what round-trips through
+        # ``_param_to_unpar`` / theta0 / param-name building.
+        # ``segment_betas_full`` holds the RECONSTRUCTED length-``n_beta``
+        # vector (shared base + segment-specific overrides at
+        # ``ranvar_indices``) — this is what likelihood evaluation
+        # (``_compute_mixture_prob``) actually uses as the segment's beta.
+        n_rand_shared = len(ranvar_indices) if ranvar_indices else 0
+
         params["segment_betas"] = []
+        params["segment_betas_full"] = []
         params["segment_omegas"] = []
         for h in range(1, control.nseg):
-            seg_beta = theta[idx: idx + n_beta]
-            idx += n_beta
-            params["segment_betas"].append(seg_beta)
+            if n_rand_shared > 0:
+                seg_beta_free = theta[idx: idx + n_rand_shared]
+                idx += n_rand_shared
+            else:
+                seg_beta_free = np.zeros(0, dtype=np.float64)
+            params["segment_betas"].append(seg_beta_free)
+
+            seg_beta_full = params["beta"].copy()
+            if n_rand_shared > 0:
+                seg_beta_full[np.asarray(ranvar_indices)] = seg_beta_free
+            params["segment_betas_full"].append(seg_beta_full)
 
             if control.mix and ranvar_indices is not None:
                 n_rand = len(ranvar_indices)
@@ -552,14 +600,16 @@ def _build_lambda(
 ) -> np.ndarray:
     """Build the (I-1) x (I-1) DIFFERENCED kernel error covariance ``K``.
 
-    GAUSS homogeneous "first-differenced-variance = 1" form (lpr1):
+    ``control.scaling="first"`` selects the GAUSS lpr1 form:
         xscal     = [1] + exp(free_log_scales)   (length I-1, first pinned to 1)
         W1        = diag(xscal)
         omegastar = unit-diagonal (I-1)x(I-1) correlation
         K         = W1 @ omegastar @ W1           (so K[0,0] == 1)
 
-    The number of FREE scales is I-2 (the first is pinned), and the number of
-    correlations is (I-1)(I-2)/2. IID returns the identity directly.
+    With ``sumsq``, scales are sqrt(softmax([0, free_coordinates])) instead.
+    Both have I-2 free scales and (I-1)(I-2)/2 correlations. IID keeps the
+    existing differenced IID correlation (0.5 off diagonal) and uses unit
+    scales for ``first`` or 1/sqrt(I-1) for ``sumsq``.
     """
     I = n_alts
     dim = I - 1  # differenced dimension
@@ -571,19 +621,18 @@ def _build_lambda(
         # off-diagonal correlation 0.5. This matches GAUSS startker =
         # 0.5*eye(nc-1) + 0.5*ones(nc-1) (MNP_TRAVELMODE.gss line 119), which
         # is frozen for IID. No free kernel params.
-        return 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+        kernel = 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+        return kernel / dim if control.scaling == "sumsq" else kernel
 
     n_scale = max(dim - 1, 0)  # I-2 free scales (first diff variance pinned)
 
     if control.heteronly:
         # Heteroscedastic only: xscal = [1, exp(free_1), ...]; corr = I.
-        free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
-        xscal = np.concatenate([[1.0], free])
+        xscal = kernel_scales(lambda_params[:n_scale], control.scaling)
         return np.diag(xscal ** 2)
 
     # Full covariance: free scales + correlations via spherical parameterization.
-    free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
-    xscal = np.concatenate([[1.0], free])
+    xscal = kernel_scales(lambda_params[:n_scale], control.scaling)
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params) > n_scale:
@@ -603,21 +652,9 @@ def _build_omega_cholesky(
     control: MNPControl,
 ) -> np.ndarray:
     """Build the Cholesky factor L of the random coefficient covariance Omega = LL'."""
-    n_rand = len(ranvar_indices)
+    from pybhatlib.models.mnp._mnp_random import random_covariance
 
-    if control.randdiag:
-        # Diagonal: L = diag(exp(params))
-        return np.diag(safe_exp(omega_params[:n_rand]))
-
-    # Full lower triangular Cholesky
-    L = np.zeros((n_rand, n_rand), dtype=np.float64)
-    idx = 0
-    for i in range(n_rand):
-        for j in range(i + 1):
-            L[i, j] = omega_params[idx]
-            idx += 1
-
-    return L
+    return random_covariance(omega_params, len(ranvar_indices), control)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -673,7 +710,8 @@ def _build_lambda_direct(
 
     if control.iid or lambda_params_unpar is None:
         # IID kernel: GAUSS frozen startker = 0.5*(eye + ones); K[0,0] == 1.
-        return 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+        kernel = 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones((dim, dim), dtype=np.float64)
+        return kernel / dim if control.scaling == "sumsq" else kernel
 
     # GAUSS homogeneous form (lpr1): xscal = [1] + free_scales (free length I-2),
     # so the first differenced variance K[0,0] is pinned to 1. The direct
@@ -684,12 +722,12 @@ def _build_lambda_direct(
     if control.heteronly:
         # Heteroscedastic only: lambda_params_unpar = [free_scale_1, ...].
         free = lambda_params_unpar[:n_scale] if n_scale > 0 else np.empty(0)
-        xscal = np.concatenate([[1.0], free])
+        xscal = direct_kernel_scales(free, control.scaling)
         return np.diag(xscal ** 2)
 
     # Full: free scales (length I-2) + strict-upper correlations (length n_corr).
     free = lambda_params_unpar[:n_scale] if n_scale > 0 else np.empty(0)
-    xscal = np.concatenate([[1.0], free])
+    xscal = direct_kernel_scales(free, control.scaling)
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params_unpar) > n_scale:
@@ -812,8 +850,8 @@ def _param_to_unpar(
     """Translate a parameterized theta vector to its unparameterized form.
 
     Parameterized theta uses unconstrained spherical Cholesky factors for
-    correlation matrices and lower-triangular Cholesky factors for random-
-    coefficient covariances. The unparameterized form uses direct entries:
+    kernel correlation matrices and radial correlations plus log standard
+    deviations for random-coefficient covariances. The unparameterized form uses direct entries:
     correlations in [-1, 1] and covariances with positive variances.
 
     Round-trip property: ``mnp_loglik(theta_par) == mnp_loglik_unpar(theta_unpar)``
@@ -851,7 +889,7 @@ def _param_to_unpar(
         lam = params.get("lambda_params")
         out.append(_lambda_par_to_unpar(lam, n_alts, control))
 
-    # Omega (segment 1): parameterized lower-tri Cholesky entries
+    # Omega (segment 1): radial correlations and log standard deviations
     # -> unparameterized upper-tri (incl diagonal) Omega entries.
     if control.mix and ranvar_indices is not None and "omega_params" in params:
         out.append(_omega_par_to_unpar(
@@ -884,8 +922,9 @@ def _lambda_par_to_unpar(
 ) -> np.ndarray:
     """Convert parameterized lambda block to direct [free_scales, corrs_upper].
 
-    GAUSS homogeneous form: the first differenced scale is pinned to 1, so the
-    block carries only I-2 FREE scales (then the strict-upper correlations).
+    The block carries I-2 natural free scales, then strict-upper correlations.
+    The omitted first scale is 1 under ``first`` or sqrt(1-sum(free^2)) under
+    ``sumsq``; this matches the unparameterized likelihood/SE coordinates.
     """
     I = n_alts
     dim = I - 1
@@ -895,11 +934,11 @@ def _lambda_par_to_unpar(
     n_scale = max(dim - 1, 0)  # I-2 free scales
 
     if control.heteronly:
-        scales = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+        scales = kernel_scales(lambda_params[:n_scale], control.scaling)[1:]
         return scales
 
     # Full: log free-scales + angle-thetas -> free-scales + corrs.
-    scales = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
+    scales = kernel_scales(lambda_params[:n_scale], control.scaling)[1:]
 
     n_corr = dim * (dim - 1) // 2
     if n_corr > 0 and len(lambda_params) > n_scale:
@@ -917,7 +956,7 @@ def _omega_par_to_unpar(
     ranvar_indices: list[int],
     control: MNPControl,
 ) -> np.ndarray:
-    """Convert parameterized omega block (Cholesky) to direct Omega entries."""
+    """Convert correlation/log-SD coordinates to direct Omega entries."""
     n_rand = len(ranvar_indices)
     if control.randdiag:
         # Diagonal: par stores log(stddev), unpar stores variance.
@@ -1132,10 +1171,12 @@ def _compute_mixture_prob(
         X_q, beta_1, chosen, avail_q, Lambda, None, None, control, xp
     )
 
-    # Additional segments
+    # Additional segments. ``segment_betas_full`` is the shared base beta
+    # with only the ranvar_indices slots overridden per segment; every other
+    # coefficient is identical to segment 1 by construction.
     for h in range(1, nseg):
-        if h - 1 < len(params.get("segment_betas", [])):
-            beta_h = params["segment_betas"][h - 1]
+        if h - 1 < len(params.get("segment_betas_full", [])):
+            beta_h = params["segment_betas_full"][h - 1]
         else:
             beta_h = beta_1
 
@@ -1419,12 +1460,27 @@ def _unpack_params_unpar(
         params["segment_params"] = theta[idx: idx + n_seg_params]
         idx += n_seg_params
 
+        # Shared-coefficients layout: see the matching comment in
+        # ``_unpack_params`` (parameterized). Only ``ranvar_indices`` slots
+        # get segment-specific values; everything else is shared from
+        # ``params["beta"]``.
+        n_rand_shared = len(ranvar_indices) if ranvar_indices else 0
+
         params["segment_betas"] = []
+        params["segment_betas_full"] = []
         params["segment_omegas"] = []
         for _h in range(1, control.nseg):
-            seg_beta = theta[idx: idx + n_beta]
-            idx += n_beta
-            params["segment_betas"].append(seg_beta)
+            if n_rand_shared > 0:
+                seg_beta_free = theta[idx: idx + n_rand_shared]
+                idx += n_rand_shared
+            else:
+                seg_beta_free = np.zeros(0, dtype=np.float64)
+            params["segment_betas"].append(seg_beta_free)
+
+            seg_beta_full = params["beta"].copy()
+            if n_rand_shared > 0:
+                seg_beta_full[np.asarray(ranvar_indices)] = seg_beta_free
+            params["segment_betas_full"].append(seg_beta_full)
 
             if control.mix and ranvar_indices is not None:
                 n_rand = len(ranvar_indices)
@@ -1551,8 +1607,8 @@ def _compute_mixture_prob_unpar(
 
     for h in range(1, nseg):
         beta_h = (
-            params["segment_betas"][h - 1]
-            if h - 1 < len(params.get("segment_betas", []))
+            params["segment_betas_full"][h - 1]
+            if h - 1 < len(params.get("segment_betas_full", []))
             else beta_1
         )
         Omega_L_h = None
@@ -1643,9 +1699,13 @@ def count_params(
 
     if control.nseg > 1:
         n += control.nseg - 1  # segment probability params
-        # Additional beta and omega for each extra segment
+        # Additional beta and omega for each extra segment.
+        # Shared-coefficients layout: only variables in ``ranvar_indices``
+        # get a segment-specific beta value; all other variables are shared
+        # with segment 1 and contribute no extra parameters here.
+        n_rand_shared = len(ranvar_indices) if ranvar_indices else 0
         for _ in range(1, control.nseg):
-            n += n_beta
+            n += n_rand_shared
             if control.mix and ranvar_indices is not None:
                 n_rand = len(ranvar_indices)
                 if control.randdiag:

@@ -1,19 +1,19 @@
-"""Tests for the M1 mixture-ranvars auto-expansion ergonomic fix.
+"""Tests for mixture-of-normals ``ranvars`` handling (shared coefficients).
 
-Validates that ``ranvars=["OVTT"]`` (single base name) is automatically
-expanded across mixture-of-normals segments when ``control.nseg > 1``,
-matching the GAUSS user-facing pattern ``ranvars = { OVTT1 OVTT2 }``
-from ``Gauss Files and Comparison/MNP/MNP Table2 d.gss:113``.
-
-The expansion is purely additive: legacy segment-suffixed naming
-(``ranvars=["OVTT1", "OVTT2"]`` with separate spec entries) continues
-to work and produces an identical fit.
+Under the shared/varying layout (docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md)
+a single base name ``ranvars=["OVTT"]`` with ``control.nseg > 1`` gives OVTT
+one segment-specific coefficient/Omega slot per segment while every other
+coefficient is shared across segments; the model resolves the name to ONE
+column index (no auto-expansion). Legacy segment-suffixed naming
+(``ranvars=["OVTT1", "OVTT2"]`` with separate spec entries) still resolves,
+but now means two distinct random coefficients.
 """
 
 from __future__ import annotations
 
 import warnings
 
+import numpy as np
 import pytest
 
 from pybhatlib.models.mnp import MNPControl, MNPModel
@@ -96,6 +96,140 @@ def _make_model(spec, nseg, ranvars, travelmode_path, mix=True, **ctrl_kwargs):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("nseg", [1, 2, 3])
+@pytest.mark.parametrize("randdiag", [False, True])
+@pytest.mark.parametrize("ranvars", [["OVTT"], ["OVTT", "COST"]])
+@pytest.mark.parametrize("scaling", ["first", "sumsq"])
+def test_all_segments_start_with_positive_random_scales(
+    travelmode_path, nseg, randdiag, ranvars, scaling,
+):
+    from pybhatlib.models.mnp._mnp_loglik import _unpack_params, _build_omega_cholesky
+
+    model = _make_model(SPEC_BASE, nseg, ranvars, travelmode_path,
+                        randdiag=randdiag, scaling=scaling)
+    theta = model._default_start_values()
+    params = _unpack_params(theta, model.n_beta, model.n_alts, model.control, model.ranvar_indices)
+    omegas = [params["omega_params"]] + params.get("segment_omegas", [])
+    assert len(omegas) == nseg
+    expected = np.eye(len(ranvars)) * 0.1
+    n_corr = 0 if randdiag else len(ranvars) * (len(ranvars) - 1) // 2
+    expected_coordinates = np.r_[np.zeros(n_corr),
+                                  np.full(len(ranvars), np.log(0.1))]
+    for omega in omegas:
+        np.testing.assert_allclose(omega, expected_coordinates, atol=1e-14)
+        L = _build_omega_cholesky(omega, model.ranvar_indices, model.control)
+        np.testing.assert_allclose(L, expected)
+
+
+@pytest.mark.parametrize("n_rand", [2, 3])
+def test_legacy_cholesky_migration_preserves_covariance(n_rand):
+    """Check the documented conversion; old entries cannot just be relabeled."""
+    from pybhatlib.matgradient._radial import revnewcholparmscaled
+    from pybhatlib.models.mnp._mnp_random import random_covariance
+
+    rng = np.random.default_rng(89)
+    old_lower = np.tril(rng.normal(scale=.15, size=(n_rand, n_rand)))
+    np.fill_diagonal(old_lower, np.linspace(.3, .7, n_rand))
+    covariance = old_lower @ old_lower.T
+    sd = np.sqrt(np.diag(covariance))
+    correlation = covariance / np.outer(sd, sd)
+    ctrl = MNPControl(randdiag=False, scal=1.7)
+    radial = revnewcholparmscaled(np.linalg.cholesky(correlation).T, ctrl.scal)
+    migrated = np.r_[radial, np.log(sd)]
+    lower, reconstructed = random_covariance(migrated, n_rand, ctrl)
+    np.testing.assert_allclose(reconstructed, covariance, atol=1e-14)
+    np.testing.assert_allclose(lower @ lower.T, covariance, atol=1e-14)
+
+
+@pytest.mark.parametrize("scaling", ["first", "sumsq"])
+def test_second_segment_default_scale_has_nonzero_correct_gradient(travelmode_path, scaling):
+    from pybhatlib.models.mnp._mnp_loglik import mnp_loglik
+
+    model = _make_model(SPEC_BASE, 2, ["OVTT"], travelmode_path, scaling=scaling)
+    np.random.seed(42)
+    theta = model._default_start_values()
+    scale_index = model._build_param_names().index("scal_theta[OVTT]_s2")
+
+    def likelihood(t):
+        return mnp_loglik(t, model.X, model.y, model.avail, model.n_alts,
+                          model.n_beta, model.control, model.ranvar_indices,
+                          return_gradient=True)
+
+    value, gradient = likelihood(theta)
+    step = np.zeros_like(theta)
+    step[scale_index] = 1e-5
+    fd = (likelihood(theta + step)[0] - likelihood(theta - step)[0]) / 2e-5
+    assert abs(gradient[scale_index]) > 1e-5
+    assert gradient[scale_index] == pytest.approx(fd, abs=1e-6, rel=1e-5)
+    improved = theta.copy()
+    improved[scale_index] -= np.sign(gradient[scale_index]) * 1e-3
+    assert likelihood(improved)[0] < value
+
+    # Zero is now log(SD)=0, i.e. SD=1, rather than a zero-variance trap.
+    zero = theta.copy()
+    zero[scale_index] = 0.0
+    assert abs(likelihood(zero)[1][scale_index]) > 1e-5
+
+
+@pytest.mark.parametrize("scaling", ["first", "sumsq"])
+def test_one_random_coefficient_is_identical_for_both_randdiag_settings(travelmode_path, scaling):
+    from pybhatlib.models.mnp._mnp_loglik import mnp_loglik
+
+    results = []
+    fitted = []
+    starts = []
+    for diagonal in (False, True):
+        model = _make_model(SPEC_BASE, 2, ["OVTT"], travelmode_path,
+                            randdiag=diagonal, scaling=scaling)
+        np.random.seed(42)
+        theta = model._default_start_values()
+        starts.append(theta)
+        results.append(mnp_loglik(theta, model.X, model.y, model.avail,
+                                  model.n_alts, model.n_beta, model.control,
+                                  model.ranvar_indices, return_gradient=True))
+        # Exercise public fitting/reporting at the same coordinates, without
+        # optimizing away differences between the two parameterizations.
+        model.control.startb = theta.copy()
+        model.control.maxiter = 0
+        fit = model.fit()
+        fitted.append(fit)
+        np.testing.assert_array_equal(fit.params, theta)
+        assert fit.loglik == pytest.approx(-results[-1][0], abs=1e-10)
+        for covariance in fit.segment_covs:
+            np.testing.assert_allclose(covariance, [[0.1**2]], atol=1e-14)
+        assert model._build_param_names()[-1] == "scal_theta[OVTT]_s2"
+    np.testing.assert_array_equal(starts[0], starts[1])
+    assert results[0][0] == pytest.approx(results[1][0], abs=1e-12)
+    np.testing.assert_allclose(results[0][1], results[1][1], atol=1e-12)
+    assert fitted[0].param_names == fitted[1].param_names
+    np.testing.assert_allclose(fitted[0].b_original, fitted[1].b_original, atol=1e-12)
+    np.testing.assert_allclose(fitted[0].segment_probs, fitted[1].segment_probs, atol=1e-12)
+    np.testing.assert_allclose(fitted[0].segment_covs, fitted[1].segment_covs, atol=1e-12)
+
+
+@pytest.mark.parametrize("n_rand", [1, 2, 3])
+@pytest.mark.parametrize("randdiag", [False, True])
+def test_random_covariance_log_scale_chain(n_rand, randdiag):
+    from pybhatlib.models.mnp._mnp_random import random_covariance, random_covariance_adjoint
+
+    ctrl = MNPControl(randdiag=randdiag, scal=1.7)
+    n_corr = 0 if randdiag else n_rand * (n_rand - 1) // 2
+    theta = np.linspace(-0.4, 0.3, n_corr + n_rand)
+    rng = np.random.default_rng(24)
+    adjoint = rng.normal(size=(n_rand, n_rand))
+    adjoint = 0.5 * (adjoint + adjoint.T)
+    L, covariance = random_covariance(theta, n_rand, ctrl)
+    np.testing.assert_allclose(np.sqrt(np.diag(covariance)), np.exp(theta[n_corr:]))
+    np.testing.assert_allclose(L @ L.T, covariance)
+    analytic = random_covariance_adjoint(adjoint, theta, n_rand, ctrl)
+    numeric = np.zeros_like(theta)
+    for i, direction in enumerate(np.eye(len(theta))):
+        plus = random_covariance(theta + 1e-6 * direction, n_rand, ctrl)[1]
+        minus = random_covariance(theta - 1e-6 * direction, n_rand, ctrl)[1]
+        numeric[i] = np.sum(adjoint * (plus - minus)) / 2e-6
+    np.testing.assert_allclose(analytic, numeric, atol=1e-8, rtol=1e-7)
+
+
 class TestRanvarsBackwardCompatibilityNseg1:
     def test_ranvars_single_string_unchanged_for_nseg1(self, travelmode_path):
         m = _make_model(SPEC_BASE, nseg=1, ranvars="OVTT",
@@ -117,36 +251,25 @@ class TestRanvarsBackwardCompatibilityNseg1:
 # ---------------------------------------------------------------------------
 
 
-class TestRanvarsAutoExpansionNseg2:
-    def test_ranvars_expanded_for_nseg2_base_name(self, travelmode_path):
-        """``ranvars=["OVTT"]`` with nseg=2 → length-2 ranvar_indices.
+class TestRanvarsSingleSlotNseg2:
+    """Shared-coefficients layout: a ranvar name resolves to ONE column index.
 
-        Both indices must point to the OVTT column in their respective
-        segment slice of the (segment-duplicated) design matrix.
-        """
+    ``_unpack_params`` gives every name in ``ranvars`` its own segment-specific
+    coefficient/Omega slot per segment, so the model must NOT pre-duplicate the
+    index (that was the old MNP-006 auto-expansion, which made the per-segment
+    Omega rank-deficient).
+    """
+
+    def test_ranvars_single_index_for_nseg2_base_name(self, travelmode_path):
         m = _make_model(SPEC_BASE, nseg=2, ranvars=["OVTT"],
                         travelmode_path=travelmode_path)
-        assert m.ranvar_indices is not None
-        assert len(m.ranvar_indices) == 2
+        assert m.ranvar_indices == [m.var_names.index("OVTT")]
 
-        # Both ranvar_indices entries refer to OVTT (in their segment slice).
-        # We verify by checking the underlying var_names entry strips to
-        # the base "OVTT".
-        for ri in m.ranvar_indices:
-            name = m.var_names[ri]
-            # Either "OVTT" (segment 1) or "OVTT_s2", "OVTT_s3", ...
-            base = name.split("_s")[0]
-            assert base == "OVTT", (
-                f"ranvar_indices entry {ri} -> {name!r}, base={base!r}, "
-                f"expected base 'OVTT'"
-            )
-
-    def test_ranvars_string_form_expanded_for_nseg2(self, travelmode_path):
-        """Single-string form ``ranvars="OVTT"`` also auto-expands."""
+    def test_ranvars_string_form_single_index_for_nseg2(self, travelmode_path):
+        """Single-string form ``ranvars="OVTT"`` resolves the same way."""
         m = _make_model(SPEC_BASE, nseg=2, ranvars="OVTT",
                         travelmode_path=travelmode_path)
-        assert m.ranvar_indices is not None
-        assert len(m.ranvar_indices) == 2
+        assert m.ranvar_indices == [m.var_names.index("OVTT")]
 
     def test_ranvars_segment_suffixed_still_works(self, travelmode_path):
         """Legacy ``ranvars=["OVTT1", "OVTT2"]`` (with separate spec
@@ -184,16 +307,15 @@ class TestRanvarsAutoExpansionNseg2:
 class TestNParamsPerSegmentOverhead:
     def test_n_params_grows_with_nseg_for_random_coef(self, travelmode_path):
         """``n_params(nseg=2)`` exceeds ``n_params(nseg=1)`` by exactly the
-        expected per-segment overhead.
+        shared-coefficients per-segment overhead.
 
-        For ``ranvars=["OVTT"]``, auto-expansion makes ``n_rand = nseg``
-        (one ranvar per segment slice). Per-segment overhead for each
-        extra segment is therefore:
+        For ``ranvars=["OVTT"]`` (``n_rand = 1``) each extra segment adds:
 
             +1 segment-probability param
-            + n_beta extra betas
-            + n_omega(n_rand=nseg) per segment
-            + the n_omega growth in segment 1 (n_rand = 1 → nseg)
+            + n_rand segment-specific betas (only the ranvars vary)
+            + n_omega(n_rand) for that segment's Omega
+
+        Every other coefficient is shared with segment 1 and costs nothing.
         """
         m1 = _make_model(SPEC_BASE, nseg=1, ranvars=["OVTT"],
                          travelmode_path=travelmode_path)
@@ -202,26 +324,15 @@ class TestNParamsPerSegmentOverhead:
 
         assert m2.n_params > m1.n_params
 
-        # Compute expected delta directly from the new layout.
-        # nseg=1: n_beta + n_lambda + n_omega(1)
-        # nseg=2: n_beta + n_lambda + n_omega(2) + (nseg-1) + (n_beta + n_omega(2))
         n_beta = m1.n_beta
-        # Lambda count is the same for both:
-        n_lambda_terms = m1.n_params - n_beta - 1  # 1 omega in nseg=1 base
-        # Sanity-check our reasoning:
-        assert m1.n_params == n_beta + n_lambda_terms + 1
+        n_rand = 1
+        n_omega = n_rand * (n_rand + 1) // 2  # 1
+        # nseg=1: n_beta + n_lambda + n_omega
+        n_lambda_terms = m1.n_params - n_beta - n_omega
+        assert m1.n_params == n_beta + n_lambda_terms + n_omega
 
-        n_rand_2 = 2
-        n_omega_2 = n_rand_2 * (n_rand_2 + 1) // 2  # 3
         n_seg_extra = m2.control.nseg - 1  # 1 prob param
-        expected_m2 = (
-            n_beta              # seg-1 betas
-            + n_lambda_terms    # lambda
-            + n_omega_2         # seg-1 omega (now 2x2)
-            + n_seg_extra       # mixture probability
-            + n_beta            # seg-2 betas
-            + n_omega_2         # seg-2 omega (now 2x2)
-        )
+        expected_m2 = m1.n_params + n_seg_extra * (1 + n_rand + n_omega)
         assert m2.n_params == expected_m2, (
             f"n_params(nseg=2)={m2.n_params}, expected {expected_m2}"
         )
@@ -233,26 +344,13 @@ class TestNParamsPerSegmentOverhead:
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    reason=(
-        "M1 ergonomic auto-expansion alone does not close the LL gap to "
-        "the paper target (-634.975). Empirical LL with auto-ranvars is "
-        "~-627.9 — closer than the pre-M1 baseline (~-629.7) but the "
-        "residual ~7-unit gap is structural. Closing it requires the "
-        "shared/varying coefficient refactor in "
-        "MIXTURE_SHARED_COEFFICIENTS_PLAN.md. Kept as xfail so the "
-        "expected gap is visible; flips to pass if the structural fix "
-        "lands."
-    ),
-    strict=False,
-)
-def test_table2_model_d_with_auto_ranvars_lower_LL(travelmode_path):
-    """Fit Model (d) using the new ``ranvars=["OVTT"]`` style.
+def test_table2_model_d_shared_coefficients_hit_paper_LL(travelmode_path):
+    """Fit Model (d) with ``ranvars=["OVTT"]`` under the shared-coefficients
+    layout and assert the published BHATLIB LL (-634.975) is reached.
 
-    Paper target is -634.975 (±1). If the auto-expansion alone closes
-    the gap, this passes; otherwise, the residual delta documents that
-    the remaining gap is structural (shared/varying coefficient handling
-    is needed, deferred to a separate phase).
+    Before the shared/varying refactor every beta was duplicated per segment
+    and the fit stalled at ~-624.4 (degenerate segment); the refactor closes
+    the gap (LL -634.938 on TRAVELMODE).
     """
     ctrl = MNPControl(
         iid=False, mix=True, nseg=2,
@@ -268,42 +366,23 @@ def test_table2_model_d_with_auto_ranvars_lower_LL(travelmode_path):
     )
     results = model.fit()
 
-    # Paper target: -634.975 (±1 tolerance specified by the M1 plan).
-    # Do NOT widen this tolerance to make it pass — if the LL doesn't
-    # reach this range, the residual is reported as evidence the
-    # remaining gap is structural.
+    # Paper target: -634.975 (±1). Do NOT widen this tolerance.
     assert -636.0 <= results.loglik * results.n_obs <= -633.0, (
-        f"Model (d) auto-ranvars LL = {results.loglik * results.n_obs:.3f}, "
+        f"Model (d) LL = {results.loglik * results.n_obs:.3f}, "
         f"expected within [-636, -633] (paper target -634.975)"
     )
 
 
 @pytest.mark.slow
 def test_table2_model_d_legacy_naming_still_passes(travelmode_path):
-    """Fit Model (d) with both the new and legacy ranvars naming and
-    assert the two paths converge to comparable log-likelihoods.
+    """Fit Model (d) with both the new and legacy ranvars naming.
 
-    The legacy 8-entry spec (``OVTT1``/``OVTT2`` separate) has two more
-    beta coefficients than the new 7-entry spec (``OVTT`` only), since
-    pybhatlib's shared X means OVTT1 and OVTT2 reference identical raw
-    data columns. The extra betas are redundant (only their sum is
-    identified), so the global LL should match across both forms — but
-    the optimizer may stop at slightly different points due to the
-    extra degrees of freedom.
-
-    Asserts LL parity within 3.5 units: under the GAUSS first-diff-var=1
-    homogeneous kernel the rank-deficient mixture (shared X duplicates the
-    OVTT column) has several nearby local optima, and the new 7-entry
-    auto-expansion form and the legacy 9-entry (OVTT1/OVTT2) form land on
-    slightly different ones. Empirically the new form converges to ~-624.4
-    and the legacy form to ~-627.6, a gap of ~3.2 units reflecting the 2
-    redundant betas plus the optimizer not reaching identical local optima.
-    This is a local-optimum geometry effect of the kernel convention, NOT a
-    regression: analytic gradients match finite differences at both converged
-    points and all five published-table LL anchors are preserved. The
-    tolerance is set just above the observed gap; it is NOT widened to hide a
-    real divergence (the two forms remain within ~0.5 unit of one another in
-    log-likelihood per observation).
+    Under the shared-coefficients layout the legacy 8-entry spec
+    (``OVTT1``/``OVTT2`` separate, both in ``ranvars``) is a genuinely
+    different model: two random coefficients over duplicate data columns
+    (rank-deficient Omega, warned about) instead of one. It still resolves
+    and fits; this test pins its parameter count relative to the new form
+    and checks that the two land in the same LL neighbourhood.
     """
     ctrl_kwargs = dict(
         iid=False, mix=True, nseg=2,
@@ -332,10 +411,12 @@ def test_table2_model_d_legacy_naming_still_passes(travelmode_path):
     )
     res_legacy = model_legacy.fit()
 
-    # Legacy form has 2 extra (redundant) betas (OVTT2 columns sharing
-    # OVTT data with OVTT1) — n_params differs by exactly 2 per nseg.
-    n_extra_per_seg = 1  # one extra beta per segment for OVTT2
-    expected_extra = n_extra_per_seg * model_new.control.nseg
+    # Legacy form = TWO random coefficients (OVTT1, OVTT2) instead of one:
+    #   +1 beta column (OVTT2) shared across segments
+    #   +(n_omega(2) - n_omega(1)) = +2 in the segment-1 Omega
+    #   per extra segment: +1 segment-specific beta, +2 Omega entries
+    nseg = model_new.control.nseg
+    expected_extra = 1 + 2 + (nseg - 1) * (1 + 2)
     assert model_legacy.n_params == model_new.n_params + expected_extra, (
         f"legacy n_params={model_legacy.n_params}, "
         f"new n_params={model_new.n_params}, "
@@ -430,14 +511,14 @@ class TestStripSegmentSuffixFix:
         assert "OVTT2" in names, f"Expected OVTT2 in {names}"
 
     def test_duplicate_ranvar_indices_emits_warning(self, travelmode_path):
-        """``ranvars=["OVTT"]`` with ``nseg=2`` triggers auto-expansion to
-        duplicate column indices (both pointing to the same OVTT column in
-        the shared design matrix).  This must emit a ``RuntimeWarning``.
+        """Listing the same variable twice in ``ranvars`` resolves to duplicate
+        column indices (a rank-deficient Omega) and must emit a
+        ``RuntimeWarning``.
         """
         with pytest.warns(RuntimeWarning, match="duplicate column indices"):
             _make_model(
                 SPEC_BASE, nseg=2,
-                ranvars=["OVTT"],
+                ranvars=["OVTT", "OVTT"],
                 travelmode_path=travelmode_path,
             )
 
@@ -518,36 +599,36 @@ class TestMixFlagNormalization:
 
 
 class TestDuplicateWarningAttribution:
-    """The auto-expansion warning must fire ONLY when expansion actually ran.
+    """The duplicate-index warning fires on the duplicate itself, not on nseg.
 
-    User-supplied literal duplicates (``ranvars=["OVTT", "OVTT"]`` with
-    ``nseg=1``) are a deliberate choice and must not be misattributed
-    to auto-expansion.
+    Auto-expansion no longer exists, so the only way to get duplicate
+    ``ranvar_indices`` is to list a variable twice. That is rank-deficient
+    regardless of ``nseg`` and always warns; the single-name mixture form
+    (``ranvars=["OVTT"]`` with ``nseg=2``) never does.
     """
 
-    def test_user_duplicates_nseg1_no_warning(self, travelmode_path):
-        # No nseg>1 trigger and no auto-expansion → no warning,
-        # even though resolved indices contain duplicates.
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", RuntimeWarning)
+    def test_user_duplicates_warn_even_for_nseg1(self, travelmode_path):
+        with pytest.warns(RuntimeWarning, match="duplicate column indices"):
             m = _make_model(
                 SPEC_BASE, nseg=1,
                 ranvars=["OVTT", "OVTT"],
                 travelmode_path=travelmode_path,
             )
+        # the user's choice is preserved (no dedup)
         assert m.ranvar_indices == [
             m.var_names.index("OVTT"),
             m.var_names.index("OVTT"),
         ]
 
-    def test_auto_expansion_duplicates_still_warns(self, travelmode_path):
-        # The original auto-expansion path still emits the warning.
-        with pytest.warns(RuntimeWarning, match="auto-expansion produced"):
-            _make_model(
+    def test_single_name_nseg2_does_not_warn(self, travelmode_path):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            m = _make_model(
                 SPEC_BASE, nseg=2,
                 ranvars=["OVTT"],
                 travelmode_path=travelmode_path,
             )
+        assert m.ranvar_indices == [m.var_names.index("OVTT")]
 
 
 class TestNseg1ExplicitSuffixHelpfulError:

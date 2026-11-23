@@ -32,6 +32,7 @@ from pybhatlib.mixed._predict import MixedATEResult
 from pybhatlib.models._ate_common import ATEResultMixin
 from pybhatlib.models.mdcev._mdcev_ate import mdcev_ate, mdcev_ate_from_params
 from pybhatlib.models.mdcev._mdcev_forecast import mdcev_predict
+from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 from pybhatlib.models.mdcev._mdcev_model import MDCEVModel
 from pybhatlib.models.mdcev._mdcev_results import MDCEVResults
 from pybhatlib.models.mdcev_mixed._mdcev_mixed_forecast import mdcev_mixed_predict
@@ -111,6 +112,16 @@ def _make_frame(seed: int = 7):
     )
 
 
+def _fixed_param_names():
+    """Reported names of the equivalent fixed-coefficient ``MDCEVModel``.
+
+    ``MDCEVModel`` has no outside-good gamma parameter (its satiation is pinned
+    to ``MDCEVControl.outside_good_gamma``), so the mixed layout's ``g0``
+    placeholder slot is absent.
+    """
+    return [f"b{v}" for v in range(NVARM)] + [f"g{j}" for j in range(1, NVARGAM)]
+
+
 def _param_names():
     return (
         [f"b{v}" for v in range(NVARM)]
@@ -160,7 +171,7 @@ def test_collapse_predict_equals_shipped_mdcev_predict():
     def setter(sl, layout):
         theta = np.zeros(layout.n_theta, dtype=np.float64)
         theta[sl["beta"]] = beta
-        theta[sl["gamma"]] = gamma_raw
+        theta[sl["gamma"]] = gamma_raw[1:]   # inside goods only (outside gamma is not a parameter)
         theta[sl["kern"]] = log_sigma
         return theta
 
@@ -172,7 +183,7 @@ def test_collapse_predict_equals_shipped_mdcev_predict():
     ref = mdcev_predict(
         None, m.X, m.gamma_design, m.price,
         n_draws=1000, seed=1234,
-        b_reported=np.concatenate([beta, gamma_raw]),
+        b_reported=np.concatenate([beta, gamma_raw[1:]]),
         sigma=float(np.exp(log_sigma)), outside_good_gamma=-1000.0,
     ).mean(axis=0)
 
@@ -191,6 +202,9 @@ def test_randdiag_removes_random_correlation_block():
     )
 
     assert layout.n_rcor == 0
+    optimizer_names = model._optimizer_param_names(spec, layout)
+    assert len(optimizer_names) == layout.n_theta
+    assert not any(name.startswith("corr_theta[") for name in optimizer_names)
     np.testing.assert_array_equal(state.omegastar, np.eye(2))
 
 
@@ -207,19 +221,24 @@ def test_fix_location_zero_is_wired_to_shared_spec():
     assert spec.fix_location_zero_mask[0] == 1.0
 
 
-def test_collapse_ate_equals_shipped_mdcev_ate():
-    """nrndcoef=0 mixed ate == shipped mdcev_ate (base + per scenario), 1e-6."""
+@pytest.mark.parametrize("utility", ["trad", "linear"])
+def test_collapse_ate_equals_shipped_mdcev_ate(utility):
+    """nrndcoef=0 mixed ate == shipped mdcev_ate (base + per scenario), 1e-6.
+
+    Parametrized over the outside-good utility so the linear allocation path
+    (``control.utility`` forwarded to ``mdcev_forecast``) is exercised too.
+    """
     fx = _make_frame()
     beta, gamma_raw, log_sigma = fx["beta"], fx["gamma_raw"], fx["log_sigma"]
     sigma = float(np.exp(log_sigma))
 
-    ctrl = MDCEVMixedControl(utility="trad", n_rep=3, draw_seed=0)
+    ctrl = MDCEVMixedControl(utility=utility, n_rep=3, draw_seed=0)
     m = _make_mixed(fx, ctrl)
 
     def setter(sl, layout):
         theta = np.zeros(layout.n_theta, dtype=np.float64)
         theta[sl["beta"]] = beta
-        theta[sl["gamma"]] = gamma_raw
+        theta[sl["gamma"]] = gamma_raw[1:]   # inside goods only (outside gamma is not a parameter)
         theta[sl["kern"]] = log_sigma
         return theta
 
@@ -237,9 +256,13 @@ def test_collapse_ate_equals_shipped_mdcev_ate():
         param_names=[f"b{v}" for v in range(NVARM)],
         gamma_names=[f"g{j}" for j in range(NVARGAM)],
     )
+    # The fixed-coefficient model carries inside-good gammas only (the
+    # outside-good slot ``gamma_raw[0]`` is a pinned placeholder in the mixed
+    # layout and does not exist in ``MDCEVModel``), so drop it here.
     res = MDCEVResults.from_estimates(
-        np.concatenate([beta, gamma_raw, [sigma]]), sigma,
-        param_names=_param_names() + ["sigma"],
+        np.concatenate([beta, gamma_raw[1:], [sigma]]), sigma,
+        control=MDCEVControl(utility=utility),
+        param_names=_fixed_param_names() + ["sigma"],
     )
     ship = mdcev_ate(
         res, model=ship_model, data=fx["df"], scenarios=scenarios,
@@ -278,7 +301,7 @@ def _mixed_active():
     def setter(sl, layout):
         theta = np.zeros(layout.n_theta, dtype=np.float64)
         theta[sl["beta"]] = beta
-        theta[sl["gamma"]] = gamma_raw
+        theta[sl["gamma"]] = gamma_raw[1:]   # inside goods only (outside gamma is not a parameter)
         theta[sl["kern"]] = log_sigma
         theta[sl["scal"]] = 0.0     # exp(0) -> sd = 1 (active heterogeneity)
         theta[sl["lam"]] = 0.0      # identity Yeo-Johnson
@@ -426,8 +449,8 @@ def test_ate_from_params_collapse_matches_fixed_coef():
     sl = layout.slices()
     params = np.zeros(layout.n_theta, dtype=np.float64)
     params[sl["beta"]] = beta
-    params[sl["gamma"]] = gamma_raw
-    params[sl["kern"]] = log_sigma
+    params[sl["gamma"]] = gamma_raw[1:]   # inside goods only (outside gamma is not a parameter)
+    params[sl["kern"]] = sigma   # reporting space: natural sigma
 
     scenarios = {"lo": {"x1_0": -0.5}, "hi": {"x1_0": 0.5}}
     mixed = mdcev_mixed_ate_from_params(m, params, scenarios=scenarios)
@@ -438,11 +461,12 @@ def test_ate_from_params_collapse_matches_fixed_coef():
         param_names=[f"b{v}" for v in range(NVARM)],
         gamma_names=[f"g{j}" for j in range(NVARGAM)],
     )
+    # Fixed-coefficient layout: inside-good gammas only (see above).
     fixed = mdcev_ate_from_params(
-        np.concatenate([beta, gamma_raw]), sigma,
+        np.concatenate([beta, gamma_raw[1:]]), sigma,
         model=ship_model, data=fx["df"], scenarios=scenarios,
         alternative_names=fx["alt_cols"], n_draws=1000, seed=1234,
-        param_names=_param_names(),
+        param_names=_fixed_param_names(),
     )
 
     np.testing.assert_allclose(

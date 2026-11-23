@@ -381,10 +381,19 @@ def mnp_ate_from_params(
     Parameters
     ----------
     beta : ndarray, shape (n_beta,)
-        Slope coefficients.
+        Reported slope coefficients. For IID inputs (``kernel_cov=None``),
+        their units must match ``control.scaling`` (default ``"sumsq"``).
+        To use GAUSS IID coefficients unchanged, explicitly pass
+        ``MNPControl(iid=True, scaling="first")``; otherwise divide them by
+        ``sqrt(I - 1)`` before using the default. No source-scale inference is
+        possible from beta alone. Reusing estimates from this library requires
+        the same scaling control as the fitted model.
     kernel_cov : ndarray, shape (I-1, I-1), optional
         Differenced kernel error covariance (``None`` ⇒ IID).  See
         :meth:`MNPResults.from_estimates`.
+        For non-IID inputs, beta and covariance are normalized together;
+        predictions do not depend on the selected identification when this
+        pair is supplied consistently.
     control : MNPControl, optional
         Control structure (defaults to ``MNPControl(iid=kernel_cov is None)``).
     ranvar_indices, param_names, n_alts

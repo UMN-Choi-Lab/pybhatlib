@@ -42,9 +42,8 @@ def mdcev_fit():
         "x": {"alt_out": "x1", "alt1": "x2", "alt2": "x3"},
     }
     gspec = {
-        "g_out": {"alt_out": "uno", "alt1": "sero", "alt2": "sero"},
-        "g1": {"alt_out": "sero", "alt1": "uno", "alt2": "sero"},
-        "g2": {"alt_out": "sero", "alt1": "sero", "alt2": "uno"},
+        "g1": {"alt1": "uno", "alt2": "sero"},
+        "g2": {"alt1": "sero", "alt2": "uno"},
     }
     model = MDCEVModel(data=df, alternatives=alts, utility_spec=uspec,
                        gamma_spec=gspec, control=MDCEVControl(maxiter=8, verbose=0))
@@ -52,7 +51,7 @@ def mdcev_fit():
     nc, nvarm, nvargam = 3, model.utility_spec.shape[1], model.gamma_spec.shape[1]
     N = 20
     X = rng.standard_normal((N, nc, nvarm))
-    Xg = rng.standard_normal((N, nc, nvargam))
+    Xg = rng.standard_normal((N, nc - 1, nvargam))
     price = np.abs(rng.standard_normal((N, nc))) + 0.5
     return res, X, Xg, price
 
@@ -126,14 +125,56 @@ def test_mnp_atresult_alias():
     assert ATEResult is MNPATEResult
 
 
-def test_mnp_from_estimates_iid_roundtrip():
+@pytest.mark.parametrize("scaling", ["first", "sumsq"])
+def test_mnp_from_estimates_iid_roundtrip(scaling):
     from pybhatlib.models.mnp import MNPControl, mnp_ate, mnp_ate_from_params
 
-    ctrl = MNPControl(iid=True)
+    ctrl = MNPControl(iid=True, scaling=scaling)
     X = np.random.default_rng(0).standard_normal((40, I, N_BETA))
     a_ref = mnp_ate(_mk_mnp_results(BETA.copy(), ctrl), X=X)
     a_par = mnp_ate_from_params(BETA, control=ctrl, n_alts=I, X=X)
     np.testing.assert_allclose(a_par.predicted_shares, a_ref.predicted_shares, atol=1e-12)
+
+
+@pytest.mark.parametrize("n_alts", [2, 3, 4])
+@pytest.mark.parametrize("use_default_control", [False, True])
+def test_mnp_from_estimates_iid_beta_is_in_control_scaling_units(
+    n_alts, use_default_control,
+):
+    """IID has no covariance to infer scale from: GAUSS (first) betas map to
+    sumsq betas divided by sqrt(I-1)."""
+    from pybhatlib.models.mnp import MNPControl, MNPResults, mnp_ate_from_params
+
+    X = np.random.default_rng(1).standard_normal((40, n_alts, N_BETA))
+    first = mnp_ate_from_params(BETA, control=MNPControl(iid=True, scaling="first"),
+                                n_alts=n_alts, X=X)
+    ctrl = None if use_default_control else MNPControl(iid=True)
+    converted = BETA / np.sqrt(n_alts - 1)
+    external = MNPResults.from_estimates(converted, control=ctrl, n_alts=n_alts)
+    assert external.control.scaling == "sumsq"
+    np.testing.assert_array_equal(external.params, converted)
+    sumsq = mnp_ate_from_params(converted, control=ctrl, n_alts=n_alts, X=X)
+    np.testing.assert_allclose(sumsq.predicted_shares, first.predicted_shares, atol=1e-10)
+    if n_alts > 2:
+        # The API must not silently assume that an unlabelled vector is GAUSS.
+        unconverted = mnp_ate_from_params(BETA, control=ctrl, n_alts=n_alts, X=X)
+        assert not np.allclose(unconverted.predicted_shares, first.predicted_shares,
+                               atol=1e-6, rtol=1e-5)
+
+
+def test_mnp_from_estimates_noniid_is_scaling_invariant():
+    """With a covariance, the (beta, kernel_cov) pair fixes the utility scale,
+    so either control.scaling gives the same predictions."""
+    from pybhatlib.models.mnp import MNPControl, mnp_ate_from_params
+
+    Lambda = np.array([[1.0, 0.6], [0.6, 2.25]])  # arbitrary, first-normalized
+    X = np.random.default_rng(2).standard_normal((40, I, N_BETA))
+    shares = [
+        mnp_ate_from_params(BETA, kernel_cov=Lambda, n_alts=I, X=X,
+                            control=MNPControl(iid=False, scaling=s)).predicted_shares
+        for s in ("first", "sumsq")
+    ]
+    np.testing.assert_allclose(shares[1], shares[0], atol=1e-6)
 
 
 def test_mnp_from_estimates_flexible_roundtrip():
@@ -161,7 +202,7 @@ def test_mnp_from_estimates_heteronly_roundtrip():
     from pybhatlib.models.mnp import MNPControl, MNPResults
     from pybhatlib.models.mnp._mnp_loglik import _build_lambda
 
-    ctrl = MNPControl(iid=False, heteronly=True)
+    ctrl = MNPControl(iid=False, heteronly=True, scaling="first")
     # GAUSS first-diff-var=1 kernel: the first differenced variance K[0,0] is
     # pinned to 1.0; only the remaining I-2 scales are free. For I=3 the only
     # free heteronly scale is K[1,1]. The encoded kernel must therefore have

@@ -6,8 +6,8 @@ engine (:mod:`pybhatlib.mixed`).  ``_fit`` assembles the panel index, mixing
 spec, parameter layout, random-coefficient pipeline, softmax kernel and
 :class:`~pybhatlib.mixed._engine.MixedMSLEstimator`; packs the estimation-space
 parameter vector ``theta = [beta | rcor | scal | lam]`` (the softmax kernel owns
-no ``kern`` block); runs ``scipy.optimize.minimize(jac=True)`` against the
-engine objective; and performs a reporting-space BHHH standard-error pass
+no ``kern`` block); runs the shared SciPy optimizer against the engine
+objective; and performs a reporting-space BHHH standard-error pass
 (``cov = inv(S'S)`` from the per-individual score, delta-transformed into the
 natural reporting parameters).
 
@@ -28,13 +28,13 @@ import time
 
 import numpy as np
 import pandas as pd
-import scipy.optimize as sopt
 from numpy.typing import NDArray
 from scipy.special import ndtr
 
 from pybhatlib.io._data_loader import load_data, used_columns_selector
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.mixed._draws import DrawSource, FixtureDrawSource, ScipyHaltonDrawSource
+from pybhatlib.mixed._halt_draws import ExplicitHaltonDrawSource
 from pybhatlib.mixed._engine import DesignData, MixedMSLEstimator, MSLConfig
 from pybhatlib.mixed._predict import MixedPredictComponents
 from pybhatlib.mixed._rc_pipeline import RandomCoefPipeline
@@ -46,9 +46,11 @@ from pybhatlib.mixed._reparam import (
 )
 from pybhatlib.mixed._spec import MixingSpec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import baseline_loglikelihoods
 from pybhatlib.models.mixmnl._mixmnl_control import MixMNLControl
 from pybhatlib.models.mixmnl._mixmnl_kernel import SoftmaxKernel
 from pybhatlib.models.mixmnl._mixmnl_results import MixMNLResults
+from pybhatlib.optim._scipy_optim import minimize_scipy
 from pybhatlib.vecup._panel import PanelIndex
 from pybhatlib.vecup._vec_ops import vecndup
 
@@ -206,6 +208,8 @@ class MixMNLModel(BaseModel):
             # scipy.qmc.Halton(d=0) is undefined; a zero-width block suffices
             # since the pipeline broadcasts a (n_obs, 0) draw matrix.
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
+        if self.control.draw_method == "explicit":
+            return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def _build_estimator(
@@ -327,6 +331,27 @@ class MixMNLModel(BaseModel):
         names.extend(f"lam[{nm}]" for nm in rc_names)
         return names
 
+    def _optimizer_param_names(
+        self, spec: MixingSpec, layout: ParamLayout
+    ) -> list[str]:
+        """Names aligned to the actual estimation-space parameter vector."""
+        names = list(self.var_names)
+        rc_names = [self.var_names[int(p)] for p in spec.mixpos]
+        if layout.n_rcor:
+            names.extend(
+                f"corr_theta[{rc_names[i]},{rc_names[j]}]"
+                for i in range(spec.nrndcoef)
+                for j in range(i + 1, spec.nrndcoef)
+            )
+        names.extend(f"scale_theta[{nm}]" for nm in rc_names)
+        names.extend(f"lambda_theta[{nm}]" for nm in rc_names)
+        if len(names) != layout.n_theta:
+            raise RuntimeError(
+                "MixMNL optimizer parameter names do not match the layout: "
+                f"{len(names)} names for {layout.n_theta} parameters"
+            )
+        return names
+
     # ------------------------------------------------------------------
     # fit
     # ------------------------------------------------------------------
@@ -360,33 +385,16 @@ class MixMNLModel(BaseModel):
         # ---- optimize (jac=True: objective returns (neg_ll, neg_grad)) ----
         method_map = {"bfgs": "BFGS", "lbfgsb": "L-BFGS-B", "newton": "BFGS"}
         method = method_map.get(ctrl.optimizer, "BFGS")
-        options: dict = {"maxiter": ctrl.maxiter, "gtol": ctrl.tol,
-                         "disp": ctrl.verbose >= 2}
-        if method == "L-BFGS-B":
-            options["ftol"] = ctrl.tol
-
-        iter_count = [0]
-
-        def _iter_callback(theta_k: NDArray) -> None:
-            if ctrl.verbose < 2:
-                return
-            obj_val, grad = est.objective(theta_k)
-            grad_norm = float(np.linalg.norm(np.asarray(grad, dtype=np.float64)))
-            print(
-                f"  iter={iter_count[0]:4d}  f={float(obj_val):+.12f}  "
-                f"||g||={grad_norm:.3e}"
-            )
-            if ctrl.verbose >= 3:
-                print(theta_k)
-            iter_count[0] += 1
-
-        res = sopt.minimize(
+        res = minimize_scipy(
             est.objective,
             theta0,
-            jac=True,
             method=method,
-            callback=_iter_callback if ctrl.verbose >= 2 else None,
-            options=options,
+            maxiter=ctrl.maxiter,
+            tol=ctrl.tol,
+            ftol=ctrl.tol if method == "L-BFGS-B" else None,
+            verbose=ctrl.verbose,
+            jac=True,
+            param_names=self._optimizer_param_names(spec, layout),
         )
 
         theta_hat = np.asarray(res.x, dtype=np.float64)
@@ -396,15 +404,41 @@ class MixMNLModel(BaseModel):
         self._theta_hat = theta_hat
 
         # ---- final LL and per-individual score ----------------------------
-        ll_pi, score = est.simulated_loglik(theta_hat, want_grad=True)
+        ll_pi, score = est.simulated_loglik(
+            theta_hat, want_grad=True, collect_probabilities=True,
+        )
         ll_total = float(ll_pi.sum())
         ll_mean = ll_total / panel.n_ind
         g_sum = np.asarray(score, dtype=np.float64).sum(0)
         grad_norm = float(np.linalg.norm(g_sum))
-        converged = bool(res.success) or grad_norm < ctrl.tol_check
+        converged = bool(res.converged) or grad_norm < ctrl.tol_check
 
         # ---- reporting-space BHHH covariance ------------------------------
         params_report = self._to_reporting(theta_hat, spec, layout, est.space)
+        rc_names = [self.var_names[int(p)] for p in spec.mixpos]
+        rc_means = None
+        rc_scales = None
+        rc_shapes = None
+        rc_corr = None
+        rc_cov = None
+        if rc_names:
+            n_rc = len(rc_names)
+            n_rc_corr = n_rc * (n_rc - 1) // 2
+            corr_start = spec.n_beta
+            scale_start = corr_start + n_rc_corr
+            rc_means = params_report[np.asarray(spec.mixpos, dtype=np.intp)].copy()
+            rc_scales = params_report[scale_start : scale_start + n_rc].copy()
+            shape_start = scale_start + n_rc
+            rc_shapes = params_report[shape_start : shape_start + n_rc].copy()
+            rc_corr = np.eye(n_rc, dtype=np.float64)
+            corr_idx = corr_start
+            for i in range(n_rc):
+                for j in range(i + 1, n_rc):
+                    rho = float(params_report[corr_idx])
+                    rc_corr[i, j] = rc_corr[j, i] = rho
+                    corr_idx += 1
+            rc_cov = np.outer(rc_scales, rc_scales) * rc_corr
+
         if ctrl.want_covariance:
             if ctrl.se_method.lower() != "bhhh":
                 raise ValueError(
@@ -433,7 +467,7 @@ class MixMNLModel(BaseModel):
         p_value = 2.0 * (1.0 - ndtr(np.abs(t_stat)))
 
         t_elapsed = (time.time() - t_start) / 60.0
-        n_iter = int(getattr(res, "nit", 0))
+        n_iter = res.n_iter
 
         if ctrl.verbose >= 1:
             msg = "converged" if converged else "NOT converged"
@@ -442,7 +476,15 @@ class MixMNLModel(BaseModel):
                 f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}"
             )
 
+        ll_c, ll_0 = baseline_loglikelihoods(
+            self.y, [self.n_alts], availability=self.avail,
+            row_to_person=panel.row_to_person, person_weights=est.weightind,
+        )
         return MixMNLResults(
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=int(theta_hat.size),
+            n_constants_params=self.n_alts - 1,
+            average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,
             t_stat=t_stat,
@@ -461,6 +503,12 @@ class MixMNLModel(BaseModel):
             control=ctrl,
             data_path=self.data_path,
             message=getattr(res, "message", None),
+            random_coef_names=rc_names or None,
+            random_coef_means=rc_means,
+            random_coef_scales=rc_scales,
+            random_coef_shapes=rc_shapes,
+            random_coef_corr_matrix=rc_corr,
+            random_coef_cov_matrix=rc_cov,
         )
 
     # ------------------------------------------------------------------

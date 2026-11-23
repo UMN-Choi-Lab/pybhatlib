@@ -2,7 +2,7 @@
 
 Implements Phase D1 from GAUSS_INTEGRATION_PLAN.md. Uses mvncd_grad_me_analytic
 for per-observation probability gradients and chains them through the MNP
-parameter transformations (beta, Lambda scales/correlations, Omega Cholesky).
+parameter transformations (beta, Lambda scales/correlations, Omega correlations/log SDs).
 
 Supports: IID, heteroscedastic, full covariance, mixed MNP (nseg=1), and
 mixture-of-normals (nseg > 1) with analytic gradients.
@@ -14,7 +14,7 @@ The gradient chain:
 where dP_q/d(theta) decomposes as:
     dP/d(beta) via differenced design matrix
     dP/d(lambda_params) via Lambda = D @ corr @ D parameterization
-    dP/d(omega_params) via Omega = L @ L.T Cholesky parameterization
+    dP/d(omega_params) via Omega = diag(SD) @ corr @ diag(SD), SD = exp(log_SD)
 
 For mixture-of-normals (nseg > 1):
     P_q = sum_h pi_h * P_q_h(beta_h, Lambda, Omega_h)
@@ -40,6 +40,8 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
+
+from pybhatlib.models._fit_diagnostics import record_probabilities
 from pybhatlib.utils._safe_reparam import safe_exp
 
 from pybhatlib.gradmvn._mvncd_grad_analytic import (
@@ -50,6 +52,7 @@ from pybhatlib.gradmvn._mvncd_grad_analytic import (
 from pybhatlib.gradmvn._mvncd_grad_ovus import mvncd_grad_ovus_analytic
 from pybhatlib.matgradient._spherical import grad_corr_theta, theta_to_corr
 from pybhatlib.models.mnp._mnp_control import MNPControl
+from pybhatlib.models._mnp_scaling import kernel_scales, kernel_scale_jacobian
 
 
 def mnp_analytic_gradient(
@@ -321,6 +324,7 @@ def mnp_per_obs_scores(
             ]
         dim_q = len(avail_alts)
         if dim_q == 0:
+            record_probabilities(1.0)
             continue
 
         M = np.zeros((dim_q, I), dtype=np.float64)
@@ -465,9 +469,24 @@ def _mixture_analytic_gradient(
 
     n_seg_params = nseg - 1
 
+    # Shared-coefficients layout: only variables in ``ranvar_indices`` get a
+    # segment-specific beta value; every other coefficient is shared with
+    # segment 1. See docs/plans/MIXTURE_SHARED_COEFFICIENTS_PLAN.md and the
+    # matching layout in ``_mnp_loglik._unpack_params``.
+    n_rand_shared = len(ranvar_indices) if ranvar_indices else 0
+    ranvar_idx_arr = (
+        np.asarray(ranvar_indices, dtype=np.int64)
+        if n_rand_shared > 0
+        else np.zeros(0, dtype=np.int64)
+    )
+
     # ---- Unpack parameter vector ----
     # Layout: [beta_1 | lambda_params | omega_params_1 | segment_params |
-    #          beta_2 | omega_params_2 | ... | beta_H | omega_params_H]
+    #          beta_2_free | omega_params_2 | ... | beta_H_free | omega_params_H]
+    # beta_h_free (h>=2) has length n_rand_shared, not n_beta: it only
+    # supplies the segment-specific override values at ranvar_indices. The
+    # full-length beta used to compute utilities (``betas[h]``) is
+    # reconstructed as a copy of beta_1 with those slots overridden.
     idx = 0
     betas = []
     omega_params_list = []
@@ -495,9 +514,16 @@ def _mixture_analytic_gradient(
 
     # Additional segments
     for h in range(1, nseg):
-        beta_h = theta[idx:idx + n_beta]
-        idx += n_beta
-        betas.append(beta_h)
+        if n_rand_shared > 0:
+            beta_h_free = theta[idx:idx + n_rand_shared]
+            idx += n_rand_shared
+        else:
+            beta_h_free = np.zeros(0, dtype=np.float64)
+
+        beta_h_full = beta_1.copy()
+        if n_rand_shared > 0:
+            beta_h_full[ranvar_idx_arr] = beta_h_free
+        betas.append(beta_h_full)
 
         omega_h = None
         if control.mix and ranvar_indices is not None:
@@ -549,17 +575,18 @@ def _mixture_analytic_gradient(
     # Segment 1: beta at [0, n_beta), lambda at [n_beta, n_beta+n_lambda),
     #            omega at [n_beta+n_lambda, n_beta+n_lambda+n_omega)
     # segment_params at [n_beta+n_lambda+n_omega, n_beta+n_lambda+n_omega+nseg-1)
-    # Segment h (h>=2): beta at seg_h_start, omega at seg_h_start + n_beta
+    # Segment h (h>=2): beta_free at seg_h_start (length n_rand_shared),
+    #                   omega at seg_h_start + n_rand_shared
     beta_1_start = 0
     lambda_start = n_beta
     omega_1_start = n_beta + n_lambda
 
-    seg_extra_starts = []  # (beta_start, omega_start) for segments 2..H
+    seg_extra_starts = []  # (beta_free_start, omega_start) for segments 2..H
     extra_idx = seg_params_start + n_seg_params
     for h in range(1, nseg):
         beta_h_start = extra_idx
-        extra_idx += n_beta
-        omega_h_start = extra_idx if (control.mix and ranvar_indices is not None) else extra_idx
+        extra_idx += n_rand_shared
+        omega_h_start = extra_idx
         if control.mix and ranvar_indices is not None:
             extra_idx += n_omega
         seg_extra_starts.append((beta_h_start, omega_h_start))
@@ -575,7 +602,7 @@ def _mixture_analytic_gradient(
             control, I, N, dim, n_beta, n_lambda, n_params,
             n_scale, n_corr, dim_lambda, nseg, n_seg_params,
             beta_1_start, lambda_start, seg_params_start,
-            seg_extra_starts,
+            seg_extra_starts, ranvar_idx_arr, n_rand_shared,
         )
 
     for q in range(N):
@@ -589,6 +616,7 @@ def _mixture_analytic_gradient(
 
         dim_q = len(avail_alts)
         if dim_q == 0:
+            record_probabilities(1.0)
             continue
 
         # Build differencing matrix M
@@ -680,6 +708,7 @@ def _mixture_analytic_gradient(
         # ---- Mixture probability ----
         P_q = np.dot(pi_h, P_q_h_vals)
         P_q = max(P_q, 1e-300)
+        record_probabilities(P_q)
         total_ll += np.log(P_q)
         inv_P_q = 1.0 / P_q
 
@@ -720,11 +749,31 @@ def _mixture_analytic_gradient(
         # Additional segments (h >= 2): beta and omega
         for h in range(1, nseg):
             h_beta_start, h_omega_start = seg_extra_starts[h - 1]
+            g_h = seg_grad_beta[h]  # length n_beta: d(P_q_h)/d(beta_h_full)
 
-            # Beta for segment h
-            grad[h_beta_start:h_beta_start + n_beta] += (
-                inv_P_q * pi_h[h] * seg_grad_beta[h]
-            )
+            # beta_h_full[j] = beta_1[j] for j not in ranvar_indices (shared
+            # coefficient — same theta parameter as segment 1), and
+            # beta_h_full[j] = beta_h_free[k] for j = ranvar_indices[k] (this
+            # segment's own free parameter). Chain rule splits g_h the same
+            # way: shared components add back into segment 1's beta slot,
+            # ranvar components add into this segment's own small slot.
+            if n_rand_shared > 0:
+                g_h_shared = g_h.copy()
+                g_h_shared[ranvar_idx_arr] = 0.0
+                grad[beta_1_start:beta_1_start + n_beta] += (
+                    inv_P_q * pi_h[h] * g_h_shared
+                )
+
+                g_h_rand = g_h[ranvar_idx_arr]
+                grad[h_beta_start:h_beta_start + n_rand_shared] += (
+                    inv_P_q * pi_h[h] * g_h_rand
+                )
+            else:
+                # No ranvars: beta_h_full is identical to beta_1 in every
+                # component, so the entire gradient flows back to segment 1.
+                grad[beta_1_start:beta_1_start + n_beta] += (
+                    inv_P_q * pi_h[h] * g_h
+                )
 
             # Omega for segment h
             if n_omega > 0 and seg_grad_omega[h] is not None:
@@ -743,7 +792,7 @@ def _mixture_vectorized_k2(
     control, I, N, dim, n_beta, n_lambda, n_params,
     n_scale, n_corr, dim_lambda, nseg, n_seg_params,
     beta_1_start, lambda_start, seg_params_start,
-    seg_extra_starts,
+    seg_extra_starts, ranvar_idx_arr, n_rand_shared,
 ):
     """Vectorized mixture gradient for K=2, all available, no random coeff.
 
@@ -831,21 +880,35 @@ def _mixture_vectorized_k2(
     # P_q = sum_h pi_h * P_q_h
     P_q_all = P_q_h_all @ pi_h  # (N,)
     P_q_all = np.maximum(P_q_all, 1e-300)
+    record_probabilities(P_q_all)
     total_ll = float(np.sum(np.log(P_q_all)))
     inv_P_q = 1.0 / P_q_all  # (N,)
 
     # Beta gradients per segment
     for h in range(nseg):
-        # Weight: (1/P_q) * pi_h * dP_q_h/d(beta_h)
+        # Weight: (1/P_q) * pi_h * dP_q_h/d(beta_h_full)
         weights = inv_P_q * pi_h[h]  # (N,)
         weighted_grad = weights[:, None] * seg_grad_beta_all[h]  # (N, n_beta)
-        grad_beta_h = weighted_grad.sum(axis=0)
+        grad_beta_h = weighted_grad.sum(axis=0)  # (n_beta,) d(nll)/d(beta_h_full)
 
         if h == 0:
             grad[beta_1_start:beta_1_start + n_beta] += grad_beta_h
         else:
+            # Same shared/ranvar split as the sequential path: components of
+            # beta_h_full not in ranvar_indices are literally segment 1's
+            # theta values (shared coefficient), so their gradient flows
+            # back there; components at ranvar_indices are this segment's
+            # own free parameters.
             h_beta_start = seg_extra_starts[h - 1][0]
-            grad[h_beta_start:h_beta_start + n_beta] += grad_beta_h
+            if n_rand_shared > 0:
+                grad_beta_h_shared = grad_beta_h.copy()
+                grad_beta_h_shared[ranvar_idx_arr] = 0.0
+                grad[beta_1_start:beta_1_start + n_beta] += grad_beta_h_shared
+
+                grad_beta_h_rand = grad_beta_h[ranvar_idx_arr]
+                grad[h_beta_start:h_beta_start + n_rand_shared] += grad_beta_h_rand
+            else:
+                grad[beta_1_start:beta_1_start + n_beta] += grad_beta_h
 
     # Lambda gradient (shared across segments)
     if need_sigma_chain and n_lambda > 0:
@@ -948,6 +1011,7 @@ def _batched_gradient_shared_cov(
                 diff_V_group, Lambda_diff_c
             )
 
+            record_probabilities(prob_all)
             total_ll += float(np.sum(np.log(prob_all)))
             inv_p_all = 1.0 / prob_all  # (N_c,)
 
@@ -1001,6 +1065,7 @@ def _batched_gradient_shared_cov(
                     diff_V, Lambda_diff_c
                 )
             prob = max(prob, 1e-300)
+            record_probabilities(prob)
             total_ll += np.log(prob)
             inv_p = 1.0 / prob
 
@@ -1090,6 +1155,7 @@ def _vectorized_gradient_mixed_k2(
             diff_V_group, Lambda_diff_group
         )
 
+        record_probabilities(prob_all)
         total_ll += float(np.sum(np.log(prob_all)))
         inv_p_all = 1.0 / prob_all  # (N_c,)
 
@@ -1220,6 +1286,7 @@ def _sequential_gradient(
             dim_q = len(avail_alts)
 
             if dim_q == 0:
+                record_probabilities(1.0)
                 continue
 
             diff_V = np.array([V_all[q, chosen] - V_all[q, j] for j in avail_alts])
@@ -1258,6 +1325,7 @@ def _sequential_gradient(
                 diff_V, Lambda_diff
             )
         prob = max(prob, 1e-300)
+        record_probabilities(prob)
         total_ll += np.log(prob)
         inv_p = 1.0 / prob
 
@@ -1306,7 +1374,7 @@ def _build_lambda_components(
 ) -> tuple[NDArray, NDArray | None, NDArray | None]:
     """Build the differenced kernel ``K`` and return (K, scales, corr).
 
-    GAUSS homogeneous "first-differenced-variance = 1" form (mirrors
+    The ``scaling="first"`` GAUSS "first-differenced-variance = 1" form (mirrors
     ``_mnp_loglik._build_lambda``): the first differenced variance ``K[0,0]``
     is PINNED to 1, so ``scales = [1.0] + exp(free_log_scales)`` (length
     ``dim``, first entry literally 1.0), and there are only ``dim - 1`` FREE
@@ -1318,17 +1386,18 @@ def _build_lambda_components(
 
     For IID the differenced kernel is the GAUSS frozen ``startker``
     ``K = 0.5*(eye + ones)`` (so ``K[0,0] == 1``), matching ``_build_lambda``.
+    Under ``scaling="sumsq"`` the scales instead have squared sum 1 and use
+    softmax coordinates; the IID covariance is divided by ``dim``.
     """
     if control.iid or lambda_params is None:
         # GAUSS IID kernel (frozen startker): K = 0.5*(eye + ones), K[0,0] == 1.
         K = 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones(
             (dim, dim), dtype=np.float64
         )
-        return K, None, None
+        return (K / dim if control.scaling == "sumsq" else K), None, None
 
     n_scale = max(dim - 1, 0)  # I-2 FREE scales (first diff variance pinned)
-    free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
-    scales = np.concatenate([[1.0], free])  # length dim, scales[0] == 1.0
+    scales = kernel_scales(lambda_params[:n_scale], control.scaling)
 
     if control.heteronly:
         K = np.diag(scales ** 2)
@@ -1351,17 +1420,10 @@ def _build_omega_components(
     n_rand: int,
     control: MNPControl,
 ) -> tuple[NDArray, NDArray]:
-    """Build Cholesky factor L and Omega = L @ L.T."""
-    if control.randdiag:
-        L = np.diag(safe_exp(omega_params[:n_rand]))
-    else:
-        L = np.zeros((n_rand, n_rand), dtype=np.float64)
-        idx = 0
-        for i in range(n_rand):
-            for j in range(i + 1):
-                L[i, j] = omega_params[idx]
-                idx += 1
-    return L, L @ L.T
+    """Build covariance from the same correlation/log-SD map as prediction."""
+    from pybhatlib.models.mnp._mnp_random import random_covariance
+
+    return random_covariance(omega_params, n_rand, control)
 
 
 def _vech_to_symmetric(vech: NDArray, K: int) -> NDArray:
@@ -1394,8 +1456,7 @@ def _adj_lambda_to_params(
     control: MNPControl,
 ) -> NDArray:
     """Chain ``adj_K`` through the differenced kernel ``K = W1 @ corr @ W1`` to
-    ``adj_lambda_params``, in the GAUSS homogeneous "first-differenced-variance
-    = 1" parameterization.
+    ``adj_lambda_params``, using the selected kernel-scale parameterization.
 
     ``W1 = diag(scales)`` with ``scales = [1.0] + exp(free_log_scales)`` (length
     ``dim``); the FIRST scale is PINNED to 1 and has NO free theta column, so
@@ -1407,16 +1468,16 @@ def _adj_lambda_to_params(
 
     For heteroscedastic: ``K = diag(scales^2)``; only the free diagonal entries
     ``k = 1..dim-1`` get a gradient. For full: ``K = W1 @ corr @ W1``; the
-    correlation block (``corr_jac @ adj_corr_vech``) is unchanged.
+    correlation block (``corr_jac @ adj_corr_vech``) is unchanged. Under
+    ``sumsq`` all natural scales depend on the free logits, so the full
+    softmax/square-root Jacobian is applied instead of the log-scale diagonal.
     """
     if control.heteronly:
         # K = diag(scales^2), free scales k=1..dim-1: d(exp(2x))/dx = 2*scale^2.
         # The pinned scale[0] contributes to K but gets NO gradient entry; free
         # index k maps to output position k-1.
-        adj = np.zeros(n_scale, dtype=np.float64)
-        for k in range(1, dim):
-            adj[k - 1] = adj_Lambda[k, k] * 2.0 * scales[k] ** 2
-        return adj
+        adj_scales = 2.0 * np.diag(adj_Lambda) * scales
+        return kernel_scale_jacobian(scales, control.scaling) @ adj_scales
 
     adj = np.zeros(n_scale + n_corr, dtype=np.float64)
 
@@ -1424,11 +1485,8 @@ def _adj_lambda_to_params(
     # theta column). For free index k: adj_scale[k] = 2 * sum_j adj_K[k,j] *
     # corr[k,j] * scales[j], chained to log-scale via * scales[k], mapped to
     # output position k-1.
-    for k in range(1, dim):
-        s = 0.0
-        for j in range(dim):
-            s += adj_Lambda[k, j] * corr[k, j] * scales[j]
-        adj[k - 1] = 2.0 * s * scales[k]
+    adj_scales = 2.0 * (adj_Lambda * corr) @ scales
+    adj[:n_scale] = kernel_scale_jacobian(scales, control.scaling) @ adj_scales
 
     # Correlation gradient (UNCHANGED).
     if n_corr > 0 and corr_jac is not None:
@@ -1463,27 +1521,7 @@ def _adj_omega_to_params(
     n_rand: int,
     control: MNPControl,
 ) -> NDArray:
-    """Chain adj_Omega through Omega = L @ L.T to adj_omega_params.
+    """Chain covariance derivatives through correlation and log-SD coordinates."""
+    from pybhatlib.models.mnp._mnp_random import random_covariance_adjoint
 
-    For diagonal: Omega = diag(exp(2*params)), d/d(params) = 2*exp(2*params).
-    For full: Omega = L @ L.T, adj_L = 2*adj_Omega @ L (lower-tri part).
-    """
-    if control.randdiag:
-        adj = np.zeros(n_rand, dtype=np.float64)
-        for k in range(n_rand):
-            exp_val = safe_exp(omega_params[k])
-            adj[k] = adj_Omega[k, k] * 2.0 * exp_val ** 2
-        return adj
-
-    # Full Cholesky: adj_L = 2 * adj_Omega @ L (adj_Omega is symmetric)
-    adj_L = 2.0 * adj_Omega @ Omega_L
-
-    # Extract lower-triangular entries (direct params, no transformation)
-    n_omega = n_rand * (n_rand + 1) // 2
-    adj = np.zeros(n_omega, dtype=np.float64)
-    oidx = 0
-    for i in range(n_rand):
-        for j in range(i + 1):
-            adj[oidx] = adj_L[i, j]
-            oidx += 1
-    return adj
+    return random_covariance_adjoint(adj_Omega, omega_params, n_rand, control)

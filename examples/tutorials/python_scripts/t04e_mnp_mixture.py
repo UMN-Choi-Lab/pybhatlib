@@ -80,7 +80,8 @@ print("""
   Example (S=2, n_beta=7, flexible covariance with 1 free param):
       2 * 7  +  1  +  1  =  16 parameters
 
-  In pybhatlib: set nseg=2 in MNPControl to enable a 2-segment mixture.
+  In pybhatlib: set nseg=2 in MNPControl and name the coefficient(s) that
+  vary by segment in ranvars=[...]; every other coefficient is shared.
 """)
 
 # ============================================================
@@ -110,6 +111,7 @@ model = MNPModel(
     alternatives=alternatives,
     spec=spec,
     control=MNPControl(iid=False, nseg=2, maxiter=200, verbose=1, seed=42),
+    ranvars=["OVTT"],   # OVTT varies by segment; all other betas are shared
 )
 results = model.fit()
 t_elapsed = time.perf_counter() - t0
@@ -149,15 +151,13 @@ print("""
     "MNP Table2 d") fits a 2-segment mixture WITH a random coefficient
     on OVTT (ranvars=["OVTT"], nrand=1), reaching LL = -634.975.
 
-    This tutorial uses the simpler segment-specific-means form (nseg=2
-    with no random coefficient inside each segment).  On the supplied
-    TRAVELMODE data this reaches LL = -632.912 — slightly HIGHER (better)
-    than the paper target because it has a different parameterization and
-    one fewer covariance restriction.  This is expected: mixture models
-    have many local optima, and a higher LL simply means the optimizer
-    found a better mode of this likelihood surface.  To reproduce the
-    exact paper model, add ranvars=["OVTT"] to the MNPModel(...) call
-    (see Step 4).
+    That is exactly the model fitted above: only OVTT gets a
+    segment-specific coefficient (and its own variance) in each segment,
+    every other coefficient is shared across the two segments, and the
+    kernel covariance is common.  On the supplied TRAVELMODE data
+    pybhatlib reaches LL = -634.94, matching the paper to 0.04.  Mixture
+    likelihoods have several local optima, so a different seed may stop
+    at a slightly different mode with a similar LL.
 """)
 
 # Print segment probabilities if available
@@ -180,10 +180,12 @@ print("""
   two segments' coefficient vectors side by side and weight them by the
   estimated mixing probabilities pi_s.
 
-  In this 7-variable specification, the segment-1 betas are the first 7
-  entries of b_original (CON_SR..COST) and the segment-2 betas are the
-  *_s2 entries near the end.  Reading them together tells us how the two
-  groups differ in their sensitivity to travel time and cost.
+  In this 7-variable specification only OVTT was allowed to vary by
+  segment (ranvars=["OVTT"]), so segment 1 owns the first 7 entries of
+  b_original (CON_SR..COST) and segment 2 differs from it only in the
+  OVTT_s2 entry near the end; the other six coefficients are shared and
+  identical in both columns below.  Reading OVTT across the two groups
+  tells us how they differ in out-of-vehicle time sensitivity.
 """)
 
 # Pair up segment-1 and segment-2 betas for the 7 utility variables.
@@ -196,7 +198,7 @@ print(f"  {'Variable':<12s}{'Seg1 beta':>12s}{'Seg2 beta':>12s}"
 print("  " + "-" * 49)
 for nm in beta_names:
     b1 = name_to_val.get(nm, float("nan"))
-    b2 = name_to_val.get(nm + "_s2", float("nan"))
+    b2 = name_to_val.get(nm + "_s2", b1)   # shared coefficient -> same value
     mixed = pi[0] * b1 + pi[1] * b2
     print(f"  {nm:<12s}{b1:>12.4f}{b2:>12.4f}{mixed:>13.4f}")
 
@@ -247,12 +249,15 @@ print("""
 
           for seed in [42, 123, 456, 789]:
               ctrl = MNPControl(iid=False, nseg=2, seed=seed, maxiter=200)
-              res  = MNPModel(..., control=ctrl).fit()
+              res  = MNPModel(..., control=ctrl, ranvars=["OVTT"]).fit()
               print(seed, res.loglik * res.n_obs)
 
-  Parameter count scaling:
-    - nseg=2: 2 * n_beta + 1 segment param + n_cov  (doubles the betas)
-    - nseg=3: 3 * n_beta + 2 segment params + n_cov  (triples the betas)
+  Parameter count scaling (n_rand = number of names in ranvars):
+    - nseg=1: n_beta + n_cov + n_omega(n_rand)
+    - nseg=2: + 1 segment param + n_rand betas + n_omega(n_rand)
+    - nseg=3: + 2 segment params + 2 * (n_rand betas + n_omega(n_rand))
+    Coefficients not listed in ranvars are shared across segments and
+    cost nothing extra.
     - Identification requires sufficient variation in the data; too many
       segments on a small dataset will produce near-flat likelihood
 
@@ -263,7 +268,7 @@ print("""
     4. Use LR test or BIC to decide between nseg=1 and nseg=2
 
   Rule of thumb:
-    - Each additional segment adds n_beta + 1 free parameters
+    - Each additional segment adds 1 + n_rand + n_omega(n_rand) free parameters
     - Worthwhile only when delta-LL > (n_beta + 1) / 2  (BIC criterion)
     - For n_beta=7: need delta-LL > 4  to justify a second segment
 """)

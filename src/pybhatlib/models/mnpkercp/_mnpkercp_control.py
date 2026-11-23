@@ -45,15 +45,18 @@ class MNPKerCPControl:
         If ``False`` (GAUSS ``_nocorrrcker = 1``; **required for panel data**)
         the kernel covariance is the unconditional differenced-kernel block and
         the copula gradient path vanishes.  Default ``False``.
-    scaling : {"sumsq"}
-        Kernel-scale reparameterization.  Only the sum-of-squares
-        (``sqrt(logitmod([0, xscalker]))``) form of ``MNPKERCP.gss`` is
-        implemented, so the squared kernel scales are a probability vector
-        summing to one.
+    scaling : {"sumsq", "first"}
+        Differenced kernel-error identification. ``sumsq`` (default) uses
+        ``sqrt(logitmod([0, xscalker]))``, whose squared scales sum to 1.
+        ``first`` fixes the first scale to 1 and exponentiates the remaining
+        log scales. Both have nc-2 free coordinates. ``startb`` uses these
+        optimizer coordinates; reported/external ``kern`` entries are natural
+        scales for errors 2..nc-1. The first is implicit: sqrt(1-sum(free^2))
+        for ``sumsq``, or 1 for ``first``. IID uses equal normalized scales.
     n_rep : int
-        Number of MSL replications (GAUSS ``nrep``, default 5 for MNPKERCP).
+        Number of MSL replications (GAUSS ``nrep``), default 125.
     intordn1 : int
-        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``).
+        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``), default 92.
     spher : bool
         Spherical (True) vs radial (False) correlation-Cholesky
         parameterization.  Only the radial path is implemented downstream.
@@ -61,13 +64,20 @@ class MNPKerCPControl:
         Scaling constant in ``newcholparmscaled`` (GAUSS ``scal``).
     floor_pcomp : float
         Per-observation kernel-probability floor applied before the log
-        (GAUSS ``w5`` / kernel prob floor).
+        (GAUSS ``w5`` / kernel prob floor), default ``1e-10``.
     floor_z : float
         Per-person simulated-probability floor after averaging over draws
-        (GAUSS ``w2``).
+        (GAUSS ``w2``), default ``1e-100``.
+    draw_method : {"scipy", "explicit"}
+        Halton source; defaults to "scipy". Both sources always automatically
+        skip the first 10 Halton points once per generated sequence, before
+        assigning draws to individuals.
+        "explicit" uses the deterministic
+        GAUSS-style digit-permutation source up to 16 dimensions; above that it
+        warns and falls back to SciPy using draw_seed. Within the
+        explicit dimension limit, draw_seed is ignored: with the default corbreak=1, rantuff=0, rancolumn=0 the draws are fully deterministic (identical for every run and every draw_seed); randomized options would seed from the GAUSS formula 9_836_506 + (run-1)*40_000, not draw_seed. With no random coefficients a zero-width fixture is used.
     draw_seed : int or None
-        Seed for the runtime scrambled-Halton draw source.  ``None`` yields
-        non-deterministic draws.
+        Seed for the runtime scrambled-Halton draw source (default 13811).
     maxiter : int
         Maximum number of optimizer iterations.
     optimizer : str
@@ -82,7 +92,8 @@ class MNPKerCPControl:
     se_method : str
         Standard-error method.  Only "bhhh" is implemented.
     verbose : int
-        Verbosity: 0 = silent, 1 = summary, 2 = per-iteration.
+        Verbosity: 0 = silent, 1 = optimizer summary, 2 = per-iteration
+        objective values, 3 = per-iteration parameter / gradient table.
     seed : int or None
         Random seed kept for cross-model symmetry (the draw source uses
         ``draw_seed``).
@@ -113,18 +124,18 @@ class MNPKerCPControl:
     # --- kernel / copula -----------------------------------------------------
     iid: bool = False
     copula: bool = False
-    scaling: Literal["sumsq"] = "sumsq"
+    scaling: Literal["sumsq", "first"] = "sumsq"
     method: str = "ovus"
 
     # --- MSL / reparameterization -------------------------------------------
     randdiag: bool = False
-    n_rep: int = 5
-    intordn1: int = 20
+    n_rep: int = 125
+    intordn1: int = 92
     spher: bool = False
     scal: float = 1.0
-    floor_pcomp: float = 1e-4
-    floor_z: float = 1e-4
-    draw_seed: int | None = None
+    floor_pcomp: float = 1e-10
+    floor_z: float = 1e-100
+    draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------
     maxiter: int = 2000
@@ -134,6 +145,14 @@ class MNPKerCPControl:
     want_covariance: bool = True
     se_method: Literal["bhhh"] = "bhhh"
     verbose: int = 1
-    seed: int | None = None
+    seed: int | None = 14287
     startb: NDArray | None = None
     start_from_shares: bool = False
+    draw_method: Literal["scipy", "explicit"] = "scipy"
+
+    def __post_init__(self) -> None:
+        from pybhatlib.mixed._draws import _validate_draw_method
+        from pybhatlib.models._mnp_scaling import validate_scaling
+
+        validate_scaling(self.scaling)
+        _validate_draw_method(self.draw_method)

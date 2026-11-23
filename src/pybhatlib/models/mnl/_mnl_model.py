@@ -10,16 +10,17 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
-import scipy.optimize as sopt
 from numpy.typing import NDArray
 from scipy.special import ndtr
 
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.io._spec_parser import parse_spec
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import ProbabilityCache, baseline_loglikelihoods
 from pybhatlib.models.mnl._mnl_control import MNLControl
 from pybhatlib.models.mnl._mnl_loglik import mnl_loglik, mnl_gradient, mnl_hessian
 from pybhatlib.models.mnl._mnl_results import MNLResults
+from pybhatlib.optim._scipy_optim import minimize_scipy
 
 
 class MNLModel(BaseModel):
@@ -162,25 +163,29 @@ class MNLModel(BaseModel):
             )
 
         # ---- Optimise ------------------------------------------------
-        # Map control.optimizer to scipy method name
         method_map = {"newton": "Newton-CG", "bfgs": "BFGS", "lbfgsb": "L-BFGS-B"}
         method = method_map.get(ctrl.optimizer, "Newton-CG")
 
-        # Newton-CG reads the tolerance from "xtol"; BFGS/CG use "gtol".
-        tol_key = "xtol" if method == "Newton-CG" else "gtol"
-        opt_kwargs: dict = dict(
-            fun=neg_ll,
-            x0=b0,
-            method=method,
-            options={"maxiter": ctrl.maxiter, tol_key: ctrl.tol,
-                     "disp": ctrl.verbose >= 2},
-        )
-        if ctrl.analytic_grad:
-            opt_kwargs["jac"] = neg_grad
-        if ctrl.analytic_hess and ctrl.optimizer == "newton":
-            opt_kwargs["hess"] = neg_hess
+        def objective(x: NDArray):
+            if ctrl.analytic_grad:
+                return neg_ll(x), neg_grad(x)
+            return neg_ll(x)
 
-        res = sopt.minimize(**opt_kwargs)
+        res = minimize_scipy(
+            objective,
+            b0,
+            method=method,
+            maxiter=ctrl.maxiter,
+            tol=ctrl.tol,
+            verbose=ctrl.verbose,
+            jac=ctrl.analytic_grad,
+            hess=(
+                neg_hess
+                if ctrl.analytic_hess and ctrl.optimizer == "newton"
+                else None
+            ),
+            param_names=self.var_names,
+        )
         x_opt = res.x                                           # (numunord,)
 
         # ---- Covariance via requested standard-error method -------------
@@ -225,9 +230,13 @@ class MNLModel(BaseModel):
             corr = np.zeros((numunord, numunord))
 
         # ---- Final LL and gradient -----------------------------------
-        ll_obs_final = mnl_loglik(
-            x_opt, dta, indxivunord, davunord, dvunord, nc, numunord,
-        )
+        def final_likelihood(theta):
+            return mnl_loglik(
+                theta, dta, indxivunord, davunord, dvunord, nc, numunord,
+            )
+        probability_cache = ProbabilityCache(final_likelihood, n_obs)
+        ll_obs_final = probability_cache(x_opt)
+        ll_c, ll_0 = baseline_loglikelihoods(self.y, [nc], availability=self.avail)
         ll_total = float(ll_obs_final.sum())
         ll_mean  = ll_total / n_obs
 
@@ -248,12 +257,16 @@ class MNLModel(BaseModel):
         if ctrl.verbose >= 1:
             converged_msg = "converged" if converged else "NOT converged"
             print(
-                f"  Optimisation {converged_msg} in {res.nit} iterations "
+                f"  Optimisation {converged_msg} in {res.n_iter} iterations "
                 f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}, "
                 #f"||grad|| = {grad_norm:.3e}, tol = {ctrl.tol_check:.3e}"
             )
 
         return MNLResults(
+            loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=len(x_opt),
+            n_constants_params=nc - 1,
+            average_correct_probability=probability_cache.get(x_opt),
             params=x_opt,
             se=se,
             t_stat=t_stat,
@@ -264,7 +277,7 @@ class MNLModel(BaseModel):
             param_names=self.var_names,
             corr_matrix=corr,
             cov_matrix=cov,
-            n_iter=res.nit,
+            n_iter=res.n_iter,
             convergence_time=t_elapsed,
             converged=converged,
             return_code=0 if converged else 1,

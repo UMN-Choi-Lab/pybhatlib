@@ -21,6 +21,101 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   GAUSS `MORP` run (score and reporting-space SEs). New copula-off FD gates and
   a fit-level regression test cover the path.
 
+### Changed
+- **MNP random-coefficient and mixture coordinates/reporting change together
+  with scaling in #71.**
+  - Full random-coefficient covariance optimizer blocks now contain radial
+    correlation coordinates followed by log standard deviations, replacing
+    raw lower-triangular Cholesky entries. With `randdiag=True`, the block
+    remains log SDs and omits correlations. Old full-covariance `startb`
+    vectors require conversion even when their length is unchanged.
+  - Reporting replaces `CovCOv*` covariance/variance entries with `corr[...]`
+    correlations and `scal[...]` SDs. `omega_hat` (and `segment_covs` for
+    mixtures) remains a covariance matrix; `results.params` remains the
+    optimizer vector, while `b_original` is the reporting vector. Existing
+    SEs/covariances must also be transformed, not merely relabeled.
+  - `segunpar` now reports segment 2's probability for two segments;
+    `segunpar_sN` reports probabilities for segments 2..N in larger mixtures.
+    Optimizer segment coordinates remain logits relative to segment 1,
+    labeled `segment_logit[sN]`; `segment_probs` includes every probability.
+  - Automatic random-coefficient starts use SD `0.1` (log SD `log(0.1)`)
+    and zero correlations in every segment. In particular, the previous
+    diagonal start of log SD `0` (SD `1`) is now `log(0.1)`. Explicit starts
+    are not automatically migrated. These starts can change optimizer paths
+    and the selected local optimum. See the README migration guidance.
+- **MNP defaults to `scaling="sumsq"`.** The squared differenced kernel-error
+  scales sum to one, replacing the earlier implicit first-scale-equals-one
+  normalization. `MNPKerCPControl` retains its existing `sumsq` default.
+  Use `MNPControl(scaling="first")` for direct comparisons with GAUSS BHATLIB
+  coefficients and standard errors. The two identifications represent the
+  same probabilities after consistent parameter conversion; reported values
+  and optimizer starting coordinates are not interchangeable across them.
+  Externally supplied IID GAUSS coefficients require `scaling="first"`, or
+  division by `sqrt(J - 1)` for the default `sumsq` convention (`J` alternatives).
+  Non-IID external beta/covariance pairs are normalized together. (#71)
+- **MDCEV `gamma_spec` no longer includes the outside good.** Satiation specs
+  list the inside goods only; the outside good's gamma is pinned to
+  `MDCEVControl.outside_good_gamma` (GAUSS `u[.,1] = -1000`) and is no longer a
+  fixed entry of `params` / `b_reported` / `param_names`. Old-style dicts with an
+  outside-good row and column still parse (the column is dropped). A GAUSS
+  `bmdcev` vector must have its `-1000` placeholder removed before it is passed
+  to `MDCEVResults.from_estimates` / `mdcev_forecast`. (#58)
+- `mdcev_ate` reports participation rates (share of simulated allocations with
+  positive consumption, from `mdcev_forecast`) instead of the row-normalised
+  participation returned by `mdcev_predict`. (#58)
+- `mdcev_mixed_ate` / `MDCEVMixedModel.ate()` follow the same participation-rate
+  definition (new `make_mdcev_mixed_participation_predict` hook over
+  `mdcev_forecast`; `budget_col` accepted), so an `nrndcoef == 0` mixed model
+  still collapses onto `mdcev_ate` value-for-value. The mixed prediction /
+  forecast hooks now forward the model's `control.utility`, so a linear mixed
+  MDCEV forecasts with the linear allocation. (#58 harmonization)
+
+### Added
+- Linear (Bhat 2018) outside-good forecasting: `mdcev_forecast` /
+  `mdcev_predict` honour `utility="linear"` (from the results' control or the
+  new `utility=` argument) with the allocation recursion of the GAUSS
+  `Forecasting_LinMDCEV.gss` driver; validated against its `fout1.xlsx`
+  reference (`tests/test_models/test_mdcev_gauss_forecast_parity.py`). (#58)
+- `prepare_mdcev_forecast_data` / `mdcev_ate(scenarios=...)` accept string
+  overrides that copy another column, as the MNP and MORP scenario APIs do. (#58)
+
+### Fixed
+- MNP sandwich and Hessian SEs now invert the observed Hessian only over
+  active optimizer coordinates before projecting to natural/reporting
+  parameters. This excludes uncertainty from frozen coordinates, including
+  coupled `sumsq` scales and random-coefficient covariances. The sandwich's
+  BHHH fallback uses the same active-coordinate projection as BHHH. (#71)
+- `simmdcev` / `simtradmdcev` clip uniform draws away from 0 and 1 so the
+  double-log Gumbel transform stays finite. (#58)
+- The MDCEV satiation and gradient helpers accept both gamma index layouts --
+  inside-goods-only (fixed-coefficient model) and the full GAUSS layout kept by
+  the mixed MDCEV kernel -- and raise on any other length instead of silently
+  reading the wrong columns. (#58 harmonization)
+
+## [0.4.0] - 2026-09-16
+
+### Added
+- **Linear regression (LR)** — `LRModel` / `LRControl` / `LRResults`: one
+  continuous outcome solved in closed form (SVD least squares) with classical,
+  White-robust, and BHHH standard errors; the residual standard deviation
+  `sigma` is reported as the trailing parameter (MDCEV convention);
+  `lr_predict`, `lr_ate` / `lr_ate_from_params` on the shared `scenarios=`
+  API; tutorial `t09a_lr`.
+- **Mixed (simulation-based) model family** — a shared maximum-simulated-
+  likelihood engine (Halton draws, panel broadcast, normal / log-normal /
+  Yeo-Johnson coefficient transforms, analytic scores through the
+  reparameterisation Jacobians), plus four models built on it:
+  `MixMNLModel` (mixed multinomial logit), `MNPKerCPModel` (mixed MNP
+  coupling random coefficients to the kernel error through a copula),
+  `MORPFlexModel` (mixed MORP with a flexible Yeo-Johnson
+  kernel and rectangle MVNCD), and `MDCEVMixedModel` (mixed MDCEV with a
+  vectorized per-draw kernel). These are new and still under active
+  refinement; the closed-form models above are the stable API.
+
+### Fixed
+- **MNP mixture-of-normals** — coefficients that are not random now stay shared
+  across segments instead of being re-estimated per segment.
+
 ## [0.3.2] - 2026-07-22
 
 First version available on PyPI. Identical in code to 0.3.1; released under a new

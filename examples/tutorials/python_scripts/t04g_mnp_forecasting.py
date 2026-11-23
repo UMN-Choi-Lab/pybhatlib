@@ -49,14 +49,14 @@ print("=" * 60)
 
 model = MNPModel(
     data=data_path, alternatives=alternatives, spec=spec,
-    control=MNPControl(iid=True, maxiter=100, verbose=1, seed=42),
+    control=MNPControl(scaling="first", iid=True, maxiter=100, verbose=1, seed=42),
 )
 results = model.fit()
 print(f"\n  GAUSS / paper reference LL : -670.956")
 print(f"  PyBhatLib LL               : {results.loglik * results.n_obs:.3f}")
 
 # results.b_original is the readable reported view (matches GAUSS and the
-# published tables). pybhatlib reports on the GAUSS first-differenced-
+# published tables). This tutorial selects the GAUSS first-differenced-
 # variance=1 scale, so b_original and results.params share one scale and are
 # equal for the mean coefficients; report b_original because it additionally
 # spells out the readable kernel block (parker / scale rows).
@@ -220,7 +220,7 @@ ate_spec = {
 ate_model = MNPModel(
     data=data_path, alternatives=alternatives, availability="none",
     spec=ate_spec,
-    control=MNPControl(iid=False, maxiter=200, verbose=0, seed=42),
+    control=MNPControl(scaling="first", iid=False, maxiter=200, verbose=0, seed=42),
 )
 ate_results = ate_model.fit()
 

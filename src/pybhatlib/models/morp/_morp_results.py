@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 import pandas as pd
 from numpy.typing import NDArray
 
@@ -23,7 +24,7 @@ from pybhatlib.models.morp._morp_report import MORPReportTable
 
 
 @dataclass
-class MORPResults:
+class MORPResults(FitMetricsMixin):
     """Results from MORP model estimation.
 
     Attributes
@@ -45,6 +46,17 @@ class MORPResults:
         the three converge asymptotically (information-matrix equality).
     loglik : float
         Mean log-likelihood (per observation).
+    loglik_constants, loglik_zero : float
+        Mean independent empirical-share and uniform null log-likelihoods,
+        normalized like ``loglik``. LL(C) is the analytic independent
+        threshold-only benchmark, not a correlated MORP null fit. Category
+        dimensions and panel occasions are independent in these benchmarks.
+    average_correct_probability : float
+        Arithmetic mean fitted probability of the observed outcome (the joint
+        category combination for ordinal models). In panels, average across
+        occasions within each person, then across persons. It is not the
+        exponential of the mean log-likelihood or a classification hit rate.
+        These diagnostics are ``nan`` without fitting data.
     n_obs : int
         Number of observations.
     n_params : int
@@ -111,6 +123,14 @@ class MORPResults:
     n_categories: list[int] | None = None
     n_beta: int | None = None
 
+    # Independent null benchmarks; not restricted fits of the full kernel.
+    loglik_constants: float = np.nan
+    loglik_zero: float = np.nan
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    """Parameter count of the unmixed LL(C) baseline; -1 when unavailable."""
+    average_correct_probability: float = np.nan
+
     def _structure(
         self,
         n_dims: int | None = None,
@@ -169,6 +189,14 @@ class MORPResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        for label, value in (
+            ("Mean LL(C)", self.loglik_constants),
+            ("Mean LL(0)", self.loglik_zero),
+            ("APCP", self.average_correct_probability),
+        ):
+            formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
+            lines.append(f"  {label:<23s}{formatted}")
+        lines.extend(self.rho2_summary_lines())
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 
@@ -266,6 +294,26 @@ class MORPResults:
             lines.append(
                 "  consider a richer covariance specification or se_method='sandwich'."
             )
+
+        # Correlation matrix of parameter estimates, derived from cov_matrix.
+        if self.cov_matrix is not None:
+            n_params = min(
+                len(self.param_names),
+                self.cov_matrix.shape[0],
+                self.cov_matrix.shape[1],
+            )
+            if n_params:
+                cov = self.cov_matrix[:n_params, :n_params]
+                se = np.sqrt(np.maximum(np.diag(cov), 0.0))
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    param_corr = cov / np.outer(se, se)
+                param_corr = np.nan_to_num(param_corr, nan=0.0)
+
+                lines.append("")
+                lines.append("  Correlation matrix of the parameters")
+                for i in range(n_params):
+                    row_vals = [f"{param_corr[i, j]:>7.3f}" for j in range(n_params)]
+                    lines.append("  " + " ".join(row_vals)) 
 
         lines.append("")
         lines.append(f"  Number of iterations   {self.n_iter:>10d}")

@@ -11,6 +11,7 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 import pandas as pd
 from numpy.typing import NDArray
 
@@ -32,7 +33,7 @@ _MNPRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MNPResults:
+class MNPResults(FitMetricsMixin):
     """Results from MNP model estimation.
 
     Attributes
@@ -42,10 +43,25 @@ class MNPResults:
         prediction and forecasting.  Length equals ``n_params``.
         (Previously named ``b``; the old attribute is still available
         as a deprecated alias.)
+        In each segment the random-covariance block now contains radial
+        correlation coordinates followed by log SDs, not raw Cholesky
+        entries; diagonal models retain log SDs. Segment weights remain
+        logits. Older saved optimizer vectors require migration before reuse.
     b_original : NDArray
-        BHATLIB-normalized reporting coefficients (Sigma_diff[0,0]=1).
-        Aligned with ``param_names``.  For non-IID models this has
-        one fewer element than ``params`` (one scale absorbed).
+        Reporting coefficients under ``control.scaling``. Aligned with
+        ``param_names``; non-IID reporting includes all differenced scales,
+        with the first fixed (``first``) or implied by the others (``sumsq``).
+        Random-coefficient blocks report correlations and standard deviations
+        (``scal[name]``), following mixed MNP. ``omega_hat`` and ``params``
+        retain their structural covariance and optimizer-space meanings.
+        Mixture weight rows report probabilities: ``segunpar`` is the second
+        segment's probability for two segments; ``segunpar_sN`` identifies
+        segments 2..N for larger mixtures. The reference probability is shown
+        with all other weights in the segment-probability table.
+        Older ``CovCOv*`` reporting rows represented variances/covariances,
+        and ``segunpar`` represented an optimizer logit. They must be converted,
+        not relabeled, when compared with the current SD/correlation and
+        probability rows. This also applies to their standard errors.
     se : NDArray
         Delta-method standard errors (aligned with ``b_original``).
         Computed using the estimator named in ``control.se_method``.
@@ -71,6 +87,19 @@ class MNPResults:
         alias.  Reading the deprecated ``ll_total`` attribute returns
         ``loglik * n_obs`` (preserving its old total-LL semantics) — see
         Notes.)
+    loglik_constants, loglik_zero : float
+        Mean constants-only and uniform null log-likelihoods, normalized like
+        ``loglik``. Full availability uses analytic empirical shares. With
+        unavailable alternatives, LL(C) fits shared alternative constants via
+        the basic IID MNP likelihood, respecting each choice set; no random
+        mixing is retained. LL(0) is uniform over the available alternatives.
+        Panel occasions are independent in these benchmarks.
+    average_correct_probability : float
+        Arithmetic mean fitted probability of the observed outcome (the joint
+        category combination for ordinal models). In panels, average across
+        occasions within each person, then across persons. It is not the
+        exponential of the mean log-likelihood or a classification hit rate.
+        These diagnostics are ``nan`` without fitting data.
     n_obs : int
         Number of observations.
     param_names : list[str]
@@ -146,9 +175,19 @@ class MNPResults:
     control: MNPControl | None = None
     data_path: str = ""
     ranvar_indices: list[int] | None = None
+    random_coefficient_names: list[str] | None = None
     se_bhhh: NDArray | None = None
     se_hessian: NDArray | None = None
     se_sandwich: NDArray | None = None
+    alternatives: list[str] | None = None
+
+    # Independent null benchmarks; not restricted fits of the full kernel.
+    loglik_constants: float = np.nan
+    loglik_zero: float = np.nan
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    """Parameter count of the unmixed LL(C) baseline; -1 when unavailable."""
+    average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MNPResults, accepting both canonical and legacy kwargs.
@@ -169,6 +208,7 @@ class MNPResults:
         ranvar_indices: list[int] | None = None,
         param_names: list[str] | None = None,
         n_alts: int | None = None,
+        alternatives: list[str] | None = None,
     ) -> "MNPResults":
         """Build a results object from final (natural-space) coefficients.
 
@@ -187,11 +227,22 @@ class MNPResults:
         Parameters
         ----------
         beta : array-like, shape (n_beta,)
-            Slope coefficients in the model's coefficient order.
+            Reported slope coefficients in the model's coefficient order.
+            Without ``kernel_cov`` (IID), these must already use the selected
+            ``control.scaling`` convention; the default is ``"sumsq"``.
+            For unconverted GAUSS IID coefficients, pass
+            ``MNPControl(iid=True, scaling="first")``. Alternatively, divide
+            GAUSS IID coefficients by ``sqrt(I - 1)`` for ``"sumsq"``.
+            There is no automatic inference of the source coefficient scale.
         kernel_cov : array-like, shape (I-1, I-1), optional
             Differenced kernel error covariance ``Lambda`` (the quantity
             :func:`~pybhatlib.models.mnp._mnp_loglik._build_lambda` returns).
-            ``None`` (default) builds an IID model (``Lambda = I``).
+            ``None`` (default) builds an IID model. Non-IID covariance and
+            beta are normalized together according to ``control.scaling``:
+            first scale 1, or sum of squared differenced scales 1. Supplying
+            an already normalized pair leaves its utility scale unchanged.
+            This automatic joint normalization applies only to non-IID models
+            with a covariance; it cannot infer the units of an IID beta vector.
         control : MNPControl, optional
             Control structure.  Defaults to ``MNPControl(iid=kernel_cov is
             None)``.  Its ``heteronly`` flag selects the variance-only
@@ -204,6 +255,8 @@ class MNPResults:
         n_alts : int, optional
             Number of alternatives ``I``.  Inferred from ``kernel_cov`` shape
             (``I-1``) when not given.
+        alternatives : list of str, optional
+            Alternative names.
 
         Returns
         -------
@@ -235,12 +288,18 @@ class MNPResults:
                 raise ValueError(f"kernel_cov must be square, got {Lambda.shape}")
             if n_alts is None:
                 n_alts = dim + 1
-            # GAUSS homogeneous form: kernel_cov is the differenced kernel K with
-            # K[0,0] PINNED to 1. Encode only the I-2 FREE scales (scales[1:]) as
-            # log-scales; the first scale is implicit (pinned to 1).
+            # The natural covariance supplies the utility scale. Encode its
+            # I-2 free scale coordinates using the selected identification;
+            # the reference scale is fixed (first) or implied (sumsq).
             scales = np.sqrt(np.clip(np.diag(Lambda), 1e-300, None))
-            free_scales = scales[1:]  # length I-2 (drop pinned scale01)
-            theta.extend(np.log(free_scales).tolist())
+            from pybhatlib.models._mnp_scaling import encode_kernel_scales
+
+            # Keep beta and covariance on the same utility scale. Already
+            # normalized inputs pass through; arbitrary equivalent inputs are
+            # rescaled together before encoding the omitted reference scale.
+            norm = np.linalg.norm(scales) if control.scaling == "sumsq" else scales[0]
+            theta[:n_beta] = (beta / norm).tolist()
+            theta.extend(encode_kernel_scales(scales / norm, control.scaling).tolist())
             if not control.heteronly:
                 corr = Lambda / np.outer(scales, scales)
                 theta.extend(corr_to_theta(corr, dim).tolist())
@@ -255,7 +314,7 @@ class MNPResults:
         nan_mat = np.full((theta_arr.shape[0], theta_arr.shape[0]), np.nan)
         return cls(
             params=theta_arr,
-            b_original=beta.copy(),
+            b_original=theta_arr[:n_beta].copy(),
             se=nan_b.copy(),
             t_stat=nan_b.copy(),
             p_value=nan_b.copy(),
@@ -271,6 +330,7 @@ class MNPResults:
             return_code=0,
             control=control,
             ranvar_indices=ranvar_indices,
+            alternatives=alternatives,
         )
 
     def summary(self) -> str:
@@ -294,6 +354,14 @@ class MNPResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        for label, value in (
+            ("Mean LL(C)", self.loglik_constants),
+            ("Mean LL(0)", self.loglik_zero),
+            ("APCP", self.average_correct_probability),
+        ):
+            formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
+            lines.append(f"  {label:<23s}{formatted}")
+        lines.extend(self.rho2_summary_lines())
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 
@@ -302,9 +370,17 @@ class MNPResults:
         lines.append("  Cross-product of first derivatives")
         lines.append("")
 
-        header = f"  {'Parameters':<14s} {'Estimates':>10s} {'Std. err.':>10s} {'Est./s.e.':>10s} {'Prob.':>10s} {'Gradient':>10s}"
+        name_width = max(
+            14,
+            max((len(name) for name in self.param_names), default=14),
+        )
+        header = (
+            f"  {'Parameters':<{name_width}s} {'Estimates':>10s} "
+            f"{'Std. err.':>10s} {'Est./s.e.':>10s} "
+            f"{'Prob.':>10s} {'Gradient':>10s}"
+        )
         lines.append(header)
-        lines.append("  " + "-" * 66)
+        lines.append("  " + "-" * (len(header) - 2))
 
         for i, name in enumerate(self.param_names):
             est = self.b_original[i] if i < len(self.b_original) else self.params[i]
@@ -313,10 +389,97 @@ class MNPResults:
             p = self.p_value[i] if i < len(self.p_value) else 0.0
             g = self.gradient[i] if i < len(self.gradient) else 0.0
             lines.append(
-                f"  {name:<14s} {est:>10.4f} {se:>10.4f} {t:>10.3f} {p:>10.4f} {g:>10.4f}"
+                f"  {name:<{name_width}s} {est:>10.4f} {se:>10.4f}"
+                f" {t:>10.3f} {p:>10.4f} {g:>10.4f}"
             )
 
         lines.append("")
+
+        if self.segment_probs is not None and len(self.segment_probs) > 1:
+            lines.extend([
+                "  Segment probabilities",
+                f"  {'Segment':<20s} {'Probability':>12s}",
+                "  " + "-" * 33,
+            ])
+            for h, probability in enumerate(self.segment_probs, start=1):
+                lines.append(f"  {f's{h}':<20s} {probability:>12.5f}")
+
+        has_random = bool(self.ranvar_indices) and self.omega_hat is not None
+        if has_random or self.lambda_hat is not None:
+            indices = self.ranvar_indices if has_random else []
+            base_names = (self.random_coefficient_names or [self.param_names[i] for i in indices]) if has_random else []
+            kernel_cov = (
+                np.asarray(self.lambda_hat, dtype=np.float64)
+                if self.lambda_hat is not None else np.zeros((0, 0))
+            )
+            kd = len(kernel_cov)
+            alternatives = self.alternatives or [f"alt{i + 1}" for i in range(kd + 1)]
+            kernel_names = [f"ker[{alt}-{alternatives[0]}]" for alt in alternatives[1:kd + 1]]
+            means = (self.segment_means or [self.b_original]) if has_random else []
+            covariances = (self.segment_covs or [self.omega_hat]) if has_random else []
+            nr_per_segment = len(base_names)
+            nr = nr_per_segment * len(covariances)
+            rc_cov = np.full((nr, nr), np.nan)
+            rc_rows = []
+            for h, (mean, covariance) in enumerate(zip(means, covariances)):
+                suffix = f"_s{h + 1}" if h else ""
+                start = h * nr_per_segment
+                rc_cov[start:start + nr_per_segment, start:start + nr_per_segment] = covariance
+                scales = np.sqrt(np.maximum(np.diag(covariance), 0.0))
+                rc_rows.extend((name + suffix, mean[index], scale)
+                               for name, index, scale in zip(base_names, indices, scales))
+            names = [name for name, _, _ in rc_rows] + kernel_names
+            width = max(20, max(map(len, names)))
+            col_width = max(11, max(map(len, names)))
+            kernel_scales = np.sqrt(np.maximum(np.diag(kernel_cov), 0.0))
+
+            def append_matrix(title: str, matrix: NDArray) -> None:
+                lines.extend([
+                    "", f"  {title}", f"  {'':<{width}s} "
+                    + " ".join(f"{name:>{col_width}s}" for name in names),
+                ])
+                for name, row in zip(names, matrix):
+                    values = [f"{value:>{col_width}.4f}" if np.isfinite(value)
+                              else f"{'--':>{col_width}s}" for value in row]
+                    lines.append(f"  {name:<{width}s} " + " ".join(values))
+
+            if has_random:
+                lines.extend([
+                    "", "  Random-coefficient locations and scales",
+                    f"  {'Coefficient':<{width}s} {'Location':>12s} {'Scale':>12s}",
+                    "  " + "-" * (width + 26),
+                ])
+                for name, location, scale in rc_rows:
+                    lines.append(f"  {name:<{width}s} {location:>12.5f} {scale:>12.5f}")
+
+            if kd:
+                normalization = (
+                    "sum of squared differenced scales fixed to 1.000"
+                    if getattr(self.control, "scaling", "sumsq") == "sumsq"
+                    else "first differenced scale fixed to 1.000"
+                )
+                lines.extend([
+                    "", f"  Kernel-error scales (differenced; {normalization})",
+                    f"  {'Coefficient':<{width}s} {'Scale':>12s}",
+                    "  " + "-" * (width + 13),
+                ])
+                for name, scale in zip(kernel_names, kernel_scales):
+                    lines.append(f"  {name:<{width}s} {scale:>12.5f}")
+
+            joint_cov = np.zeros((nr + kd, nr + kd))
+            joint_cov[:nr, :nr] = rc_cov
+            joint_cov[nr:, nr:] = kernel_cov
+            scales = np.concatenate([[scale for _, _, scale in rc_rows], kernel_scales])
+            outer = np.outer(scales, scales)
+            joint_corr = np.divide(joint_cov, outer, out=np.full_like(joint_cov, np.nan), where=outer > 0)
+            subject = (
+                "Random-coefficient / kernel-error (differenced)" if kd and len(covariances) > 1
+                else "Joint random-coefficient / kernel-error (differenced)" if kd and has_random
+                else "Kernel-error (differenced)" if kd else "Random-coefficient"
+            )
+            append_matrix(f"{subject} correlation matrix", joint_corr)
+            append_matrix(f"{subject} implied covariance matrix", joint_cov)
+            lines.append("")
 
         # Correlation matrix
         n_params = len(self.param_names)

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pybhatlib"
 dynamic = ["version"]
-description = "Python implementation of BHATLIB: matrix-based inference for advanced econometric models"
+description = "Matrix-based econometric inference in Python: analytic MVNCD evaluation and discrete-choice models"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
