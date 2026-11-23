@@ -171,7 +171,7 @@ def test_collapse_predict_equals_shipped_mdcev_predict():
     def setter(sl, layout):
         theta = np.zeros(layout.n_theta, dtype=np.float64)
         theta[sl["beta"]] = beta
-        theta[sl["gamma"]] = gamma_raw
+        theta[sl["gamma"]] = gamma_raw[1:]   # inside goods only (outside gamma is not a parameter)
         theta[sl["kern"]] = log_sigma
         return theta
 
@@ -183,7 +183,7 @@ def test_collapse_predict_equals_shipped_mdcev_predict():
     ref = mdcev_predict(
         None, m.X, m.gamma_design, m.price,
         n_draws=1000, seed=1234,
-        b_reported=np.concatenate([beta, gamma_raw]),
+        b_reported=np.concatenate([beta, gamma_raw[1:]]),
         sigma=float(np.exp(log_sigma)), outside_good_gamma=-1000.0,
     ).mean(axis=0)
 
@@ -238,7 +238,7 @@ def test_collapse_ate_equals_shipped_mdcev_ate(utility):
     def setter(sl, layout):
         theta = np.zeros(layout.n_theta, dtype=np.float64)
         theta[sl["beta"]] = beta
-        theta[sl["gamma"]] = gamma_raw
+        theta[sl["gamma"]] = gamma_raw[1:]   # inside goods only (outside gamma is not a parameter)
         theta[sl["kern"]] = log_sigma
         return theta
 
@@ -301,7 +301,7 @@ def _mixed_active():
     def setter(sl, layout):
         theta = np.zeros(layout.n_theta, dtype=np.float64)
         theta[sl["beta"]] = beta
-        theta[sl["gamma"]] = gamma_raw
+        theta[sl["gamma"]] = gamma_raw[1:]   # inside goods only (outside gamma is not a parameter)
         theta[sl["kern"]] = log_sigma
         theta[sl["scal"]] = 0.0     # exp(0) -> sd = 1 (active heterogeneity)
         theta[sl["lam"]] = 0.0      # identity Yeo-Johnson
@@ -449,8 +449,8 @@ def test_ate_from_params_collapse_matches_fixed_coef():
     sl = layout.slices()
     params = np.zeros(layout.n_theta, dtype=np.float64)
     params[sl["beta"]] = beta
-    params[sl["gamma"]] = gamma_raw
-    params[sl["kern"]] = log_sigma
+    params[sl["gamma"]] = gamma_raw[1:]   # inside goods only (outside gamma is not a parameter)
+    params[sl["kern"]] = sigma   # reporting space: natural sigma
 
     scenarios = {"lo": {"x1_0": -0.5}, "hi": {"x1_0": 0.5}}
     mixed = mdcev_mixed_ate_from_params(m, params, scenarios=scenarios)

@@ -135,9 +135,8 @@ def _prime_model_at_theta(
     coefficient (no ``exp`` / sign reparam), the ``rcor`` block *is* the
     off-diagonal correlation (``matndupdiagonefull`` -> Cholesky), and the scale
     / Yeo-Johnson ``lambda`` blocks enter directly (no ``exp`` / no ``cdlogit``).
-    No reporting -> estimation inversion is therefore performed -- ``params`` is
-    fed to the engine as-is and ``predict`` / ``ate`` run at the natural
-    parameters.  ``ReportingSpace`` emits no reparam gradients, which is fine
+    The kernel scale is converted from reported sigma to log sigma;
+    the other reporting blocks enter directly.  ``ReportingSpace`` emits no reparam gradients, which is fine
     because ATE / predict need none.
 
     Parameters
@@ -161,7 +160,17 @@ def _prime_model_at_theta(
     model._fitted_spec = spec
     model._fitted_layout = layout
     model._fitted_est = est
-    model._fitted_theta = np.asarray(params, dtype=np.float64).reshape(-1)
+    theta = np.asarray(params, dtype=np.float64).reshape(-1).copy()
+    if theta.size != layout.n_theta:
+        raise ValueError(f"Expected {layout.n_theta} reporting parameters, got {theta.size}")
+    kernel_slice = layout.slices()["kern"]
+    sigma = theta[kernel_slice]
+    if not np.all(np.isfinite(sigma)) or np.any(sigma <= 0):
+        raise ValueError("Reported sigma must be finite and positive")
+    # ReportingSpace consumes natural random-coefficient parameters, while the
+    # MDCEV kernel and forecast hook consume log(sigma), as during fitting.
+    theta[kernel_slice] = np.log(sigma)
+    model._fitted_theta = theta
 
 
 def mdcev_mixed_ate_from_params(
@@ -203,8 +212,8 @@ def mdcev_mixed_ate_from_params(
         parameters are consumed directly: ``beta`` is the reported coefficient,
         the ``rcor`` block is the off-diagonal correlation, and the scale /
         Yeo-Johnson ``lambda`` blocks enter as-is (no reporting -> estimation
-        inversion).  The kernel-owned ``gamma`` and MDCEV kernel scale pass
-        through identically in both spaces.
+        inversion). Inside-good ``gamma`` enters unchanged. The reported natural
+        ``sigma`` is converted to log sigma for the kernel and forecast hook.
     data : pd.DataFrame, optional
         Dataset the scenarios override; defaults to the model's own data.
     scenarios : dict or pd.DataFrame

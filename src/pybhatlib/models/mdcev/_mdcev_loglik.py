@@ -43,6 +43,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
+from pybhatlib.models.mdcev._mdcev_satiation import _log_satiation_terms
 from pybhatlib.gradmvn._logit_dist import (
     nonpdfmvlogit,
     gradnonpdfmvlogit,
@@ -113,12 +114,10 @@ def _compute_utility_terms(
     dict
         All intermediate arrays needed by the log-likelihood and gradient.
     """
-    # Composition of the draw-invariant satiation/gamma block (no ``beta``
-    # dependence) and the ``beta``-dependent v/vdisc/vcont block. Splitting the
-    # two lets the mixed MDCEV kernel cache the satiation block across MSL draws
-    # (only ``beta = Vsub`` varies) without changing the value produced here: the
-    # two halves are a pure code move, so the fixed-coefficient model is
-    # byte-identical to the original single-pass implementation.
+    # Compose draw-invariant satiation terms with beta-dependent utilities.
+    # Both MDCEV engines use the shared log-space satiation/Jacobian helper;
+    # this adapter retains raw factors for the fixed-model GAUSS loops, while
+    # the mixed kernel caches the log factors across its simulation draws.
     sat = _compute_satiation_block(
         x, dta, ivg, flagchm, flagprcm, wtind,
         nvarm, nvargam, nc, eqmatgam, control,
@@ -177,16 +176,16 @@ def _compute_satiation_block(
     Computes every intermediate in :func:`_compute_utility_terms` that does
     **not** depend on ``beta = x[:nvarm]`` -- i.e. the satiation utilities
     ``u``/``f``, the consumption indicators ``b``/``newf``/``m``/``h``, the
-    prices, and the Jacobian scalar ``c`` (with its ``c2``/``c3`` helpers). In
-    the mixed MDCEV kernel these depend only on the (per-eval constant) ``gamma``
-    / ``log_sigma`` and the per-observation data, so the block is identical
-    across the MSL draws and can be cached once per evaluation.
+    prices, and the Jacobian scalar ``c`` (with its ``c2``/``c3`` helpers).
+    The Jacobian factors and utility adjustment are derived from the same
+    log-space helper used by the mixed kernel. This adapter also supplies
+    weights and natural sigma for the fixed-model likelihood/gradient loops.
 
     Returns
     -------
     dict
-        ``e1, wt, xsigm, f, b, newf, m, h, c, c2, c3, price_inside`` -- the
-        draw-invariant subset of :func:`_compute_utility_terms`' output.
+        ``e1, wt, xsigm, f, b, newf, m, h, c, c2, c3, price_inside,
+        adjustment`` -- the draw-invariant utility terms.
     """
     e1 = dta.shape[0]
 
@@ -213,55 +212,30 @@ def _compute_satiation_block(
     # and is never part of the user-supplied gamma_spec.
     u[:, 0] = control.outside_good_gamma
 
-    # gamma_k = exp(u_k) for inside goods, shape (e1, nc-1)
-    f    = np.exp(u[:, 1:])                                     # (e1, nc-1)
-
-    # Consumption quantities and indicator for inside goods
-    qty_inside = dta[:, flagchm[1:]]                            # (e1, nc-1)
-    b    = (qty_inside > 0).astype(np.float64)                  # (e1, nc-1)
-    newf = qty_inside.copy()                                    # (e1, nc-1)
-
-    m = 1 + b.sum(axis=1)                                       # (e1,)  consumed alts
-    h = nc - m                                                  # (e1,)  non-consumed inside
-
-    price_all    = dta[:, flagprcm]                             # (e1, nc)
-    price_inside = price_all[:, 1:]                             # (e1, nc-1)
-
-    # ------------------------------------------------------------------
-    # Jacobian scalar c — the only computation that differs by utility
-    # ------------------------------------------------------------------
+    qty_all = dta[:, flagchm]
+    price_all = dta[:, flagprcm]
+    sat = _log_satiation_terms(qty_all, price_all, u, utility=control.utility)
+    # Preserve the raw-factor interface used by _gradient_from_terms. The
+    # mixed kernel instead consumes the log factors and gamma scores directly.
+    f = np.exp(u[:, 1:])
+    b = sat["con"].astype(np.float64)
+    newf = qty_all[:, 1:].copy()
+    m = 1 + b.sum(axis=1)
+    h = nc - m
+    c = np.exp(sat["log_c"])
     if control.utility == "trad":
-        # GAUSS trad lpr:
-        #   c = 1/((dta[.,flagchm]+exp(u)))           shape (e1, nc)
-        #   c1 = sumc(((price./c).*(1~b))')
-        #   c = substute(c, (1~b)==0, 1); c = prodc(c')
-        #   c = (1/p_0) * c * c1
-        qty_all = dta[:, flagchm]                               # (e1, nc)
-        c_raw   = 1.0 / (qty_all + np.exp(u))                  # (e1, nc)
-        consumed_mask = np.column_stack([np.ones(e1), b])       # (e1, nc)  1 for outside + consumed
-        c1      = (price_all / c_raw * consumed_mask).sum(axis=1)  # (e1,)
-        c_prod  = np.where(consumed_mask == 0, 1.0, c_raw).prod(axis=1)  # (e1,)
-        c       = (1.0 / price_all[:, 0]) * c_prod * c1        # (e1,)
-        c3      = c_raw[:, 1:]                                  # (e1, nc-1)  for gradient
-        c2      = c_prod / price_all[:, 0]                      # (e1,)       for gradient
-
+        c3 = np.exp(-sat["log_total"][:, 1:])
+        c2 = np.exp(sat["log_c2"])
     else:  # "linear"
-        # GAUSS linear lpr:
-        #   c = b/((newf+f))                          shape (e1, nc-1)
-        #   c = c / price_inside
-        #   c = substute(c, b==0, 1); c = prodc(c')
-        c_inside = b / (newf + f)                               # (e1, nc-1)
-        c_inside = c_inside / price_inside
-        c_prod   = np.where(b == 0, 1.0, c_inside).prod(axis=1)  # (e1,)
-        c        = c_prod                                       # (e1,)
-        c3       = None                                         # unused for linear
-        c2       = None                                         # unused for linear
+        c3 = None
+        c2 = None
 
     return dict(
         e1=e1, wt=wt, xsigm=xsigm,
         f=f, b=b, newf=newf,
         m=m, h=h, c=c, c2=c2, c3=c3,
-        price_inside=price_inside,
+        price_inside=price_all[:, 1:],
+        adjustment=sat["adjustment"],
     )
 
 
@@ -284,8 +258,8 @@ def _compute_utility_terms_from_sat(
     :func:`_compute_satiation_block`), computes the baseline utilities ``v`` and
     the price-adjusted utility differences ``vdisc``/``vcont`` (the only
     quantities that depend on ``beta = x[:nvarm]``), and returns the full terms
-    dict expected by the log-likelihood / gradient bodies. Byte-identical to the
-    original monolithic :func:`_compute_utility_terms`.
+    dict expected by the log-likelihood / gradient bodies. The adjustment is
+    computed by the shared log-space satiation helper.
 
     Parameters
     ----------
@@ -299,7 +273,6 @@ def _compute_utility_terms_from_sat(
         original ``beta``-driven behaviour for the fixed-coefficient model.
     """
     e1 = sat["e1"]
-    f  = sat["f"]
 
     if v_override is not None:
         # Mixed-MDCEV batched path: v is supplied directly (identity baseline
@@ -317,7 +290,6 @@ def _compute_utility_terms_from_sat(
 
     price_all    = dta[:, flagprcm]                            # (e1, nc)
     price_inside = price_all[:, 1:]                            # (e1, nc-1)
-    qty_inside   = dta[:, flagchm[1:]]                         # (e1, nc-1)
     qty_out      = dta[:, flagchm[0]]                          # (e1,)
 
     # ------------------------------------------------------------------
@@ -329,7 +301,7 @@ def _compute_utility_terms_from_sat(
     v_adj = v.copy()
     v_adj[:, 0] -= np.log(price_all[:, 0])
     v_adj[:, 1:] -= (
-        np.log((qty_inside + f) / f) + np.log(price_inside)
+        sat["adjustment"] + np.log(price_inside)
     )
 
     if control.utility == "trad":
