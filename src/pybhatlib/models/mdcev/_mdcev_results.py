@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 
 from pybhatlib.models._results_common import (
     attach_deprecated_aliases,
@@ -25,7 +26,7 @@ _MDCEVRESULTS_LEGACY_KWARGS: dict[str, str] = {"b": "params"}
 
 
 @dataclass(init=False)
-class MDCEVResults:
+class MDCEVResults(FitMetricsMixin):
     """Results from MDCEV model estimation.
 
     Attributes
@@ -112,6 +113,14 @@ class MDCEVResults:
     se_sandwich: NDArray | None = None
     control: MDCEVControl | None = None
     data_path: str = ""
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    loglik_constants: float = np.nan
+    """Mean LL of basic MDCEV with constants in utility and gamma plus free sigma.
+
+    Preserves prices, utility form and weights. NaN for external estimates or
+    a failed auxiliary fit. No uniform LL(0) is defined for continuous density.
+    """
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MDCEVResults, accepting canonical or legacy (``b=``) kwargs.
@@ -229,6 +238,12 @@ class MDCEVResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        ll_c = (
+            f"{self.loglik_constants:>14.6f}"
+            if np.isfinite(self.loglik_constants) else f"{'N/A':>14s}"
+        )
+        lines.append(f"  Mean LL(C)             {ll_c}")
+        lines.extend(self.rho2_summary_lines(include_zero=False))
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append("")
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from pybhatlib.models._fit_diagnostics import FitMetricsMixin
 import pandas as pd
 from numpy.typing import NDArray
 from scipy.special import ndtr  # noqa: F401 - kept for API symmetry with siblings
@@ -36,7 +37,7 @@ _MNPKERCPRESULTS_LEGACY_KWARGS: dict[str, str] = {
 
 
 @dataclass(init=False)
-class MNPKerCPResults:
+class MNPKerCPResults(FitMetricsMixin):
     """Results from MNPKerCP (mixed-panel MNP) model estimation.
 
     Attributes
@@ -58,6 +59,19 @@ class MNPKerCPResults:
         Final (summed) score vector at convergence, estimation space.
     loglik : float
         Mean simulated log-likelihood (per individual).
+    loglik_constants, loglik_zero : float
+        Mean constants-only and uniform null log-likelihoods, normalized like
+        ``loglik``. Full availability uses analytic empirical shares. With
+        unavailable alternatives, LL(C) fits shared alternative constants via
+        the basic IID MNP likelihood, respecting each choice set; no random
+        mixing is retained. LL(0) is uniform over the available alternatives.
+        Panel occasions are independent in these benchmarks.
+    average_correct_probability : float
+        Arithmetic mean fitted probability of the observed outcome (the joint
+        category combination for ordinal models). In panels, average across
+        occasions within each person, then across persons. It is not the
+        exponential of the mean log-likelihood or a classification hit rate.
+        These diagnostics are ``nan`` without fitting data.
     n_obs : int
         Number of observations.
     n_ind : int
@@ -112,6 +126,14 @@ class MNPKerCPResults:
     data_path: str = ""
     message: str | None = None
     mixing_summary: MixingSummary | None = None
+
+    # Independent null benchmarks; not restricted fits of the full kernel.
+    loglik_constants: float = np.nan
+    loglik_zero: float = np.nan
+    n_free_params: int = -1
+    n_constants_params: int = -1
+    """Parameter count of the unmixed LL(C) baseline; -1 when unavailable."""
+    average_correct_probability: float = np.nan
 
     def __init__(self, **kwargs: object) -> None:
         """Construct MNPKerCPResults, accepting both canonical and legacy kwargs.
@@ -214,6 +236,14 @@ class MNPKerCPResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        for label, value in (
+            ("Mean LL(C)", self.loglik_constants),
+            ("Mean LL(0)", self.loglik_zero),
+            ("APCP", self.average_correct_probability),
+        ):
+            formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
+            lines.append(f"  {label:<23s}{formatted}")
+        lines.extend(self.rho2_summary_lines())
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append(f"  Number of individuals  {self.n_ind:>14d}")
         lines.append("")

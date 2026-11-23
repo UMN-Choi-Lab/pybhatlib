@@ -212,6 +212,7 @@ class MixedMSLEstimator:
         self.weightind = np.asarray(weightind, dtype=np.float64)
         self.config = config
         self.trace = trace
+        self.average_correct_probability = np.nan
 
     # ------------------------------------------------------------------
     # tracing helper
@@ -226,7 +227,7 @@ class MixedMSLEstimator:
     # ------------------------------------------------------------------
 
     def simulated_loglik(
-        self, theta: NDArray, *, want_grad: bool
+        self, theta: NDArray, *, want_grad: bool, collect_probabilities: bool = False
     ) -> tuple[NDArray, Optional[NDArray]]:
         """Per-individual simulated log-likelihood and (optional) score.
 
@@ -239,6 +240,10 @@ class MixedMSLEstimator:
             Optimizer parameter vector in ``[beta|rcor|scal|lam|kern]`` order.
         want_grad : bool
             If ``True`` also return the per-individual score matrix.
+        collect_probabilities : bool
+            Retain the arithmetic mean observed-outcome probability during this
+            pass. Each person's probabilities are averaged across occasions,
+            then across persons; this is not a panel-sequence probability.
 
         Returns
         -------
@@ -252,6 +257,9 @@ class MixedMSLEstimator:
         panel = self.panel
         n_ind = panel.n_ind
         n_theta = self.layout.n_theta
+        observed_probabilities = np.zeros(panel.n_obs) if collect_probabilities else None
+        if collect_probabilities:
+            self.average_correct_probability = np.nan
 
         rc = self.space.unpack(theta, self.spec, want_grad=want_grad)
         kst = self.kernel.prepare(theta, self.layout)
@@ -297,6 +305,8 @@ class MixedMSLEstimator:
                 Vsub, self.design.obs, kst,
                 rc_draw=cache.errbeta3, want_grad=want_grad,
             )
+            if collect_probabilities:
+                observed_probabilities += np.asarray(kev.p_obs) / cfg.n_rep
             if kev.log_p_obs is not None:
                 raw_log_p = kev.log_p_obs
             else:
@@ -355,6 +365,11 @@ class MixedMSLEstimator:
                 self._emit("gcomp", gcomp, rep=r)
                 if self.trace is not None:
                     self._emit("gPprodgcomp", Pprod[:, None] * person_score, rep=r)
+
+        if collect_probabilities:
+            counts = np.bincount(panel.row_to_person, minlength=n_ind)
+            per_person = panel.scatter_sum(observed_probabilities) / counts
+            self.average_correct_probability = float(per_person.mean())
 
         log_mean_p = log_p0 - np.log(cfg.n_rep)
         log_z = np.maximum(log_mean_p, log_floor_z)
