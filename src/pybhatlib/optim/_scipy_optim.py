@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import warnings
 from dataclasses import dataclass
 
 import numpy as np
@@ -64,6 +65,8 @@ def minimize_scipy(
     bounds=None,
     param_names: list[str] | None = None,
     obj_scale: float | None = None,
+    log_sd_idx=(),
+    reset_collapsed_sd: bool = True,
 ) -> OptimResult:
     """Minimize a scalar function using scipy.optimize.minimize.
 
@@ -104,6 +107,16 @@ def minimize_scipy(
         disabled because, on the summed scale, it sits below the simulation
         noise floor and every fit ended in a line-search ("precision loss")
         failure.  Only the stopping rule changes; the BFGS path is the same.
+    log_sd_idx : sequence of int
+        Positions of log-standard-deviation parameters (SD = exp(theta)).
+        As an SD collapses toward 0 its gradient ``SD * dLL/dSD`` vanishes,
+        so any gradient-based stop can fire while raising the SD would still
+        improve the fit.  A fit that ends with one of these below
+        ``log(SD) = -5`` is flagged with a warning.
+    reset_collapsed_sd : bool
+        If True (default), each collapsed entry of ``log_sd_idx`` is reset
+        to its ``x0`` value and the fit is rerun (up to 3 times), keeping
+        the better optimum.
 
     Returns
     -------
@@ -253,6 +266,33 @@ def minimize_scipy(
         return minimize(**minimize_kwargs)
 
     result = _minimize_from(x0)
+
+    # Collapsed-SD restart: see ``log_sd_idx``. Where the collapse is real,
+    # the rerun drives the SD back to ~0 and the first fit is kept.
+    _SD_COLLAPSE = -5.0  # log(SD); exp(-5) ~ 0.007
+    sd_idx = np.asarray(log_sd_idx, dtype=int)
+    for _ in range(3 if reset_collapsed_sd and sd_idx.size else 0):
+        hit = sd_idx[result.x[sd_idx] < _SD_COLLAPSE]
+        if not hit.size:
+            break
+        x_retry = result.x.copy()
+        x_retry[hit] = x0[hit]
+        if verbose >= 1:
+            print(f"  SD collapsed at theta index {hit.tolist()}; "
+                  "resetting to start values and refitting")
+        retry = _minimize_from(x_retry)
+        if not retry.fun < result.fun - 1e-6:
+            break
+        result = retry
+    collapsed = sd_idx[result.x[sd_idx] < _SD_COLLAPSE]
+    if collapsed.size:
+        labels = [param_names[i] if param_names else f"theta[{i}]" for i in collapsed]
+        warnings.warn(
+            f"Random-coefficient SD collapsed to ~0 for {labels}: the "
+            "coefficient is effectively fixed, and its correlations are not "
+            "identified. Consider dropping it from the random coefficients.",
+            RuntimeWarning, stacklevel=2,
+        )
 
     # NOTE: an automatic BFGS restart-on-status-2 was trialled here to clean up
     # the MORP full-covariance "precision loss" stops (UTA report, 2026-06).

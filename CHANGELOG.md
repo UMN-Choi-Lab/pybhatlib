@@ -18,6 +18,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   reported as converged only within 10× of `tol` (was a 0.1 guard), and
   L-BFGS-B no longer receives `ftol=tol`, which ended fits early. Requires
   `scipy>=1.11`.
+- **Mixed models refit when a random-coefficient SD collapses.** SDs are
+  estimated as `exp(theta)`, so as one collapses toward 0 its gradient
+  vanishes and the fit can stop short. When the fit ends with
+  `log SD < -5`, that SD is reset to its start value and the model is refit,
+  keeping the better optimum (`control.reset_collapsed_sd`, default on). An SD
+  that is still collapsed raises a `RuntimeWarning`: the coefficient is
+  effectively fixed and its correlations are not identified.
 - **MNP random-coefficient and mixture coordinates/reporting change together
   with scaling in #71.**
   - Full random-coefficient covariance optimizer blocks now contain radial

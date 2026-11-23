@@ -31,3 +31,46 @@ def test_line_search_stall_far_from_tol_is_not_converged():
                          verbose=0, obj_scale=N, maxiter=500)
     assert res.status == 2
     assert not res.converged
+
+
+def _scripted(monkeypatch, results):
+    """Replace scipy minimize with a stub returning ``results`` in order."""
+    from scipy.optimize import OptimizeResult
+
+    import pybhatlib.optim._scipy_optim as so
+    starts = []
+
+    def fake(fun, x0, **kw):
+        starts.append(np.array(x0, dtype=float))
+        x, f = results[len(starts) - 1]
+        return OptimizeResult(x=np.array(x, dtype=float), fun=f, jac=np.zeros(2),
+                              status=0, success=True, nit=1, message="")
+    monkeypatch.setattr(so, "minimize", fake)
+    return starts
+
+
+def test_collapsed_sd_is_reset_and_refit(monkeypatch):
+    # first fit stops with log-SD at -9; the refit from the start value is better
+    starts = _scripted(monkeypatch, [([2.0, -9.0], 1.0), ([2.1, 0.2], 0.5)])
+    res = minimize_scipy(lambda x: (0.0, np.zeros(2)), np.array([0.0, -0.3]),
+                         verbose=0, log_sd_idx=[1])
+    np.testing.assert_array_equal(starts[1], [2.0, -0.3])  # only the SD is reset
+    assert res.fun == 0.5 and res.x[1] == 0.2
+
+
+def test_real_collapse_keeps_first_fit_and_warns(monkeypatch):
+    import pytest
+    _scripted(monkeypatch, [([2.0, -9.0], 1.0), ([2.0, -11.0], 1.0)])
+    with pytest.warns(RuntimeWarning, match=r"SD collapsed.*\['sd\[x\]'\]"):
+        res = minimize_scipy(lambda x: (0.0, np.zeros(2)), np.zeros(2), verbose=0,
+                             log_sd_idx=[1], param_names=["b", "sd[x]"])
+    assert res.x[1] == -9.0
+
+
+def test_reset_can_be_disabled(monkeypatch):
+    import pytest
+    starts = _scripted(monkeypatch, [([2.0, -9.0], 1.0)])
+    with pytest.warns(RuntimeWarning):
+        minimize_scipy(lambda x: (0.0, np.zeros(2)), np.zeros(2), verbose=0,
+                       log_sd_idx=[1], reset_collapsed_sd=False)
+    assert len(starts) == 1

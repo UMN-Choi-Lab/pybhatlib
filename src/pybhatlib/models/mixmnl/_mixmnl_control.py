@@ -82,6 +82,9 @@ class MixMNLControl:
         mean -LL falls below this (default 1e-5, the GAUSS default).
     tol_check : float
         Gradient-norm threshold used to flag convergence after the fit.
+    reset_collapsed_sd : bool
+        If a random-coefficient SD collapses to ~0 (log SD < -5), reset it to
+        its start value and refit, keeping the better optimum (default True).
     want_covariance : bool
         If True, compute the parameter covariance matrix at convergence via the
         reporting-space BHHH pass.
@@ -127,6 +130,7 @@ class MixMNLControl:
     optimizer: Literal["bfgs", "lbfgsb", "newton"] = "bfgs"
     tol: float = 1e-5
     tol_check: float = 1e-5
+    reset_collapsed_sd: bool = True
     want_covariance: bool = True
     se_method: Literal["bhhh"] = "bhhh"
     verbose: int = 1
