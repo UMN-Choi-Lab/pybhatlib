@@ -132,7 +132,7 @@ class MORPControl:
         se_method: Literal["bhhh", "hessian", "sandwich"] = "bhhh",
         se_diagnostic: bool = False,
         verbose: int = 1,
-        seed: int | None = None,
+        seed: int | None = 14287,
         startb: NDArray | None = None,
         analytic_grad: bool = True,
         *,

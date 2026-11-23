@@ -51,9 +51,9 @@ class MNPKerCPControl:
         implemented, so the squared kernel scales are a probability vector
         summing to one.
     n_rep : int
-        Number of MSL replications (GAUSS ``nrep``, default 5 for MNPKERCP).
+        Number of MSL replications (GAUSS ``nrep``), default 125.
     intordn1 : int
-        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``).
+        Gauss-Hermite node count for ``meanyj`` (GAUSS ``_intordn1``), default 92.
     spher : bool
         Spherical (True) vs radial (False) correlation-Cholesky
         parameterization.  Only the radial path is implemented downstream.
@@ -61,13 +61,12 @@ class MNPKerCPControl:
         Scaling constant in ``newcholparmscaled`` (GAUSS ``scal``).
     floor_pcomp : float
         Per-observation kernel-probability floor applied before the log
-        (GAUSS ``w5`` / kernel prob floor).
+        (GAUSS ``w5`` / kernel prob floor), default ``1e-10``.
     floor_z : float
         Per-person simulated-probability floor after averaging over draws
-        (GAUSS ``w2``).
+        (GAUSS ``w2``), default ``1e-100``.
     draw_seed : int or None
-        Seed for the runtime scrambled-Halton draw source.  ``None`` yields
-        non-deterministic draws.
+        Seed for the runtime scrambled-Halton draw source (default 13811).
     maxiter : int
         Maximum number of optimizer iterations.
     optimizer : str
@@ -82,7 +81,8 @@ class MNPKerCPControl:
     se_method : str
         Standard-error method.  Only "bhhh" is implemented.
     verbose : int
-        Verbosity: 0 = silent, 1 = summary, 2 = per-iteration.
+        Verbosity: 0 = silent, 1 = optimizer summary, 2 = per-iteration
+        objective values, 3 = per-iteration parameter / gradient table.
     seed : int or None
         Random seed kept for cross-model symmetry (the draw source uses
         ``draw_seed``).
@@ -118,13 +118,13 @@ class MNPKerCPControl:
 
     # --- MSL / reparameterization -------------------------------------------
     randdiag: bool = False
-    n_rep: int = 5
-    intordn1: int = 20
+    n_rep: int = 125
+    intordn1: int = 92
     spher: bool = False
     scal: float = 1.0
-    floor_pcomp: float = 1e-4
-    floor_z: float = 1e-4
-    draw_seed: int | None = None
+    floor_pcomp: float = 1e-10
+    floor_z: float = 1e-100
+    draw_seed: int | None = 13811
 
     # --- optimizer -----------------------------------------------------------
     maxiter: int = 2000
@@ -134,6 +134,6 @@ class MNPKerCPControl:
     want_covariance: bool = True
     se_method: Literal["bhhh"] = "bhhh"
     verbose: int = 1
-    seed: int | None = None
+    seed: int | None = 14287
     startb: NDArray | None = None
     start_from_shares: bool = False
