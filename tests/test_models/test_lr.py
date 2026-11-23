@@ -53,6 +53,55 @@ def test_classical_reference(data, capsys):
     assert list(r.to_dataframe().columns) == ["Estimate", "Std.Error", "t-stat", "p-value", "Gradient"]
 
 
+@pytest.mark.parametrize("intercept", [True, False])
+def test_analytical_baseline_loglikelihoods(data, intercept, monkeypatch):
+    from scipy.stats import norm
+    from pybhatlib.models.lr import _lr_model as module
+
+    calls = []
+    likelihood = module.lr_loglik
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return likelihood(*args, **kwargs)
+
+    monkeypatch.setattr(module, "lr_loglik", counted)
+    spec = {"CON": "uno", "B_X": "x"} if intercept else {"B_X": "x"}
+    result = LRModel(data, "y", spec, control=LRControl(verbose=0)).fit()
+    y = data.y.to_numpy()
+    expected_constants = norm.logpdf(y, loc=y.mean(), scale=y.std(ddof=0)).mean()
+    expected_zero = norm.logpdf(y, loc=0, scale=np.sqrt(np.mean(y**2))).mean()
+    assert_allclose(result.loglik_constants, expected_constants)
+    assert_allclose(result.loglik_zero, expected_zero)
+    text = result.summary()
+    assert "Mean LL(C)" in text and "Mean LL(0)" in text
+    assert f"{expected_constants:.6f}" in text
+    assert f"{expected_zero:.6f}" in text
+    assert len(calls) == 1  # Only the existing fitted-model likelihood call.
+
+
+@pytest.mark.parametrize("outcome", [0.0, 3.0])
+def test_baseline_zero_variance_boundary(outcome):
+    frame = pd.DataFrame({"x": np.arange(8.0), "y": np.full(8, outcome)})
+    with np.errstate(divide="raise", invalid="raise"):
+        result = model(frame).fit()
+        text = result.summary()
+    assert result.loglik_constants == np.inf
+    if outcome == 0:
+        assert result.loglik_zero == np.inf
+    else:
+        assert_allclose(result.loglik_zero, -0.5 * (np.log(2 * np.pi * outcome**2) + 1))
+    assert "Mean LL(C)" in text and "inf" in text
+
+
+def test_external_estimates_have_unavailable_baselines():
+    result = LRResults.from_estimates([1.0, 2.0])
+    assert np.isnan(result.loglik_constants) and np.isnan(result.loglik_zero)
+    for line in result.summary().splitlines():
+        if "Mean LL(C)" in line or "Mean LL(0)" in line:
+            assert "N/A" in line
+
+
 @pytest.mark.parametrize("method", ["hessian", "sandwich", "bhhh"])
 def test_covariances(data, method):
     m = model(data, se_method=method, df_correction=False)
