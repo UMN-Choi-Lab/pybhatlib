@@ -34,6 +34,12 @@ class LRResults:
         Mean Gaussian log-likelihood (per observation) at ``sigma2``.  For an
         exact fit the variance MLE lies on the zero boundary and ``loglik``
         is ``inf``.
+    loglik_constants, loglik_zero : float
+        Mean Gaussian baseline log-likelihoods: an intercept-only model
+        (LL(C)), and all regression coefficients fixed to zero (LL(0)).
+        Each uses its own analytically maximized residual variance (SSE/N).
+        A zero baseline variance gives ``inf``. Unavailable for external
+        estimates without training data (``nan``).
     n_obs : int
         Number of observations.
     param_names : list[str]
@@ -101,6 +107,8 @@ class LRResults:
     sse: float = np.nan
     df_model: int = 0
     f_stat: float = np.nan
+    loglik_constants: float = np.nan
+    loglik_zero: float = np.nan
 
     @classmethod
     def from_estimates(
@@ -194,6 +202,12 @@ class LRResults:
         lines.append(f"  {rc_msg}")
         lines.append("")
         lines.append(f"  Mean log-likelihood    {self.loglik:>14.6f}")
+        for label, value in (
+            ("Mean LL(C)", self.loglik_constants),
+            ("Mean LL(0)", self.loglik_zero),
+        ):
+            formatted = f"{value:>14.6f}" if not np.isnan(value) else f"{'N/A':>14s}"
+            lines.append(f"  {label:<23s}{formatted}")
         lines.append(f"  Number of cases        {self.n_obs:>14d}")
         lines.append(f"  Residual df            {self.df_resid:>14d}")
         lines.append(f"  R-squared              {self.r_squared:>14.6f}")
