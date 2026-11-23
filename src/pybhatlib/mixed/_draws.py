@@ -38,6 +38,14 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
+_HALTON_BURNIN = 10
+
+
+def _validate_draw_method(draw_method: str) -> None:
+    """Validate the Halton source selected by a model control."""
+    if draw_method not in ("scipy", "explicit"):
+        raise ValueError("draw_method must be 'scipy' or 'explicit'")
+
 
 # ---------------------------------------------------------------------------
 # Panel reshape helper  (GAUSS ass -> (n_rep, n_ind, n_rnd))
@@ -215,6 +223,10 @@ class ScipyHaltonDrawSource:
     per-call seed, so this **never mutates any global RNG** and is safe for
     parallel gradient evaluation.
 
+    The first 10 Halton points are always skipped automatically, once per
+    generated sequence, before assigning draws to individuals. This burn-in
+    is fixed and is not a control option.
+
     Parameters
     ----------
     seed : int or None, default None
@@ -263,6 +275,7 @@ class ScipyHaltonDrawSource:
 
         eff_seed = None if self.seed is None else int(self.seed) + (run - 1)
         sampler = qmc.Halton(d=n_rnd, scramble=True, seed=eff_seed)
+        sampler.fast_forward(_HALTON_BURNIN)
         u = sampler.random(n_rep * n_ind)                     # (n_rep*n_ind, n_rnd)
         u = np.clip(u, 1e-10, 1.0 - 1e-10)
         z = ndtri(u).reshape(n_ind, n_rep, n_rnd)        # z[i, r] = u[i*n_rep + r] -> contiguous per individual
