@@ -5,14 +5,14 @@ import pandas as pd
 import pytest
 
 from pybhatlib.models.mnp import MNPControl, MNPModel
-from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar
+from pybhatlib.models.mnp._mnp_loglik import _param_to_unpar, _per_obs_loglik
 
 
-def _model(*, mix=True, randdiag=False, nseg=1, scaling="sumsq", iid=False):
+def _model(*, mix=True, randdiag=False, nseg=1, scaling="sumsq", iid=False, n_alts=3):
     rng = np.random.default_rng(37)
     n = 60
-    y = np.arange(n) % 3
-    alts = ["a", "b", "c"]
+    y = np.arange(n) % n_alts
+    alts = ["a", "b", "c", "d"][:n_alts]
     data = pd.DataFrame({a: (y == i).astype(float) for i, a in enumerate(alts)})
     for name in ("x", "z"):
         for a in alts:
@@ -168,6 +168,70 @@ def test_frozen_correlation_does_not_freeze_random_scales():
     assert np.isfinite(se[model._build_report_names().index("scal[z]")])
     assert np.isfinite(se[model._build_report_names().index("scal[x]")])
     assert np.isnan(se[model._build_report_names().index("corr[x,z]")])
+
+
+@pytest.mark.parametrize("geometry", ["kernel_scales", "random_covariance"])
+@pytest.mark.parametrize("se_method,curvature", [
+    ("sandwich", "observed"), ("sandwich", "bfgs"), ("sandwich", "missing"),
+    ("hessian", "observed"), ("hessian", "bfgs"),
+])
+def test_covariance_restricts_curvature_to_free_coordinates(geometry, curvature, se_method):
+    model = (_model(mix=False, n_alts=4) if geometry == "kernel_scales"
+             else _model(iid=True))
+    theta = model.control.startb.copy()
+    active = np.ones(len(theta), dtype=bool)
+    # Freeze one scale logit (other natural kernel scales still vary), or
+    # one random SD (its covariances still vary with the other coordinates).
+    active[2 if geometry == "kernel_scales" else -1] = False
+    model.control.active_mask = active
+    model.control.se_method = se_method
+
+    # Cross-curvature deliberately makes inv(H)[free,free] differ from
+    # inv(H[free,free]). Only the latter describes this constrained fit.
+    H = 2 * np.eye(len(theta)) + np.ones((len(theta), len(theta)))
+    H_free_inv = np.linalg.inv(H[np.ix_(active, active)])
+    kwargs = {"hess_observed": H} if curvature == "observed" else {}
+    bfgs = None
+    if curvature == "bfgs":
+        bfgs = np.zeros_like(H)
+        bfgs[np.ix_(active, active)] = H_free_inv * model.N
+
+    # Independent reference: differentiate likelihoods and reported values
+    # directly along free optimizer directions, without natural-space scores.
+    def expand(free):
+        full = theta.copy()
+        full[active] = free
+        return full
+
+    scores = model._fd_jacobian(
+        lambda free: _per_obs_loglik(
+            expand(free), model.X, model.y, model.avail,
+            model.n_alts, model.n_beta, model.control, model.ranvar_indices,
+        ), theta[active],
+    )
+    J_report = model._fd_jacobian(
+        lambda free: model._unpar_to_report(_param_to_unpar(
+            expand(free), model.n_beta, model.n_alts, model.control, model.ranvar_indices,
+        )), theta[active],
+    )
+    if curvature == "missing":
+        free_cov = np.linalg.pinv(scores.T @ scores)
+    elif se_method == "sandwich":
+        free_cov = H_free_inv @ (scores.T @ scores) @ H_free_inv
+    else:
+        free_cov = H_free_inv
+    expected = J_report @ free_cov @ J_report.T
+
+    if curvature == "missing":
+        with pytest.warns(RuntimeWarning, match="falling back to BHHH"):
+            _, _, _, _, cov, *_ = model._normalize_for_reporting(
+                theta, bfgs, None, active_mask=active, **kwargs,
+            )
+    else:
+        _, _, _, _, cov, *_ = model._normalize_for_reporting(
+            theta, bfgs, None, active_mask=active, **kwargs,
+        )
+    np.testing.assert_allclose(cov, expected, rtol=2e-5, atol=1e-8)
 
 
 @pytest.mark.parametrize("scaling", ["first", "sumsq"])

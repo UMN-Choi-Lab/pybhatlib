@@ -28,6 +28,7 @@ from scipy.special import ndtr as _ndtr
 
 from pybhatlib.io._data_loader import load_data
 from pybhatlib.models._base import BaseModel
+from pybhatlib.models._fit_diagnostics import mdcev_constants_loglik
 from pybhatlib.utils._safe_reparam import safe_exp
 from pybhatlib.models.mdcev._mdcev_control import MDCEVControl
 from pybhatlib.models.mdcev._mdcev_loglik import (
@@ -419,7 +420,17 @@ class MDCEVModel(BaseModel):
                 f"({t_elapsed:.4f} min).  LL = {ll_total:.4f}"
             )
 
+        ll_c = np.nan
+        if not getattr(self, "_skip_fit_diagnostics", False):
+            ll_c = mdcev_constants_loglik(
+                dta[:, flagchm], dta[:, flagprcm], utility=ctrl.utility,
+                outside_good_gamma=ctrl.outside_good_gamma,
+                observation_weights=dta[:, wtind],
+            )
         return MDCEVResults(
+            loglik_constants=ll_c,
+            n_free_params=len(x_opt),
+            n_constants_params=2 * (nc - 1) + 1,
             params=x_opt,
             b_reported=x_reported,
             se=se_full,

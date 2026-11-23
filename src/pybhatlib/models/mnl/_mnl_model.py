@@ -264,6 +264,8 @@ class MNLModel(BaseModel):
 
         return MNLResults(
             loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=len(x_opt),
+            n_constants_params=nc - 1,
             average_correct_probability=probability_cache.get(x_opt),
             params=x_opt,
             se=se,

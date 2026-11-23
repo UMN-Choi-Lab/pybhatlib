@@ -25,6 +25,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   keeping the better optimum (`control.reset_collapsed_sd`, default on). An SD
   that is still collapsed raises a `RuntimeWarning`: the coefficient is
   effectively fixed and its correlations are not identified.
+- **MNP random-coefficient and mixture coordinates/reporting change together
+  with scaling in #71.**
+  - Full random-coefficient covariance optimizer blocks now contain radial
+    correlation coordinates followed by log standard deviations, replacing
+    raw lower-triangular Cholesky entries. With `randdiag=True`, the block
+    remains log SDs and omits correlations. Old full-covariance `startb`
+    vectors require conversion even when their length is unchanged.
+  - Reporting replaces `CovCOv*` covariance/variance entries with `corr[...]`
+    correlations and `scal[...]` SDs. `omega_hat` (and `segment_covs` for
+    mixtures) remains a covariance matrix; `results.params` remains the
+    optimizer vector, while `b_original` is the reporting vector. Existing
+    SEs/covariances must also be transformed, not merely relabeled.
+  - `segunpar` now reports segment 2's probability for two segments;
+    `segunpar_sN` reports probabilities for segments 2..N in larger mixtures.
+    Optimizer segment coordinates remain logits relative to segment 1,
+    labeled `segment_logit[sN]`; `segment_probs` includes every probability.
+  - Automatic random-coefficient starts use SD `0.1` (log SD `log(0.1)`)
+    and zero correlations in every segment. In particular, the previous
+    diagonal start of log SD `0` (SD `1`) is now `log(0.1)`. Explicit starts
+    are not automatically migrated. These starts can change optimizer paths
+    and the selected local optimum. See the README migration guidance.
+- **MNP defaults to `scaling="sumsq"`.** The squared differenced kernel-error
+  scales sum to one, replacing the earlier implicit first-scale-equals-one
+  normalization. `MNPKerCPControl` retains its existing `sumsq` default.
+  Use `MNPControl(scaling="first")` for direct comparisons with GAUSS BHATLIB
+  coefficients and standard errors. The two identifications represent the
+  same probabilities after consistent parameter conversion; reported values
+  and optimizer starting coordinates are not interchangeable across them.
+  Externally supplied IID GAUSS coefficients require `scaling="first"`, or
+  division by `sqrt(J - 1)` for the default `sumsq` convention (`J` alternatives).
+  Non-IID external beta/covariance pairs are normalized together. (#71)
 - **MDCEV `gamma_spec` no longer includes the outside good.** Satiation specs
   list the inside goods only; the outside good's gamma is pinned to
   `MDCEVControl.outside_good_gamma` (GAUSS `u[.,1] = -1000`) and is no longer a
@@ -52,6 +83,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   overrides that copy another column, as the MNP and MORP scenario APIs do. (#58)
 
 ### Fixed
+- MNP sandwich and Hessian SEs now invert the observed Hessian only over
+  active optimizer coordinates before projecting to natural/reporting
+  parameters. This excludes uncertainty from frozen coordinates, including
+  coupled `sumsq` scales and random-coefficient covariances. The sandwich's
+  BHHH fallback uses the same active-coordinate projection as BHHH. (#71)
 - `simmdcev` / `simtradmdcev` clip uniform draws away from 0 and 1 so the
   double-log Gumbel transform stays finite. (#58)
 - The MDCEV satiation and gradient helpers accept both gamma index layouts --

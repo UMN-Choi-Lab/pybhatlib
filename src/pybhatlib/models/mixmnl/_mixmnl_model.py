@@ -210,8 +210,6 @@ class MixMNLModel(BaseModel):
             return FixtureDrawSource(np.zeros((n_rep, n_ind * n_rnd)))
         if self.control.draw_method == "explicit":
             return ExplicitHaltonDrawSource(seed=self.control.draw_seed)
-        if self.control.draw_method != "scipy":
-            raise ValueError("draw_method must be 'scipy' or 'explicit'")
         return ScipyHaltonDrawSource(seed=self.control.draw_seed)
 
     def _build_estimator(
@@ -486,6 +484,8 @@ class MixMNLModel(BaseModel):
         )
         return MixMNLResults(
             loglik_constants=ll_c, loglik_zero=ll_0,
+            n_free_params=int(theta_hat.size),
+            n_constants_params=self.n_alts - 1,
             average_correct_probability=est.average_correct_probability,
             params=params_report,
             se=se,

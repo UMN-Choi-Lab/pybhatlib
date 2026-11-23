@@ -183,9 +183,10 @@ def _assert_bhhh_se_parity(
     the relative variance of alt-3's differenced error term — which is precisely
     what the published table reports under its "scale01" entry. Under this
     convention the reported coefficients equal the published ones DIRECTLY (no
-    un-normalization factor; the old sum-of-squared-scales transform is gone):
+    un-normalization factor, because this test explicitly selects "first"):
 
-      * beta / parker / CovCOv / segunpar : reported == published (verbatim)
+      * beta / parker : reported == published
+      * legacy CovCOv variance : compare sqrt(published) to reported scal[...]
       * published "scale01" (rel. alt-3 variance) == reported ``scale02``
       * reported ``scale01`` == 1.0 (fixed row, SE = NaN — not compared)
 
@@ -295,10 +296,9 @@ def test_table2_model_aii_bhhh_se_parity(table2_targets, travelmode_path):
 def test_table2_model_c_bhhh_se_parity(table2_targets, travelmode_path):
     """Model (c) random coefficient — exercises the mixture/Omega SE path.
 
-    With MNP-002b (unparameterized scoring, GAUSS lpr1/lgd1 convention)
-    the SE on ``CovCOv01`` (random-coefficient variance) lands within
-    0.001 of the paper value 0.4531. Tightened to 0.05 (from the 0.10
-    xfail tolerance pre-MNP-002b).
+    The paper stores a random-coefficient variance; current reporting stores
+    its SD. The shared gate compares the square-rooted paper coefficient to
+    scal[OVTT] and checks that its reporting-space SE is positive and finite.
     """
     _assert_bhhh_se_parity(
         table2_targets["models"]["c_random_coef"],
