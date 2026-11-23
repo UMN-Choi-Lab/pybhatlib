@@ -100,6 +100,53 @@ def test_morp_flex_gauss_ll_parity():
     assert worst < 1e-3, f"per-individual LL max|delta| = {worst:.3e}"
 
 
+@pytest.mark.skipif(not os.path.exists(_DATA), reason="panel_commute dataset absent (gitignored 87MB)")
+def test_morp_flex_gauss_active_corr_score():
+    """At the GAUSS optimum the two estimated correlation slots (rc<->rc and
+    ordinal<->ordinal) must carry a nonzero analytic score that matches central
+    FD, and the four rc<->kernel slots (GAUSS ``_max_active = 0`` under
+    ``_nocorrrcker = 1``) must carry exactly zero score. Regression for the
+    copula-off defect that zeroed the whole ``rcor`` block."""
+    import pandas as pd
+
+    df = pd.read_csv(_DATA, low_memory=False)
+    df = df.sort_values("INDID", kind="mergesort").reset_index(drop=True)
+    ctrl = MORPFlexControl(
+        person_id="INDID", normvar=("UNO_M", "UNO_E"), copula=False,
+        yj_kernel=False, n_rep=10, spher=False, scal=1.0,
+        floor_pcomp=0.0, floor_z=0.0,
+    )
+    model = MORPFlexModel(
+        data=df, dep_vars=["M_stop_b", "E_stop_b"], spec=_SPEC,
+        n_categories=[2, 2], control=ctrl,
+    )
+    spec, layout = model._build_spec_layout()
+    panel = PanelIndex.from_ids(model.person_ids)
+    draws = FixtureDrawSource(os.path.join(_FIX, "ass.csv"))
+    est = model._build_estimator(spec, layout, panel, draws=draws)
+    b = np.loadtxt(os.path.join(_FIX, "b.csv"))
+    _, score = est.simulated_loglik(b, want_grad=True)
+    g_an = np.asarray(score).sum(0)
+    rc0 = layout.slices()["rcor"].start
+    active = [rc0 + 0, rc0 + 5]              # corr[UNO_M,UNO_E], corr[ord1,ord2]
+    masked = [rc0 + 1, rc0 + 2, rc0 + 3, rc0 + 4]
+    assert np.all(g_an[masked] == 0.0)
+
+    def total(th):
+        ll, _ = est.simulated_loglik(th, want_grad=False)
+        return float(np.asarray(ll).sum())
+
+    for j in active:
+        eps = 1e-5
+        tp = b.copy(); tp[j] += eps
+        tm = b.copy(); tm[j] -= eps
+        g_fd = (total(tp) - total(tm)) / (2.0 * eps)
+        assert abs(g_fd) > 1e-3, f"slot {j} not load-bearing at GAUSS b"
+        assert abs(g_an[j] - g_fd) < 1e-4 * max(1.0, abs(g_fd)), (
+            f"slot {j}: analytic {g_an[j]} vs FD {g_fd}"
+        )
+
+
 def test_morp_parity_meta_present():
     with open(os.path.join(_FIX, "meta.json")) as fh:
         meta = json.load(fh)
