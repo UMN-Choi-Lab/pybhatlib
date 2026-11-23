@@ -59,7 +59,7 @@ def table2_targets():
 
 
 def _fit_model(spec, control_kwargs, ranvars, travelmode_path):
-    ctrl = MNPControl(maxiter=200, verbose=0, seed=42, **control_kwargs)
+    ctrl = MNPControl(scaling="first", maxiter=200, verbose=0, seed=42, **control_kwargs)
     model = MNPModel(
         data=travelmode_path,
         alternatives=ALTERNATIVES,
@@ -144,7 +144,7 @@ def test_se_methods_produce_valid_errors(se_method, travelmode_path):
     check applies to every *estimated* parameter; the single fixed scale01 row
     is excluded.
     """
-    ctrl = MNPControl(
+    ctrl = MNPControl(scaling="first",
         iid=False, maxiter=200, verbose=0, seed=42, se_method=se_method,
     )
     model = MNPModel(
@@ -160,7 +160,7 @@ def test_se_methods_produce_valid_errors(se_method, travelmode_path):
     # Exclude the fixed scale01 row (pinned, SE=NaN by the first-diff-var=1
     # convention); all estimated parameters must have positive, finite SEs.
     estimated = np.array(
-        [n != "scale01" for n in results.param_names], dtype=bool
+        [not n.endswith(" (fixed)") for n in results.param_names], dtype=bool
     )
     se_est = results.se[estimated]
     assert np.isnan(results.se[~estimated]).all(), (
@@ -183,9 +183,10 @@ def _assert_bhhh_se_parity(
     the relative variance of alt-3's differenced error term — which is precisely
     what the published table reports under its "scale01" entry. Under this
     convention the reported coefficients equal the published ones DIRECTLY (no
-    un-normalization factor; the old sum-of-squared-scales transform is gone):
+    un-normalization factor, because this test explicitly selects "first"):
 
-      * beta / parker / CovCOv / segunpar : reported == published (verbatim)
+      * beta / parker : reported == published
+      * legacy CovCOv variance : compare sqrt(published) to reported scal[...]
       * published "scale01" (rel. alt-3 variance) == reported ``scale02``
       * reported ``scale01`` == 1.0 (fixed row, SE = NaN — not compared)
 
@@ -199,7 +200,7 @@ def _assert_bhhh_se_parity(
     """
     import numpy as np
 
-    ctrl = MNPControl(
+    ctrl = MNPControl(scaling="first",
         maxiter=200, verbose=0, seed=42, se_method="bhhh", **control_kwargs,
     )
     model = MNPModel(
@@ -214,15 +215,22 @@ def _assert_bhhh_se_parity(
 
     coef = dict(zip(results.param_names, results.b_original))
     se = dict(zip(results.param_names, results.se))
+    # Published fixture names predate the descriptive differenced-error labels.
+    fixed_scale = f"kerscal[{ALTERNATIVES[1]}-{ALTERNATIVES[0]}] (fixed)"
+    free_scale = f"kerscal[{ALTERNATIVES[2]}-{ALTERNATIVES[0]}]"
+    correlation = (
+        f"corr[ker[{ALTERNATIVES[1]}-{ALTERNATIVES[0]}],"
+        f"ker[{ALTERNATIVES[2]}-{ALTERNATIVES[0]}]]"
+    )
 
     # First-diff-var=1 property: scale01 is pinned to 1.0 (a fixed row, SE=NaN).
-    assert "scale01" in coef, f"{model_label}: scale01 not reported"
-    assert coef["scale01"] == pytest.approx(1.0, abs=1e-9), (
-        f"{model_label}: scale01 should be pinned to 1.0, got {coef['scale01']}"
+    assert fixed_scale in coef, f"{model_label}: scale01 not reported"
+    assert coef[fixed_scale] == pytest.approx(1.0, abs=1e-9), (
+        f"{model_label}: scale01 should be pinned to 1.0, got {coef[fixed_scale]}"
     )
-    assert np.isnan(se["scale01"]), (
+    assert np.isnan(se[fixed_scale]), (
         f"{model_label}: SE for the fixed scale01 row should be NaN, "
-        f"got {se['scale01']}"
+        f"got {se[fixed_scale]}"
     )
 
     for param, tdata in target["params"].items():
@@ -230,7 +238,7 @@ def _assert_bhhh_se_parity(
             continue
         # The published table reports its relative alt-3 scale under "scale01";
         # under first-diff-var=1 that maps to the reported ``scale02``.
-        result_key = "scale02" if param.startswith("scale") else param
+        result_key = {"scale01": free_scale, "parker01": correlation, "CovCOv01": "scal[OVTT]"}.get(param, param)
         got = coef.get(result_key)
         assert got is not None, (
             f"{model_label}: param {param} (->{result_key}) missing from results"
@@ -240,7 +248,9 @@ def _assert_bhhh_se_parity(
             f"{model_label}: SE for {result_key} not positive-finite: {s}"
         )
         # All estimated parameters compare DIRECTLY to the published values.
-        expected, actual = tdata["coef"], got
+        # The paper stores the RC variance; scal[OVTT] reports its SD.
+        expected = np.sqrt(tdata["coef"]) if param == "CovCOv01" else tdata["coef"]
+        actual = got
         assert abs(actual - expected) < tol, (
             f"{model_label} coef mismatch for {param} (->{result_key}): "
             f"reported {actual:.4f}, published {expected:.4f}"
@@ -286,10 +296,9 @@ def test_table2_model_aii_bhhh_se_parity(table2_targets, travelmode_path):
 def test_table2_model_c_bhhh_se_parity(table2_targets, travelmode_path):
     """Model (c) random coefficient — exercises the mixture/Omega SE path.
 
-    With MNP-002b (unparameterized scoring, GAUSS lpr1/lgd1 convention)
-    the SE on ``CovCOv01`` (random-coefficient variance) lands within
-    0.001 of the paper value 0.4531. Tightened to 0.05 (from the 0.10
-    xfail tolerance pre-MNP-002b).
+    The paper stores a random-coefficient variance; current reporting stores
+    its SD. The shared gate compares the square-rooted paper coefficient to
+    scal[OVTT] and checks that its reporting-space SE is positive and finite.
     """
     _assert_bhhh_se_parity(
         table2_targets["models"]["c_random_coef"],

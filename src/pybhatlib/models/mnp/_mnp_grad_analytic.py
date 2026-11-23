@@ -2,7 +2,7 @@
 
 Implements Phase D1 from GAUSS_INTEGRATION_PLAN.md. Uses mvncd_grad_me_analytic
 for per-observation probability gradients and chains them through the MNP
-parameter transformations (beta, Lambda scales/correlations, Omega Cholesky).
+parameter transformations (beta, Lambda scales/correlations, Omega correlations/log SDs).
 
 Supports: IID, heteroscedastic, full covariance, mixed MNP (nseg=1), and
 mixture-of-normals (nseg > 1) with analytic gradients.
@@ -14,7 +14,7 @@ The gradient chain:
 where dP_q/d(theta) decomposes as:
     dP/d(beta) via differenced design matrix
     dP/d(lambda_params) via Lambda = D @ corr @ D parameterization
-    dP/d(omega_params) via Omega = L @ L.T Cholesky parameterization
+    dP/d(omega_params) via Omega = diag(SD) @ corr @ diag(SD), SD = exp(log_SD)
 
 For mixture-of-normals (nseg > 1):
     P_q = sum_h pi_h * P_q_h(beta_h, Lambda, Omega_h)
@@ -52,6 +52,7 @@ from pybhatlib.gradmvn._mvncd_grad_analytic import (
 from pybhatlib.gradmvn._mvncd_grad_ovus import mvncd_grad_ovus_analytic
 from pybhatlib.matgradient._spherical import grad_corr_theta, theta_to_corr
 from pybhatlib.models.mnp._mnp_control import MNPControl
+from pybhatlib.models._mnp_scaling import kernel_scales, kernel_scale_jacobian
 
 
 def mnp_analytic_gradient(
@@ -1373,7 +1374,7 @@ def _build_lambda_components(
 ) -> tuple[NDArray, NDArray | None, NDArray | None]:
     """Build the differenced kernel ``K`` and return (K, scales, corr).
 
-    GAUSS homogeneous "first-differenced-variance = 1" form (mirrors
+    The ``scaling="first"`` GAUSS "first-differenced-variance = 1" form (mirrors
     ``_mnp_loglik._build_lambda``): the first differenced variance ``K[0,0]``
     is PINNED to 1, so ``scales = [1.0] + exp(free_log_scales)`` (length
     ``dim``, first entry literally 1.0), and there are only ``dim - 1`` FREE
@@ -1385,17 +1386,18 @@ def _build_lambda_components(
 
     For IID the differenced kernel is the GAUSS frozen ``startker``
     ``K = 0.5*(eye + ones)`` (so ``K[0,0] == 1``), matching ``_build_lambda``.
+    Under ``scaling="sumsq"`` the scales instead have squared sum 1 and use
+    softmax coordinates; the IID covariance is divided by ``dim``.
     """
     if control.iid or lambda_params is None:
         # GAUSS IID kernel (frozen startker): K = 0.5*(eye + ones), K[0,0] == 1.
         K = 0.5 * np.eye(dim, dtype=np.float64) + 0.5 * np.ones(
             (dim, dim), dtype=np.float64
         )
-        return K, None, None
+        return (K / dim if control.scaling == "sumsq" else K), None, None
 
     n_scale = max(dim - 1, 0)  # I-2 FREE scales (first diff variance pinned)
-    free = safe_exp(lambda_params[:n_scale]) if n_scale > 0 else np.empty(0)
-    scales = np.concatenate([[1.0], free])  # length dim, scales[0] == 1.0
+    scales = kernel_scales(lambda_params[:n_scale], control.scaling)
 
     if control.heteronly:
         K = np.diag(scales ** 2)
@@ -1418,17 +1420,10 @@ def _build_omega_components(
     n_rand: int,
     control: MNPControl,
 ) -> tuple[NDArray, NDArray]:
-    """Build Cholesky factor L and Omega = L @ L.T."""
-    if control.randdiag:
-        L = np.diag(safe_exp(omega_params[:n_rand]))
-    else:
-        L = np.zeros((n_rand, n_rand), dtype=np.float64)
-        idx = 0
-        for i in range(n_rand):
-            for j in range(i + 1):
-                L[i, j] = omega_params[idx]
-                idx += 1
-    return L, L @ L.T
+    """Build covariance from the same correlation/log-SD map as prediction."""
+    from pybhatlib.models.mnp._mnp_random import random_covariance
+
+    return random_covariance(omega_params, n_rand, control)
 
 
 def _vech_to_symmetric(vech: NDArray, K: int) -> NDArray:
@@ -1461,8 +1456,7 @@ def _adj_lambda_to_params(
     control: MNPControl,
 ) -> NDArray:
     """Chain ``adj_K`` through the differenced kernel ``K = W1 @ corr @ W1`` to
-    ``adj_lambda_params``, in the GAUSS homogeneous "first-differenced-variance
-    = 1" parameterization.
+    ``adj_lambda_params``, using the selected kernel-scale parameterization.
 
     ``W1 = diag(scales)`` with ``scales = [1.0] + exp(free_log_scales)`` (length
     ``dim``); the FIRST scale is PINNED to 1 and has NO free theta column, so
@@ -1474,16 +1468,16 @@ def _adj_lambda_to_params(
 
     For heteroscedastic: ``K = diag(scales^2)``; only the free diagonal entries
     ``k = 1..dim-1`` get a gradient. For full: ``K = W1 @ corr @ W1``; the
-    correlation block (``corr_jac @ adj_corr_vech``) is unchanged.
+    correlation block (``corr_jac @ adj_corr_vech``) is unchanged. Under
+    ``sumsq`` all natural scales depend on the free logits, so the full
+    softmax/square-root Jacobian is applied instead of the log-scale diagonal.
     """
     if control.heteronly:
         # K = diag(scales^2), free scales k=1..dim-1: d(exp(2x))/dx = 2*scale^2.
         # The pinned scale[0] contributes to K but gets NO gradient entry; free
         # index k maps to output position k-1.
-        adj = np.zeros(n_scale, dtype=np.float64)
-        for k in range(1, dim):
-            adj[k - 1] = adj_Lambda[k, k] * 2.0 * scales[k] ** 2
-        return adj
+        adj_scales = 2.0 * np.diag(adj_Lambda) * scales
+        return kernel_scale_jacobian(scales, control.scaling) @ adj_scales
 
     adj = np.zeros(n_scale + n_corr, dtype=np.float64)
 
@@ -1491,11 +1485,8 @@ def _adj_lambda_to_params(
     # theta column). For free index k: adj_scale[k] = 2 * sum_j adj_K[k,j] *
     # corr[k,j] * scales[j], chained to log-scale via * scales[k], mapped to
     # output position k-1.
-    for k in range(1, dim):
-        s = 0.0
-        for j in range(dim):
-            s += adj_Lambda[k, j] * corr[k, j] * scales[j]
-        adj[k - 1] = 2.0 * s * scales[k]
+    adj_scales = 2.0 * (adj_Lambda * corr) @ scales
+    adj[:n_scale] = kernel_scale_jacobian(scales, control.scaling) @ adj_scales
 
     # Correlation gradient (UNCHANGED).
     if n_corr > 0 and corr_jac is not None:
@@ -1530,27 +1521,7 @@ def _adj_omega_to_params(
     n_rand: int,
     control: MNPControl,
 ) -> NDArray:
-    """Chain adj_Omega through Omega = L @ L.T to adj_omega_params.
+    """Chain covariance derivatives through correlation and log-SD coordinates."""
+    from pybhatlib.models.mnp._mnp_random import random_covariance_adjoint
 
-    For diagonal: Omega = diag(exp(2*params)), d/d(params) = 2*exp(2*params).
-    For full: Omega = L @ L.T, adj_L = 2*adj_Omega @ L (lower-tri part).
-    """
-    if control.randdiag:
-        adj = np.zeros(n_rand, dtype=np.float64)
-        for k in range(n_rand):
-            exp_val = safe_exp(omega_params[k])
-            adj[k] = adj_Omega[k, k] * 2.0 * exp_val ** 2
-        return adj
-
-    # Full Cholesky: adj_L = 2 * adj_Omega @ L (adj_Omega is symmetric)
-    adj_L = 2.0 * adj_Omega @ Omega_L
-
-    # Extract lower-triangular entries (direct params, no transformation)
-    n_omega = n_rand * (n_rand + 1) // 2
-    adj = np.zeros(n_omega, dtype=np.float64)
-    oidx = 0
-    for i in range(n_rand):
-        for j in range(i + 1):
-            adj[oidx] = adj_L[i, j]
-            oidx += 1
-    return adj
+    return random_covariance_adjoint(adj_Omega, omega_params, n_rand, control)
